@@ -13,9 +13,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LABEL = 'com.lec-scribe.server';
+const APP_NAME = 'LecScribe Server';
 const home = os.homedir();
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const plistPath = path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
+// 「ログイン項目と機能拡張」に表示される名前は実行ファイルの署名者（node なら Node.js Foundation）に
+// なってしまうので、小さなアプリバンドル経由で起動し、その名前を出させる
+const appDir = path.join(home, 'Applications', `${APP_NAME}.app`);
+const appExecutable = path.join(appDir, 'Contents', 'MacOS', 'lec-scribe-server');
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 const logDir = path.join(home, 'Library', 'Logs', 'lec-scribe');
 const logPath = path.join(logDir, 'server.log');
 const tokenPath = path.join(home, '.lec-scribe', 'token');
@@ -25,18 +31,55 @@ const domain = `gui/${os.userInfo().uid}`;
 const command = process.argv[2] ?? 'status';
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 
+const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** ~/Applications/LecScribe Server.app を作る。中身は node でサーバーを exec するだけのスクリプト */
+function writeAppBundle() {
+  mkdirSync(path.join(appDir, 'Contents', 'MacOS'), { recursive: true });
+  writeFileSync(
+    path.join(appDir, 'Contents', 'Info.plist'),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>${LABEL}</string>
+  <key>CFBundleName</key><string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+  <key>CFBundleExecutable</key><string>lec-scribe-server</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>LSUIElement</key><true/>
+  <key>LSBackgroundOnly</key><true/>
+</dict>
+</plist>
+`,
+  );
+  writeFileSync(
+    appExecutable,
+    `#!/bin/sh
+# LecScribe Server: launchd から起動される。サーバー本体は Node で動く
+exec "${process.execPath}" "${path.join(repoRoot, 'server', 'src', 'index.ts')}"
+`,
+    { mode: 0o755 },
+  );
+  if (existsSync(LSREGISTER)) run(LSREGISTER, ['-f', appDir]);
+}
+
 function plistXml() {
   // launchd の PATH には /opt/homebrew/bin が入らないので、今のシェルの PATH をそのまま渡す
-  const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const args = [process.execPath, path.join(repoRoot, 'server', 'src', 'index.ts')];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>${LABEL}</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
-${args.map((a) => `    <string>${escape(a)}</string>`).join('\n')}
+    <string>${escape(appExecutable)}</string>
   </array>
   <key>WorkingDirectory</key><string>${escape(repoRoot)}</string>
   <key>EnvironmentVariables</key>
@@ -80,6 +123,7 @@ async function install() {
   }
   mkdirSync(path.dirname(plistPath), { recursive: true });
   mkdirSync(logDir, { recursive: true });
+  writeAppBundle();
   writeFileSync(plistPath, plistXml());
   if (isLoaded()) run('launchctl', ['bootout', `${domain}/${LABEL}`]);
   const boot = run('launchctl', ['bootstrap', domain, plistPath]);
@@ -88,6 +132,7 @@ async function install() {
     process.exit(1);
   }
   console.log(`登録しました: ${plistPath}`);
+  console.log(`起動用アプリ: ${appDir}（「ログイン項目と機能拡張」には「${APP_NAME}」として表示されます）`);
   console.log(`ログ: ${logPath}`);
   await waitAndReport();
 }
@@ -109,11 +154,16 @@ async function waitAndReport() {
 function uninstall() {
   if (isLoaded()) run('launchctl', ['bootout', `${domain}/${LABEL}`]);
   if (existsSync(plistPath)) rmSync(plistPath);
+  if (existsSync(appDir)) {
+    if (existsSync(LSREGISTER)) run(LSREGISTER, ['-u', appDir]);
+    rmSync(appDir, { recursive: true });
+  }
   console.log('登録を外しました。');
 }
 
 async function status() {
   console.log(`登録: ${existsSync(plistPath) ? plistPath : 'なし'}`);
+  console.log(`起動用アプリ: ${existsSync(appDir) ? appDir : 'なし'}`);
   console.log(`launchd: ${isLoaded() ? '読み込み済み' : '未読み込み'}`);
   const h = await health();
   console.log(h ? `サーバー: v${h.version} が http://127.0.0.1:${port} で応答（model: ${h.model}）` : `サーバー: http://127.0.0.1:${port} は応答なし`);

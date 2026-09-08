@@ -49,7 +49,9 @@ pnpm --filter @lec-scribe/server agent:restart    # サーバーのコードを�
 pnpm --filter @lec-scribe/server agent:uninstall  # 解除
 ```
 
-ログは `~/Library/Logs/lec-scribe/server.log`。登録時の `node` のパスと `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を plist に書き込むので、Node を入れ替えたときは `agent:install` をやり直してください。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めてから登録します。
+ログは `~/Library/Logs/lec-scribe/server.log`。登録時の `node` のパスと `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を書き込むので、Node を入れ替えたときは `agent:install` をやり直してください。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めてから登録します。
+
+起動には `~/Applications/LecScribe Server.app`（中身は Node を呼ぶだけのスクリプト）を経由します。これは macOS の「ログイン項目と機能拡張」に「LecScribe Server」という名前で表示させるためで、直接 `node` を登録すると署名者の「Node.js Foundation」と表示されてしまいます。
 
 ## 構成
 
