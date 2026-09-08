@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const ext = path.resolve('extension/.output/chrome-mv3');
+const ext = path.resolve('extension/dist/chrome-mv3');
 const context = await chromium.launchPersistentContext('', {
   channel: 'chromium',
   headless: true,

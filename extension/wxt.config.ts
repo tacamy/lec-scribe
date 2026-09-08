@@ -4,6 +4,9 @@ import { defineConfig } from 'wxt';
 // see docs/SPEC.md §6.1 for the final set.
 export default defineConfig({
   srcDir: '.',
+  // Visible folder instead of WXT's default `.output`, which Finder and
+  // Chrome's file picker hide.
+  outDir: 'dist',
   imports: false,
   manifest: {
     name: 'LecScribe',

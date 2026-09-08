@@ -6,11 +6,11 @@ tabCapture を伴う確認は Mac 実機でしかできないため、Phase ご�
 
 ```sh
 pnpm install
-pnpm build            # extension/.output/chrome-mv3 が生成される
+pnpm build            # extension/dist/chrome-mv3 が生成される
 ```
 
 1. Chrome で `chrome://extensions` を開き、右上の「デベロッパーモード」を ON
-2. 「パッケージ化されていない拡張機能を読み込む」→ `extension/.output/chrome-mv3` を選択
+2. 「パッケージ化されていない拡張機能を読み込む」→ `extension/dist/chrome-mv3` を選択
 3. ツールバーの拡張アイコンから LecScribe をピン留め
 4. コードを変更したら `pnpm build` → `chrome://extensions` の更新ボタン（↻）
 

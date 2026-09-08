@@ -23,7 +23,7 @@
 
 ```sh
 pnpm install
-pnpm build                       # 拡張を extension/.output/chrome-mv3 にビルド
+pnpm build                       # 拡張を extension/dist/chrome-mv3 にビルド
 pnpm typecheck && pnpm test      # 型検査と単体テスト
 node scripts/smoke-extension.mjs # headless Chromium で拡張を読み込むスモークテスト
 pnpm fixtures:make               # 合成スライド動画を生成（Phase 3 以降で使用）
