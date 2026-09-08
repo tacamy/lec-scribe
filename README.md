@@ -10,8 +10,9 @@
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 0 | 足場（pnpm workspace、WXT、Vitest、Playwright スモーク、fixture、CI） | 完了 |
-| 1 | tabCapture + AirPods パススルー | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
-| 2〜8 | 録音 → 動画検出 → フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
+| 1 | tabCapture + 音声パススルー | 完了（Mac で確認済み: パススルー動作、二重再生なし） |
+| 2 | 録音（OPFS へ逐次保存 → エクスポート） | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 3〜8 | 動画検出 → フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
 
 | ドキュメント | 内容 |
 |---|---|
@@ -39,7 +40,7 @@ Chrome への読み込み方と Phase 1 の確認項目は [docs/CHECKS.md](docs
 lec-scribe/
 ├── extension/   Chrome 拡張（WXT + TypeScript）
 │   ├── entrypoints/  background.ts / popup/ / offscreen/
-│   └── src/          config, state, messages, format（純粋関数は Vitest）
+│   └── src/          config, state, messages, format, opfs/（純粋関数は Vitest）
 ├── server/      Mac ローカルサーバー（Node.js 22 + TypeScript、依存なし）
 ├── fixtures/    動作確認用のローカルプレイヤーページと合成スライド動画
 ├── scripts/     スモークテスト

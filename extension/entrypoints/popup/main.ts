@@ -1,7 +1,8 @@
 import { toErrorInfo } from '../../src/errors';
-import { formatElapsed } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats } from '../../src/messages';
-import { INITIAL_STATE, onStateChange, type SessionState } from '../../src/state';
+import { listSessions, type StoredSession } from '../../src/opfs/session-store';
+import { INITIAL_STATE, isActive, onStateChange, type SessionState } from '../../src/state';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const dot = $('dot');
@@ -13,6 +14,8 @@ const tabValue = $('tabValue');
 const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
+const sessionsSection = $('sessions');
+const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
 
 const STATE_LABEL: Record<SessionState['state'], string> = {
@@ -31,33 +34,46 @@ let statsTimer: number | undefined;
 
 function render(state: SessionState) {
   current = state;
+  const active = isActive(state);
   dot.dataset.state = state.state;
-  stateLabel.textContent = STATE_LABEL[state.state];
+  stateLabel.textContent = state.exporting ? 'Exporting…' : STATE_LABEL[state.state];
   tabValue.textContent = state.title ?? '—';
   tabValue.title = state.title ?? '';
 
-  const active = state.state === 'STARTING' || state.state === 'CAPTURING' || state.state === 'STOPPING';
   startBtn.hidden = active;
   stopBtn.hidden = !active;
-  startBtn.disabled = false;
+  startBtn.disabled = !!state.exporting;
   stopBtn.disabled = state.state === 'STOPPING';
 
-  if (state.state === 'ERROR' && state.error) {
+  if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
   } else {
     message.hidden = true;
   }
 
-  if (state.state === 'IDLE' && state.lastSession) {
-    footer.textContent = `前回: ${formatElapsed(state.lastSession.durationMs)} キャプチャ（${state.lastSession.endedBy}）。Phase 1 では保存しません。`;
-  } else if (state.state === 'CAPTURING') {
-    footer.textContent = 'AirPods 等から音声が聞こえ、二重になっていないか確認してください。';
+  if (!active) {
+    const last = state.lastSession;
+    audioValue.textContent =
+      state.state === 'COMPLETED' && last
+        ? `録音完了 ${formatElapsed(last.durationMs)} / ${formatBytes(last.audioBytes)}${last.exported ? '（エクスポート済み）' : ''}`
+        : '—';
+  }
+
+  if (state.state === 'CAPTURING') {
+    footer.textContent = '音声を録音中です。スピーカーや AirPods から聞こえ、二重になっていないか確認してください。';
+  } else if (state.state === 'COMPLETED') {
+    footer.textContent = 'エクスポートすると ~/Downloads/LecScribe/<セッション>/ に audio.webm が保存されます。';
+  } else if (state.exporting) {
+    footer.textContent = 'ダウンロード中です…';
   } else {
     footer.textContent = '講義ページで動画を再生した状態で Start を押してください。';
   }
 
   if (state.state === 'CAPTURING') startStatsLoop();
   else stopStatsLoop();
+
+  if (active) sessionsSection.hidden = true;
+  else void renderSessions();
 }
 
 function showMessage(text: string) {
@@ -71,7 +87,7 @@ function applyStats(stats: CaptureStats) {
   const percent = Math.min(100, Math.round(Math.sqrt(stats.audioLevel) * 100));
   meterFill.style.width = `${percent}%`;
   audioValue.textContent = stats.capturing
-    ? `録音中${stats.passthrough ? '' : '（パススルー off）'}${stats.audioLevel < 0.001 ? ' — 無音' : ''}`
+    ? `録音中 ${formatBytes(stats.audioBytes)}${stats.passthrough ? '' : '（パススルー off）'}${stats.silent ? ' — 無音' : ''}`
     : '—';
 }
 
@@ -93,31 +109,91 @@ function stopStatsLoop() {
   statsTimer = undefined;
   elapsed.textContent = '';
   meterFill.style.width = '0';
-  audioValue.textContent = '—';
 }
 
-startBtn.addEventListener('click', async () => {
-  startBtn.disabled = true;
+async function renderSessions() {
+  let sessions: StoredSession[] = [];
+  try {
+    sessions = (await listSessions()).slice(0, 5);
+  } catch {
+    // OPFS unavailable; nothing to list.
+  }
+  sessionsSection.hidden = sessions.length === 0;
+  sessionList.replaceChildren(...sessions.map(sessionItem));
+}
+
+function sessionItem(session: StoredSession): HTMLLIElement {
+  const li = document.createElement('li');
+  const main = document.createElement('div');
+  main.className = 'sessionMain';
+  const id = document.createElement('span');
+  id.textContent = formatSessionId(session.sessionId);
+  id.title = session.meta?.title ?? session.sessionId;
+  const meta = document.createElement('span');
+  meta.className = 'sessionMeta';
+  const parts = [formatBytes(session.audioBytes)];
+  if (session.status?.durationMs !== undefined) parts.unshift(formatElapsed(session.status.durationMs));
+  meta.textContent = parts.join(' · ');
+  main.append(id, meta);
+
+  const btns = document.createElement('div');
+  btns.className = 'sessionBtns';
+  const exportBtn = document.createElement('button');
+  exportBtn.type = 'button';
+  exportBtn.className = 'primary';
+  exportBtn.textContent = 'エクスポート';
+  const discardBtn = document.createElement('button');
+  discardBtn.type = 'button';
+  discardBtn.textContent = '破棄';
+  const busy = !!current.exporting;
+  exportBtn.disabled = busy;
+  discardBtn.disabled = busy;
+  exportBtn.addEventListener('click', () => void act(() => sendToBackground.export(session.sessionId)));
+  discardBtn.addEventListener('click', () => {
+    if (confirm(`${formatSessionId(session.sessionId)} の録音を削除します。よろしいですか？`)) {
+      void act(() => sendToBackground.discard(session.sessionId));
+    }
+  });
+  btns.append(exportBtn, discardBtn);
+  if (session.status?.stage === 'capturing') {
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = '中断';
+    btns.append(tag);
+  } else if (session.status?.stage === 'error') {
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = 'エラー';
+    tag.title = session.status.error ?? '';
+    btns.append(tag);
+  }
+  li.append(main, btns);
+  return li;
+}
+
+async function act(run: () => Promise<{ state: SessionState }>) {
   message.hidden = true;
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab?.id) throw new Error('No active tab.');
-    render((await sendToBackground.start(tab.id)).state);
+    render((await run()).state);
   } catch (e) {
     const info = toErrorInfo(e);
     showMessage(`${info.message} (${info.code})`);
-    startBtn.disabled = false;
+    render(current);
   }
+}
+
+startBtn.addEventListener('click', () => {
+  startBtn.disabled = true;
+  void act(async () => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id) throw new Error('アクティブなタブがありません。');
+    return sendToBackground.start(tab.id);
+  });
 });
 
-stopBtn.addEventListener('click', async () => {
+stopBtn.addEventListener('click', () => {
   stopBtn.disabled = true;
-  try {
-    render((await sendToBackground.stop()).state);
-  } catch (e) {
-    const info = toErrorInfo(e);
-    showMessage(`${info.message} (${info.code})`);
-  }
+  void act(() => sendToBackground.stop());
 });
 
 onStateChange(render);

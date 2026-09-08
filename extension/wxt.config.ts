@@ -17,6 +17,7 @@ export default defineConfig({
       'offscreen', // offscreen document that owns the MediaStream
       'activeTab', // temporary access to the tab where Start was pressed
       'storage', // config (local) and live state (session)
+      'downloads', // export of recorded sessions (fallback path, SPEC D-07)
     ],
     minimum_chrome_version: '116',
   },

@@ -31,3 +31,10 @@ export function makeSessionId(date: Date = new Date(), random: () => number = Ma
   for (let i = 0; i < 4; i++) suffix += alphabet[Math.floor(random() * alphabet.length) % alphabet.length];
   return `${stamp}-${suffix}`;
 }
+
+/** "20260908-103005-ab12" → "2026-09-08 10:30:05". Unknown shapes are returned unchanged. */
+export function formatSessionId(sessionId: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(sessionId);
+  if (!m) return sessionId;
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
+}

@@ -5,6 +5,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "skipLibCheck": true,
-    "types": ["chrome"]
+    "types": ["chrome"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"]
   }
 }

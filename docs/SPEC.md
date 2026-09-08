@@ -107,11 +107,11 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - offscreen document は拡張あたり同時に 1 つ。`reasons: ['USER_MEDIA']`。offscreen document で使える拡張 API は `chrome.runtime` のみ ✅。
 - streamId は取得後すみやかに 1 回だけ使う。MVP は音声のみを要求する（D-03）。
 
-### D-02 AirPods への音声パススルーは Web Audio で行う ✅（二重再生の有無は Phase 1 で確認 ⚠️）
+### D-02 AirPods への音声パススルーは Web Audio で行う ✅（Phase 1 で実機確認済み: 二重再生なし）
 
 - offscreen document 内で `MediaStreamAudioSourceNode → AudioContext.destination`。macOS の既定出力（AirPods）に出る。
 - タブキャプチャ中はタブ音声がローカル再生されないため必要（公式サンプルも同じ処置）。
-- 万一「二重に聞こえる」場合に備え、設定 `audio.passthrough: true | false` を持つ。
+- 設定 `audio.passthrough: true | false` を持つ。既定は `true` で確定（2026-09-08、Mac 内蔵スピーカーで二重再生なしを確認）。
 - `AudioContext` は生成後に `resume()` を呼ぶ（suspended 対策）。
 
 ### D-03 スライド用フレームは content script が `<video>` 要素を直接 drawImage して取得する（原案からの主要変更）
@@ -808,7 +808,7 @@ audio.webm
 | Q-09 | tabCapture 中のタブが非表示でも `<video>` の drawImage が更新されるか | 優先度低。前面タブ前提のため Phase 4 で挙動を記録するのみ |
 | Q-10 | 拡張ページから 127.0.0.1 への fetch に PNA / LNA の制限がかかるか | Phase 7 で確認 ⚠️ |
 | Q-11 | WhisperKit CLI の現行コマンド名とフラグ、report JSON の形式 | Phase 7 で確認 ⚠️ |
-| Q-12 | パススルーで二重再生が起きないか | Phase 1 で確認 ⚠️（[CHECKS.md](./CHECKS.md)） |
+| Q-12 | パススルーで二重再生が起きないか | **解決**: 起きない（2026-09-08、Mac 内蔵スピーカー。[CHECKS.md](./CHECKS.md)） |
 
 ---
 

@@ -41,6 +41,14 @@ pnpm build            # extension/dist/chrome-mv3 が生成される
 | B | キャプチャ中に講義タブを閉じる | popup を開くと `● Ready`、前回の理由が `tab closed` |
 | C | キャプチャ中に `chrome://extensions` で拡張を更新（↻） | popup を開くと `● Ready`、前回の理由が `extension restarted` |
 
+メーターを見ながら一時停止したい場合:
+
+popup はページをクリックすると閉じるため、動画の操作とメーターの観察は同時にできない。popup をタブとして開けば並べて観察できる。
+
+1. `chrome://extensions` の LecScribe カードに表示される ID をコピーする
+2. 別ウィンドウで `chrome-extension://<ID>/popup.html` を開き、講義ウィンドウと並べる
+3. 講義を一時停止すると約 1 秒後に「無音」と表示されてメーターが 0 になり、再開すると動く。経過時間は一時停止中も進む（録音は止めない仕様。SPEC §7.3）
+
 二重に聞こえる場合（パススルー不要な環境）:
 
 popup を右クリック →「検証」→ Console で次を実行してから `Start` し直す。
@@ -51,7 +59,22 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 
 戻すときは `passthrough: true`。この結果は SPEC D-02 の既定値に反映する。
 
-## Phase 2 以降
+## Phase 2: 録音（OPFS へ逐次保存 → エクスポート）
+
+目的: 講義音声が `audio.webm` として残ること。途中で拡張が再起動しても直前のチャンクまで残ること（SPEC D-06）。
+
+| # | 操作 | 期待 |
+|---|---|---|
+| 1 | 講義ページで `Start` → 2〜3 分待つ | popup の Audio 行が「録音中 1.2 MB」のように増える（64 kbps なので 1 分あたり約 480 KB） |
+| 2 | `Stop` | 状態が `● Done`、Audio 行が「録音完了 00:03:00 / 1.4 MB」。下に「保存済みセッション」が出る |
+| 3 | セッションの「エクスポート」 | 状態が `Exporting…` になり数秒で戻る。`~/Downloads/LecScribe/<日時>/` に `audio.webm`、`session.json`、`status.json` ができる |
+| 4 | `audio.webm` を Chrome の新しいタブにドラッグ＆ドロップして再生 | 講義音声が聞こえる。長さが録音時間と一致する（`ffprobe audio.webm` でも確認できる） |
+| 5 | もう一度 `Start` → 30 秒待つ → `chrome://extensions` で拡張を更新（↻） | popup を開くと `● Ready`。リストに「中断」タグ付きのセッションがあり、エクスポートすると 20〜30 秒分の `audio.webm` が得られる |
+| 6 | セッションの「破棄」 | 確認ダイアログのあとリストから消える |
+
+`session.json` には開始時刻（`startedAt`）と設定、`status.json` には終了時刻・バイト数・録音時間が入る。これらは Phase 8 の時刻合わせに使う。
+
+## Phase 3 以降
 
 各 Phase の実装時に追記する。
 
@@ -59,4 +82,5 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 
 | 日付 | Phase | 環境 | 結果 | メモ |
 |---|---|---|---|---|
-| | 1 | | 未実施 | |
+| 2026-09-08 | 1 | MacBook Pro M3 Max、内蔵スピーカー | OK | パススルー動作、二重再生なし、Stop 後も再生継続。手順 6（一時停止時のメーター）は popup がページ操作で閉じるため観察できず。上記「メーターを見ながら一時停止したい場合」の手順を追加 |
+| | 2 | | 未実施 | |

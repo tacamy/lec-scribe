@@ -4,6 +4,10 @@ export type ErrorCode =
   | 'UNSUPPORTED_PAGE'
   | 'OFFSCREEN_FAILED'
   | 'CAPTURE_FAILED'
+  | 'RECORD_FAILED'
+  | 'STORAGE_FAILED'
+  | 'NO_SESSION'
+  | 'EXPORT_FAILED'
   | 'NOT_CAPTURING'
   | 'INTERNAL';
 

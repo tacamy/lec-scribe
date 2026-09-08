@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatElapsed, makeSessionId } from './format';
+import { formatBytes, formatElapsed, formatSessionId, makeSessionId } from './format';
 
 describe('formatElapsed', () => {
   it('formats hours, minutes and seconds with zero padding', () => {
@@ -36,5 +36,15 @@ describe('makeSessionId', () => {
 
   it('only contains filesystem-safe characters', () => {
     expect(makeSessionId()).toMatch(/^\d{8}-\d{6}-[a-z0-9]{4}$/);
+  });
+});
+
+describe('formatSessionId', () => {
+  it('renders the timestamp part as a date and time', () => {
+    expect(formatSessionId('20260908-103005-ab12')).toBe('2026-09-08 10:30:05');
+  });
+
+  it('leaves unknown ids alone', () => {
+    expect(formatSessionId('smoke-1')).toBe('smoke-1');
   });
 });

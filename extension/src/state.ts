@@ -13,6 +13,22 @@ export type CaptureState =
 
 export type WarningCode = 'PLAYBACK_RATE' | 'TAB_HIDDEN' | 'SERVER_UNREACHABLE' | 'DRM' | 'NAVIGATED';
 
+export type SessionSummary = {
+  sessionId: string;
+  startedAt?: string;
+  durationMs: number;
+  audioBytes: number;
+  endedBy: string;
+  exported?: boolean;
+};
+
+export type ExportProgress = {
+  sessionId: string;
+  downloadIds: number[];
+  /** Blob URLs created by the offscreen document; revoked once every download settles. */
+  urls: string[];
+};
+
 export type SessionState = {
   state: CaptureState;
   sessionId?: string;
@@ -22,11 +38,17 @@ export type SessionState = {
   startedAt?: string;
   warnings: WarningCode[];
   error?: ErrorInfo;
-  /** Summary of the previous session, shown while IDLE. */
-  lastSession?: { sessionId: string; durationMs: number; endedBy: string };
+  /** The session that just finished (COMPLETED / ERROR) or the previous one (IDLE). */
+  lastSession?: SessionSummary;
+  /** An export (chrome.downloads) in flight. */
+  exporting?: ExportProgress;
 };
 
 export const INITIAL_STATE: SessionState = { state: 'IDLE', warnings: [] };
+
+export function isActive(state: SessionState): boolean {
+  return state.state === 'STARTING' || state.state === 'CAPTURING' || state.state === 'STOPPING';
+}
 
 const KEY = 'session';
 

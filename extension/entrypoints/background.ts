@@ -1,9 +1,16 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { loadConfig } from '../src/config';
-import { LecError, toErrorInfo } from '../src/errors';
+import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
 import { makeSessionId } from '../src/format';
-import { hasTarget, replyWith, sendToOffscreen, type ToBackground } from '../src/messages';
-import { INITIAL_STATE, readState, writeState, type SessionState } from '../src/state';
+import {
+  hasTarget,
+  replyWith,
+  sendToOffscreen,
+  type CaptureStopResult,
+  type SessionMeta,
+  type ToBackground,
+} from '../src/messages';
+import { INITIAL_STATE, isActive, readState, writeState, type SessionState, type SessionSummary } from '../src/state';
 
 /**
  * Service worker: owns the state machine and wires popup ⇄ offscreen.
@@ -14,18 +21,34 @@ import { INITIAL_STATE, readState, writeState, type SessionState } from '../src/
 export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!hasTarget(msg, 'sw')) return false;
-    return replyWith(handleMessage)(msg, sender, sendResponse);
+    return replyWith((m: ToBackground) => serialized(() => handleMessage(m)))(msg, sender, sendResponse);
   });
 
   chrome.tabs.onRemoved.addListener((tabId) => {
-    void (async () => {
+    void serialized(async () => {
       const state = await readState();
       if (state.tabId === tabId && isActive(state)) await stop('tab closed');
-    })();
+    });
   });
 
-  void reconcile();
+  chrome.downloads.onChanged.addListener((delta) => {
+    if (delta.state) void serialized(() => onDownloadSettled());
+  });
+
+  void serialized(reconcile);
 });
+
+/**
+ * Every handler reads, mutates and writes the stored state; running them
+ * one at a time keeps concurrent events (three downloads finishing at once,
+ * a tab closing during Stop) from clobbering each other's writes.
+ */
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const next = queue.then(task, task);
+  queue = next.catch(() => undefined);
+  return next;
+}
 
 async function handleMessage(msg: ToBackground): Promise<object> {
   switch (msg.type) {
@@ -35,13 +58,15 @@ async function handleMessage(msg: ToBackground): Promise<object> {
       return { state: await stop('user') };
     case 'GET_STATE':
       return { state: await readState() };
+    case 'EXPORT':
+      return { state: await exportSession(msg.sessionId) };
+    case 'DISCARD':
+      return { state: await discardSession(msg.sessionId) };
     case 'CAPTURE_ENDED':
       return { state: await stop(`capture ended: ${msg.reason}`) };
+    case 'CAPTURE_ERROR':
+      return { state: await stop('error', msg.error) };
   }
-}
-
-function isActive(state: SessionState): boolean {
-  return state.state === 'STARTING' || state.state === 'CAPTURING' || state.state === 'STOPPING';
 }
 
 const UNSUPPORTED_URL = /^(chrome|chrome-extension|edge|about|devtools):/;
@@ -49,6 +74,7 @@ const UNSUPPORTED_URL = /^(chrome|chrome-extension|edge|about|devtools):/;
 async function start(tabId: number): Promise<SessionState> {
   const current = await readState();
   if (isActive(current)) throw new LecError('BUSY', 'すでにキャプチャ中です。');
+  if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
 
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
   if (!tab) throw new LecError('NO_TAB', '対象のタブが見つかりません。');
@@ -56,13 +82,19 @@ async function start(tabId: number): Promise<SessionState> {
     throw new LecError('UNSUPPORTED_PAGE', 'このページはキャプチャできません。講義ページを開いてから Start してください。');
   }
 
-  const sessionId = makeSessionId();
+  const meta: SessionMeta = {
+    sessionId: makeSessionId(),
+    title: tab.title,
+    url: tab.url,
+    startedAt: new Date().toISOString(),
+  };
   const starting: SessionState = {
     ...INITIAL_STATE,
     state: 'STARTING',
-    sessionId,
+    sessionId: meta.sessionId,
     tabId,
     title: tab.title,
+    lastSession: current.lastSession,
   };
   await writeState(starting);
 
@@ -77,7 +109,7 @@ async function start(tabId: number): Promise<SessionState> {
       throw new LecError('CAPTURE_FAILED', `タブのキャプチャを開始できません: ${toErrorInfo(e).message}`);
     }
     const config = await loadConfig();
-    const result = await sendToOffscreen.captureStart(sessionId, streamId, config);
+    const result = await sendToOffscreen.captureStart(streamId, config, meta);
     const capturing: SessionState = {
       ...starting,
       state: 'CAPTURING',
@@ -93,25 +125,108 @@ async function start(tabId: number): Promise<SessionState> {
   }
 }
 
-async function stop(endedBy: string): Promise<SessionState> {
+async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
   const current = await readState();
   if (!isActive(current)) return current;
 
   await writeState({ ...current, state: 'STOPPING' });
+  let result: CaptureStopResult | undefined;
+  let stopError: ErrorInfo | undefined;
   try {
-    await sendToOffscreen.captureStop();
-  } catch {
-    // The offscreen document may already be gone (e.g. capture ended by Chrome).
+    result = await sendToOffscreen.captureStop();
+  } catch (e) {
+    // The offscreen document may already be gone (capture ended by Chrome);
+    // whatever was flushed to OPFS is still exportable.
+    stopError = toErrorInfo(e);
   }
   await closeOffscreenDocument();
 
-  const durationMs = current.startedAt ? Date.now() - Date.parse(current.startedAt) : 0;
-  const idle: SessionState = {
+  const durationMs = result?.durationMs ?? (current.startedAt ? Date.now() - Date.parse(current.startedAt) : 0);
+  const summary: SessionSummary | undefined = current.sessionId
+    ? { sessionId: current.sessionId, startedAt: current.startedAt, durationMs, audioBytes: result?.audioBytes ?? 0, endedBy }
+    : undefined;
+  const failure = error ?? (stopError && stopError.code !== 'INTERNAL' ? stopError : undefined);
+  const next: SessionState = {
     ...INITIAL_STATE,
-    lastSession: current.sessionId ? { sessionId: current.sessionId, durationMs, endedBy } : undefined,
+    state: failure ? 'ERROR' : summary && current.startedAt ? 'COMPLETED' : 'IDLE',
+    title: current.title,
+    error: failure,
+    lastSession: summary,
   };
-  await writeState(idle);
-  return idle;
+  await writeState(next);
+  return next;
+}
+
+/** Downloads the session files through chrome.downloads from blob: URLs minted by the offscreen document. */
+async function exportSession(sessionId: string): Promise<SessionState> {
+  const current = await readState();
+  if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中はエクスポートできません。');
+  if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
+
+  await ensureOffscreenDocument();
+  const { files } = await sendToOffscreen.export(sessionId);
+  const downloadIds: number[] = [];
+  try {
+    for (const file of files) {
+      downloadIds.push(
+        await chrome.downloads.download({ url: file.url, filename: file.filename, conflictAction: 'uniquify', saveAs: false }),
+      );
+    }
+  } catch (e) {
+    await sendToOffscreen.revoke(files.map((f) => f.url)).catch(() => undefined);
+    await closeOffscreenDocument();
+    throw new LecError('EXPORT_FAILED', `ダウンロードを開始できません: ${toErrorInfo(e).message}`);
+  }
+  const next: SessionState = {
+    ...current,
+    error: undefined,
+    exporting: { sessionId, downloadIds, urls: files.map((f) => f.url) },
+  };
+  await writeState(next);
+  return next;
+}
+
+/** Idempotent: looks at the real state of every download of the export instead of trusting one delta. */
+async function onDownloadSettled(): Promise<void> {
+  const current = await readState();
+  const exporting = current.exporting;
+  if (!exporting) return;
+
+  const items = await Promise.all(
+    exporting.downloadIds.map((id) => chrome.downloads.search({ id }).then((found) => found[0])),
+  );
+  if (items.some((item) => item?.state === 'in_progress')) return;
+
+  const interrupted = items.find((item) => item?.state === 'interrupted');
+  const error: ErrorInfo | undefined = interrupted
+    ? { code: 'EXPORT_FAILED', message: `ダウンロードが中断されました: ${interrupted.error ?? 'unknown'}` }
+    : current.error;
+  await sendToOffscreen.revoke(exporting.urls).catch(() => undefined);
+  if (!isActive(current)) await closeOffscreenDocument();
+  const lastSession =
+    current.lastSession?.sessionId === exporting.sessionId && !interrupted
+      ? { ...current.lastSession, exported: true }
+      : current.lastSession;
+  await writeState({ ...current, error, exporting: undefined, lastSession });
+}
+
+async function discardSession(sessionId: string): Promise<SessionState> {
+  const current = await readState();
+  if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中は削除できません。');
+  if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
+
+  await ensureOffscreenDocument();
+  try {
+    await sendToOffscreen.discard(sessionId);
+  } finally {
+    await closeOffscreenDocument();
+  }
+  const next: SessionState =
+    current.lastSession?.sessionId === sessionId
+      ? { ...INITIAL_STATE, title: current.title }
+      : { ...current, error: undefined };
+  await writeState(next);
+  return next;
 }
 
 /** If the worker restarted and the offscreen document is gone, the session cannot continue. */
@@ -119,10 +234,16 @@ async function reconcile(): Promise<void> {
   const state = await readState();
   if (!isActive(state)) return;
   if (await hasOffscreenDocument()) return;
-  await writeState({
-    ...INITIAL_STATE,
-    lastSession: state.sessionId ? { sessionId: state.sessionId, durationMs: 0, endedBy: 'extension restarted' } : undefined,
-  });
+  const summary: SessionSummary | undefined = state.sessionId
+    ? {
+        sessionId: state.sessionId,
+        startedAt: state.startedAt,
+        durationMs: state.startedAt ? Date.now() - Date.parse(state.startedAt) : 0,
+        audioBytes: 0,
+        endedBy: 'extension restarted',
+      }
+    : undefined;
+  await writeState({ ...INITIAL_STATE, state: summary ? 'COMPLETED' : 'IDLE', title: state.title, lastSession: summary });
 }
 
 const OFFSCREEN_URL = 'offscreen.html';
@@ -140,7 +261,7 @@ async function ensureOffscreenDocument(): Promise<void> {
     await chrome.offscreen.createDocument({
       url: OFFSCREEN_URL,
       reasons: [chrome.offscreen.Reason.USER_MEDIA],
-      justification: 'Capture the audio of the lecture tab with chrome.tabCapture and play it back to the user.',
+      justification: 'Capture the audio of the lecture tab with chrome.tabCapture, play it back to the user and record it locally.',
     });
   } catch (e) {
     throw new LecError('OFFSCREEN_FAILED', `offscreen document を作成できません: ${toErrorInfo(e).message}`);
