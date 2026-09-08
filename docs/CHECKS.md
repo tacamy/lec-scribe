@@ -65,7 +65,7 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 | 3 | セッションの「エクスポート」 | 状態が `Exporting…` になり数秒で戻る。`~/Downloads/LecScribe/<日時>/` に `audio.webm`、`session.json`、`status.json` ができる |
 | 4 | `audio.webm` を Chrome の新しいタブにドラッグ＆ドロップして再生 | 講義音声が聞こえる。長さが録音時間と一致する（`ffprobe audio.webm` でも確認できる） |
 | 5 | もう一度 `Start` → 30 秒待つ → `chrome://extensions` で拡張を更新（↻） | 開き直すとリストに「中断」タグ付きのセッションがあり、エクスポートすると 20〜30 秒分の `audio.webm` が得られる |
-| 6 | セッションの「破棄」 | 確認ダイアログのあとリストから消える |
+| 6 | セッションの「破棄」 | 確認ダイアログのあとリストから消える。`~/Downloads/LecScribe/` に書き出したファイルは残る（破棄は拡張内のデータだけを消す仕様） |
 
 `session.json` には開始時刻（`startedAt`）と設定、`status.json` には終了時刻・バイト数・録音時間が入る。これらは Phase 8 の時刻合わせに使う。
 
@@ -78,4 +78,4 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 | 日付 | Phase | 環境 | 結果 | メモ |
 |---|---|---|---|---|
 | 2026-09-08 | 1 | MacBook Pro M3 Max、内蔵スピーカー | OK | パススルー動作、二重再生なし、Stop 後も再生継続。手順 6（一時停止時のメーター）は popup がページ操作で閉じるため観察できず → UI をサイドパネルに変更 |
-| | 2 | | 未実施 | |
+| 2026-09-08 | 2 | MacBook Pro M3 Max | OK | 録音・エクスポート・中断セッションの回収・破棄を確認。「破棄」で Downloads のファイルが残る点は仕様（ダイアログに明記） |

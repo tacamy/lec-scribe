@@ -156,7 +156,12 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   discardBtn.disabled = busy;
   exportBtn.addEventListener('click', () => void act(() => sendToBackground.export(session.sessionId)));
   discardBtn.addEventListener('click', () => {
-    if (confirm(`${formatSessionId(session.sessionId)} の録音を削除します。よろしいですか？`)) {
+    if (
+      confirm(
+        `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
+          'エクスポート済みのファイル（~/Downloads/LecScribe）はそのまま残ります。よろしいですか？',
+      )
+    ) {
       void act(() => sendToBackground.discard(session.sessionId));
     }
   });
