@@ -3,6 +3,11 @@
  * 実装済みの Phase で使う項目だけ宣言する。全体像は docs/SPEC.md 付録 A。
  */
 export type Config = {
+  /** Mac ローカルサーバー（SPEC §12）。token が空なら送信しない */
+  server: {
+    port: number;
+    token: string;
+  };
   audio: {
     /** キャプチャした音声を既定の出力デバイス（AirPods 等）へ流す */
     passthrough: boolean;
@@ -45,6 +50,10 @@ export type Config = {
 };
 
 export const DEFAULT_CONFIG: Config = {
+  server: {
+    port: 47321,
+    token: '',
+  },
   audio: {
     passthrough: true,
     bitsPerSecond: 64_000,

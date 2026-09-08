@@ -33,6 +33,7 @@ body.popup { width: 320px; }
 .header { display: flex; align-items: baseline; justify-content: space-between; }
 h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .phase { font-size: 11px; color: var(--muted); }
+button.link { padding: 2px 6px; border: 0; background: transparent; color: var(--accent); font-weight: 500; font-size: 12px; }
 .status { display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .elapsed { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }

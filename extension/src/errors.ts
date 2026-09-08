@@ -10,6 +10,8 @@ export type ErrorCode =
   | 'EXPORT_FAILED'
   | 'PROBE_FAILED'
   | 'NO_VIDEO'
+  | 'SERVER_UNREACHABLE'
+  | 'SERVER_REJECTED'
   | 'NOT_CAPTURING'
   | 'INTERNAL';
 

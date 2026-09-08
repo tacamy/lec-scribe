@@ -128,7 +128,32 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 | 3 | `timeline.json` を開く | 先頭が `start`、末尾が `stop`。操作した順に `pause` / `play` / `seeked` / `ratechange` が並び、`videoTime` が操作時の動画の時刻、`t` が録音開始からの秒。再生中は 10 秒ごとに `tick` |
 | 4 | `slides.json` と見比べる | 各スライドの `t` から timeline で動画時刻を求めると `videoTime` と一致する（例: 一時停止中に手動保存したスライドの `videoTime` は停止位置のまま） |
 
-## Phase 7 以降
+## Phase 7: ローカルサーバーと WhisperKit
+
+目的: Stop 後に録音がサーバーへ送られ、`~/LecScribe/<日時>_<タイトル>/` に日本語の文字起こし（SRT / VTT / TXT / JSON）ができること（SPEC §12, §13）。
+
+準備:
+
+```sh
+brew install whisperkit-cli ffmpeg
+pnpm --filter @lec-scribe/server start      # 表示されるトークンを控える
+```
+
+初回は `large-v3` モデル（数 GB）のダウンロードに時間がかかる。サーバーはターミナルを開いたままにする。
+
+| # | 操作 | 期待 |
+|---|---|---|
+| 1 | サイドパネルの「設定」→ トークンを貼り付け → 保存 → 接続テスト | 「サーバー v0.1.0 に接続できました / トークン: OK / whisperkit-cli: あり / ffmpeg: あり」 |
+| 2 | 講義を 2〜3 分録音して `Stop` | 状態が `Uploading…` → `Transcribing…` と進み、Server 行に「送信中 xx%」→「文字起こし中 · 経過時間」 |
+| 3 | 待つ | 状態が `● Done`、Server 行が「完了 · /Users/…/LecScribe/…」。サーバーのターミナルにも進捗が出る |
+| 4 | 出力フォルダを開く | `audio.webm`、`transcript.json` / `.srt` / `.vtt` / `.txt`、`slides/`、`slides.json`、`timeline.json`、`session.json`、`pipeline.json` |
+| 5 | `transcript.srt` を開く | 日本語の文字起こしが動画時刻で並んでいる（一時停止・シークがあっても動画の位置に合う） |
+| 6 | サーバーを止めた状態で録音 → `Stop` | 警告「ローカルサーバーに接続できません」。セッションは残り、サーバー起動後に一覧の「送信」で文字起こしできる |
+| 7 | 拡張を更新（↻）した直後に「送信」 | 文字起こしが動く（再送でサーバー側は上書き） |
+
+処理時間の目安と精度（`large-v3` と `large-v3_turbo` の比較）は結果欄に記録する。
+
+## Phase 8 以降
 
 各 Phase の実装時に追記する。
 
@@ -142,3 +167,4 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 | 2026-09-08 | 4 | MacBook Pro M3 Max | OK | 開始時 1 枚 + 手動保存、別タブ表示中の保存、エクスポートを確認。画像は動画部分のみ。解像度は通常表示で 960×540、全画面で 1280×720（Brightcove の ABR がレンディションを切り替えるため。SPEC §8.3） |
 | 2026-09-08 | 5 | MacBook Pro M3 Max | OK | 実講義でスライド切り替えに合わせて自動保存された（閾値 2% / 1.5%） |
 | 2026-09-08 | 6 | MacBook Pro M3 Max | OK | 一時停止・シーク・1.5x を含む視聴で timeline.json が正しく記録された。tick の予測誤差 40〜65 ms。Brightcove が同じ位置で `seeked` を数回発火して重複していたため、直前と同じイベントは記録しないよう改善 |
+| | 7 | | 未実施 | |

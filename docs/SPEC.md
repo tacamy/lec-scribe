@@ -607,8 +607,8 @@ audio.webm
 - 導入: `brew install whisperkit-cli`（macOS 14 以降）
 - 確認済みフラグ: `--audio-path`, `--model`, `--language`, `--report`, `--report-path`, `--chunking-strategy vad`, `--skip-special-tokens`, `--verbose`
 - 入力形式: wav / mp3 / m4a / flac
-- 注意: 2026 年時点で WhisperKit の CLI は `argmax-cli` へ統合・改名が進んでいる ⚠️。Phase 7 で実コマンド名とフラグを確認し、`server/` の設定で切り替えられるようにする。
-- report は `<basename>.json` と `<basename>.srt`。JSON の `segments[].start / end / text` を使う ⚠️（Phase 7 で実出力を確認）。
+- 実機確認（2026-09-08）✅: Homebrew の `whisperkit-cli` 1.1.0 は「Argmax OSS CLI」で、コマンド名は `whisperkit-cli`、サブコマンド `transcribe`。上記フラグはすべて存在し、`--chunking-strategy` の既定は `vad`。`--report-path` のディレクトリは事前に作っておく必要がある（作られない）。サーバーは `--whisperkit` / `LEC_SCRIBE_WHISPERKIT` でコマンドを差し替えられる。
+- report は `<basename>.json` と `<basename>.srt`。JSON は `{ text, segments: [{ id, seek, start, end, text, tokens, tokenLogProbs, avgLogprob, … }], language, timings }` で、`segments[].start / end` は秒。VAD のチャンク境界で区間が重なることがある（そのまま時刻順に並べる）✅。
 
 ### 13.2 モデル
 
@@ -819,7 +819,7 @@ audio.webm
 | Q-08 | 出力ディレクトリ | **解決**: `~/LecScribe`（§12.1） |
 | Q-09 | tabCapture 中のタブが非表示でも `<video>` の drawImage が更新されるか | **有望**: Phase 3 の実機確認で、別タブ表示中も visibilityState が visible のままでフレームも届いた（§8.6）。Phase 4 で実際に画像が撮れるか確認する |
 | Q-10 | 拡張ページから 127.0.0.1 への fetch に PNA / LNA の制限がかかるか | Phase 7 で確認 ⚠️ |
-| Q-11 | WhisperKit CLI の現行コマンド名とフラグ、report JSON の形式 | Phase 7 で確認 ⚠️ |
+| Q-11 | WhisperKit CLI の現行コマンド名とフラグ、report JSON の形式 | **解決**: `whisperkit-cli transcribe`（Argmax OSS CLI 1.1.0）。フラグと report の形は §13.1 のとおり |
 | Q-12 | パススルーで二重再生が起きないか | **解決**: 起きない（2026-09-08、Mac 内蔵スピーカー。[CHECKS.md](./CHECKS.md)） |
 
 ---

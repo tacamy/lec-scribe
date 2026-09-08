@@ -9,9 +9,12 @@ import {
   type CaptureStopResult,
   type ExportFile,
   type ExportResult,
+  type ServerStatus,
+  type ServerTarget,
   type SessionMeta,
   type SlideSaveResult,
   type ToOffscreen,
+  type UploadResult,
 } from '../../src/messages';
 import {
   AUDIO_FILE,
@@ -24,6 +27,7 @@ import {
   deleteSession,
   listFiles,
   readFile,
+  readJson,
   sessionDir,
   writeJson,
   type SessionStatus,
@@ -149,7 +153,150 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return saveSlide(msg);
     case 'TIMELINE_EVENT':
       return recordTimelineEvent(msg.sessionId, msg.event);
+    case 'UPLOAD':
+      return uploadSession(msg.sessionId, msg.server);
   }
+}
+
+// ---- サーバーへの送信と進捗の polling（SPEC §6.4 手順 4〜5, §12.2）----
+
+const POLL_INTERVAL_MS = 2000;
+const HEALTH_TIMEOUT_MS = 3000;
+const polling = new Map<string, number>();
+
+type ServerApi = (method: string, path: string, body?: BodyInit, contentType?: string) => Promise<Record<string, unknown>>;
+
+function serverApi(server: ServerTarget): ServerApi {
+  const base = `http://127.0.0.1:${server.port}`;
+  return async (method, path, body, contentType) => {
+    const headers: Record<string, string> = { authorization: `Bearer ${server.token}` };
+    if (contentType) headers['content-type'] = contentType;
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) init.body = body;
+    let res: Response;
+    try {
+      res = await fetch(base + path, init);
+    } catch (e) {
+      throw new LecError(
+        'SERVER_UNREACHABLE',
+        `ローカルサーバーに接続できません（127.0.0.1:${server.port}）。サーバーを起動してください。${toErrorInfo(e).message}`,
+      );
+    }
+    const json = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    if (!res.ok) {
+      const err = json?.['error'] as { message?: string } | undefined;
+      const message = err?.message ?? `HTTP ${res.status}`;
+      throw new LecError('SERVER_REJECTED', res.status === 401 ? `${message} 拡張の設定でトークンを確認してください。` : message);
+    }
+    return json ?? {};
+  };
+}
+
+async function uploadSession(sessionId: string, server: ServerTarget): Promise<UploadResult> {
+  if (capture?.sessionId === sessionId) throw new LecError('BUSY', 'キャプチャ中のセッションは送信できません。');
+  if (polling.has(sessionId)) throw new LecError('BUSY', 'このセッションは処理中です。');
+  let dir: FileSystemDirectoryHandle;
+  try {
+    dir = await sessionDir(sessionId);
+  } catch {
+    throw new LecError('NO_SESSION', `セッション ${sessionId} が見つかりません。`);
+  }
+  const api = serverApi(server);
+
+  // 接続とトークンの確認（/health は認証不要で、トークンの正否だけ返す）
+  const health = await withTimeout(api('GET', '/health'), HEALTH_TIMEOUT_MS, server.port);
+  if (health['authorized'] !== true) {
+    throw new LecError('SERVER_REJECTED', 'トークンが一致しません。サーバー起動時に表示されたトークンを拡張の設定に貼り付けてください。');
+  }
+
+  const meta = (await readJson<SessionMeta>(dir, SESSION_FILE)) ?? { sessionId, startedAt: new Date().toISOString() };
+  const created = await api('POST', '/sessions', JSON.stringify({ ...meta, sessionId }), 'application/json');
+  const outputDir = String(created['outputDir'] ?? '');
+
+  const files: Array<{ name: string; file: File }> = [];
+  for (const [source, target] of [
+    [AUDIO_FILE, AUDIO_FILE],
+    [SLIDES_FILE, SLIDES_FILE],
+    [TIMELINE_FILE, TIMELINE_FILE],
+    [STATUS_FILE, 'capture-status.json'],
+  ] as const) {
+    const file = await readFile(dir, source);
+    if (file) files.push({ name: target, file });
+  }
+  try {
+    const slidesDir = await dir.getDirectoryHandle(SLIDES_DIR);
+    for (const file of await listFiles(slidesDir)) files.push({ name: `${SLIDES_DIR}/${file.name}`, file });
+  } catch {
+    // スライドなし
+  }
+  if (!files.some((f) => f.name === AUDIO_FILE)) throw new LecError('NO_SESSION', `セッション ${sessionId} に音声ファイルがありません。`);
+
+  const report = (progress: Parameters<typeof sendToBackground.processStatus>[1]) =>
+    void sendToBackground.processStatus(sessionId, progress).catch(() => undefined);
+  const total = files.reduce((n, f) => n + f.file.size, 0);
+  let sent = 0;
+  report({ stage: 'uploading', percent: 0, outputDir });
+  for (const { name, file } of files) {
+    await api('PUT', `/sessions/${sessionId}/files/${name}`, file, 'application/octet-stream');
+    sent += file.size;
+    report({ stage: 'uploading', percent: Math.round((sent / Math.max(1, total)) * 100), outputDir });
+  }
+  await api('POST', `/sessions/${sessionId}/finalize`);
+  await patchStatus(dir, { uploadedAt: new Date().toISOString(), outputDir });
+
+  startPolling(sessionId, dir, api, outputDir, report);
+  return { outputDir };
+}
+
+function startPolling(
+  sessionId: string,
+  dir: FileSystemDirectoryHandle,
+  api: ServerApi,
+  outputDir: string,
+  report: (progress: Parameters<typeof sendToBackground.processStatus>[1]) => void,
+): void {
+  const stop = () => {
+    const timer = polling.get(sessionId);
+    if (timer !== undefined) window.clearInterval(timer);
+    polling.delete(sessionId);
+  };
+  const tick = async () => {
+    let status: ServerStatus;
+    try {
+      status = (await api('GET', `/sessions/${sessionId}/status`)) as unknown as ServerStatus;
+    } catch (e) {
+      stop();
+      report({ stage: 'error', error: toErrorInfo(e).message, outputDir });
+      return;
+    }
+    if (status.stage === 'done') {
+      stop();
+      await patchStatus(dir, { stage: 'done', transcribedAt: new Date().toISOString(), outputDir: status.outputDir ?? outputDir });
+      report({ stage: 'done', outputDir: status.outputDir ?? outputDir });
+    } else if (status.stage === 'error') {
+      stop();
+      report({ stage: 'error', error: status.error ?? '文字起こしに失敗しました。', outputDir });
+    } else {
+      report({ stage: status.stage === 'uploaded' ? 'queued' : status.stage, outputDir });
+    }
+  };
+  polling.set(sessionId, window.setInterval(() => void tick(), POLL_INTERVAL_MS));
+  void tick();
+}
+
+async function patchStatus(dir: FileSystemDirectoryHandle, patch: Partial<SessionStatus>): Promise<void> {
+  const current = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' };
+  await writeJson(dir, STATUS_FILE, { ...current, ...patch }).catch(() => undefined);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, port: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new LecError('SERVER_UNREACHABLE', `ローカルサーバーが応答しません（127.0.0.1:${port}）。サーバーを起動してください。`)),
+      ms,
+    );
+    promise.then(resolve, reject).finally(() => window.clearTimeout(timer));
+  });
 }
 
 /** 再生イベントを timeline.json に追記する（SPEC §10.1） */

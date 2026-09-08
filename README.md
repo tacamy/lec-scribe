@@ -15,8 +15,9 @@
 | 3 | 講義ページの `<video>` 検出と状態追跡 | 完了（Mac で確認済み） |
 | 4 | `<video>` からのフレーム取得と画像保存（開始時 1 枚 + 手動） | 完了（Mac で確認済み） |
 | 5 | 画面変化の自動検知 | 完了（Mac で確認済み） |
-| 6 | 再生イベントのタイムライン記録（録音時刻 ⇄ 動画時刻） | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
-| 7〜8 | WhisperKit → 統合 | 未着手 |
+| 6 | 再生イベントのタイムライン記録（録音時刻 ⇄ 動画時刻） | 完了（Mac で確認済み） |
+| 7 | Mac ローカルサーバー + ffmpeg + WhisperKit で文字起こし | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 8 | スライドと文字起こしの統合（`lecture.md`） | 未着手 |
 
 | ドキュメント | 内容 |
 |---|---|
@@ -32,7 +33,7 @@ pnpm typecheck && pnpm test      # 型検査と単体テスト
 node scripts/smoke-extension.mjs # headless Chromium で拡張を読み込むスモークテスト
 pnpm fixtures:make               # 合成スライド動画を生成（Phase 3 以降で使用）
 pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
-pnpm --filter @lec-scribe/server start   # ローカルサーバー（Phase 0: /health のみ）
+pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起動時にトークンを表示するので拡張の設定に貼る
 ```
 
 ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。

@@ -1,9 +1,17 @@
+import { loadConfig } from '../../src/config';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
-import { INITIAL_STATE, isActive, onStateChange, type SessionState, type WarningCode } from '../../src/state';
+import {
+  INITIAL_STATE,
+  isActive,
+  onStateChange,
+  type ProcessingProgress,
+  type SessionState,
+  type WarningCode,
+} from '../../src/state';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -18,6 +26,7 @@ const meterFill = $('meterFill');
 const videoValue = $('videoValue');
 const slidesValue = $('slidesValue');
 const tabValue = $('tabValue');
+const serverValue = $('serverValue');
 const warningsList = $<HTMLUListElement>('warnings');
 const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
@@ -38,6 +47,16 @@ const STATE_LABEL: Record<SessionState['state'], string> = {
   ERROR: 'Error',
 };
 
+const STAGE_TEXT: Record<ProcessingProgress['stage'], string> = {
+  uploading: '送信中',
+  queued: '待機中',
+  converting: '音声を変換中',
+  transcribing: '文字起こし中',
+  merging: '統合中',
+  done: '完了',
+  error: 'エラー',
+};
+
 const WARNING_TEXT: Record<WarningCode, string> = {
   PLAYBACK_RATE: '再生速度が 1.0x ではありません。文字起こしの精度が落ちるので 1.0x を推奨します。',
   TAB_HIDDEN: 'タブが非表示です。表示に戻るまでスライド検知は止まります（録音は継続）。',
@@ -51,6 +70,13 @@ const WARNING_TEXT: Record<WarningCode, string> = {
 
 let current: SessionState = INITIAL_STATE;
 let statsTimer: number | undefined;
+/** サーバーのトークンが設定されているか（送信ボタンの表示に使う） */
+let serverConfigured = false;
+
+async function refreshConfig() {
+  const config = await loadConfig();
+  serverConfigured = config.server.token.length > 0;
+}
 
 function render(state: SessionState) {
   current = state;
@@ -81,12 +107,19 @@ function render(state: SessionState) {
   }
 
   videoValue.textContent = active ? describeVideo(state) : '—';
-  renderWarnings(active ? state.warnings : []);
+  serverValue.textContent = describeServer(state);
+  renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
 
   if (state.state === 'CAPTURING') {
     footer.textContent = '音声を録音中です。スピーカーや AirPods から聞こえ、二重になっていないか確認してください。';
+  } else if (state.processing) {
+    footer.textContent = 'サーバーで処理中です。このパネルを閉じても処理は続きます。';
+  } else if (state.state === 'COMPLETED' && state.lastSession?.outputDir) {
+    footer.textContent = `文字起こしが終わりました: ${state.lastSession.outputDir}`;
   } else if (state.state === 'COMPLETED') {
-    footer.textContent = 'エクスポートすると ~/Downloads/LecScribe/<セッション>/ に audio.webm が保存されます。';
+    footer.textContent = serverConfigured
+      ? '「送信」でサーバーへ送って文字起こしできます。「エクスポート」は ~/Downloads/LecScribe/ に保存します。'
+      : 'エクスポートすると ~/Downloads/LecScribe/<セッション>/ に保存されます。文字起こしするには設定でサーバーのトークンを登録してください。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
   } else if (isPopup) {
@@ -100,6 +133,16 @@ function render(state: SessionState) {
 
   if (active) sessionsSection.hidden = true;
   else void renderSessions();
+}
+
+function describeServer(state: SessionState): string {
+  const p = state.processing;
+  if (p) {
+    const elapsed = formatElapsed(Date.now() - p.startedAt);
+    return `${STAGE_TEXT[p.stage]}${p.percent !== undefined ? ` ${p.percent}%` : ''} · ${elapsed}`;
+  }
+  if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${state.lastSession.outputDir}`;
+  return serverConfigured ? '待機中' : '未設定';
 }
 
 function describeVideo(state: SessionState): string {
@@ -225,16 +268,23 @@ function sessionItem(session: StoredSession): HTMLLIElement {
 
   const btns = document.createElement('div');
   btns.className = 'sessionBtns';
+  const uploadBtn = document.createElement('button');
+  uploadBtn.type = 'button';
+  uploadBtn.className = 'primary';
+  uploadBtn.textContent = session.status?.stage === 'done' ? '再送' : '送信';
+  uploadBtn.title = 'ローカルサーバーへ送って文字起こしする';
   const exportBtn = document.createElement('button');
   exportBtn.type = 'button';
-  exportBtn.className = 'primary';
+  exportBtn.className = serverConfigured ? '' : 'primary';
   exportBtn.textContent = 'エクスポート';
   const discardBtn = document.createElement('button');
   discardBtn.type = 'button';
   discardBtn.textContent = '破棄';
-  const busy = !!current.exporting;
+  const busy = !!current.exporting || !!current.processing;
+  uploadBtn.disabled = busy;
   exportBtn.disabled = busy;
   discardBtn.disabled = busy;
+  uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
   exportBtn.addEventListener('click', () => void act(() => sendToBackground.export(session.sessionId)));
   discardBtn.addEventListener('click', () => {
     if (
@@ -246,8 +296,15 @@ function sessionItem(session: StoredSession): HTMLLIElement {
       void act(() => sendToBackground.discard(session.sessionId));
     }
   });
+  if (serverConfigured) btns.append(uploadBtn);
   btns.append(exportBtn, discardBtn);
-  if (session.status?.stage === 'capturing') {
+  if (session.status?.stage === 'done') {
+    const tag = document.createElement('span');
+    tag.className = 'tag ok';
+    tag.textContent = '文字起こし済';
+    tag.title = session.status.outputDir ?? '';
+    btns.append(tag);
+  } else if (session.status?.stage === 'capturing') {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = '中断';
@@ -309,8 +366,14 @@ snapBtn.addEventListener('click', async () => {
   }
 });
 
+$('optionsBtn').addEventListener('click', () => void chrome.runtime.openOptionsPage());
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes['config']) void refreshConfig().then(() => render(current));
+});
+
 onStateChange(render);
-void sendToBackground.getState().then(({ state }) => {
+void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
   if (isPopup && !isActive(state)) void showProbe();
 });

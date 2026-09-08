@@ -4,7 +4,8 @@
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
@@ -21,7 +22,32 @@ if (!existsSync('fixtures/slides.webm') || fixtureVersion !== String(FIXTURE_VER
   assert.equal(made.status, 0, 'fixture generation failed');
 }
 const fixtureServer = spawn(process.execPath, ['fixtures/serve.mjs', String(FIXTURE_PORT)], { stdio: 'ignore' });
-await new Promise((r) => setTimeout(r, 500));
+
+// Phase 7: ローカルサーバーも起動する。ffmpeg と whisperkit-cli はスタブに差し替え、
+// アップロード → finalize → 成果物までを拡張経由で通す。
+const SERVER_PORT = 47398;
+const SERVER_TOKEN = 'smoke-token-0123456789abcdefghijklmnopqrstuvwxyz';
+const serverTmp = mkdtempSync(path.join(os.tmpdir(), 'lec-scribe-smoke-'));
+mkdirSync(path.join(serverTmp, 'bin'));
+const stub = (name, body) => {
+  const file = path.join(serverTmp, 'bin', name);
+  writeFileSync(file, `#!/bin/sh\n${body}\n`);
+  chmodSync(file, 0o755);
+  return file;
+};
+const ffmpegStub = stub('ffmpeg', 'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; cp "$in" "$out"');
+const whisperkitStub = stub(
+  'whisperkit-cli',
+  'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0.5,"end":2.0,"text":"スモークテストの文字起こし"},{"start":2.0,"end":4.0,"text":"二つ目の区間"}]}\' > "$dir/audio.json"',
+);
+writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
+const serverOut = path.join(serverTmp, 'out');
+const localServer = spawn(
+  process.execPath,
+  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub'],
+  { stdio: 'ignore' },
+);
+await new Promise((r) => setTimeout(r, 1200));
 const context = await chromium.launchPersistentContext('', {
   channel: 'chromium',
   headless: true,
@@ -324,7 +350,6 @@ try {
     const tl = files.find((f) => f.filename.endsWith('timeline.json'));
     const timeline = tl ? JSON.parse(await (await fetch(tl.url)).text()) : null;
     api.revoke(files.map((f) => f.url));
-    await api.discard(sessionId);
     globalThis.__smokeAudio.osc.stop();
     await globalThis.__smokeAudio.ctx.close();
     return { stopped, names: files.map((f) => f.filename), head, slides, timeline };
@@ -366,6 +391,60 @@ try {
     assert.ok(Math.abs(mapped - s.videoTime) < 0.6, `${s.filename}: t=${s.t} → ${mapped.toFixed(2)} vs videoTime ${s.videoTime.toFixed(2)}`);
   }
   console.log(`timeline: ${frames.timeline.length} events (${[...new Set(types)].join(', ')})`);
+
+  // --- Phase 7: サーバーへ送信して文字起こし（スタブ）。設定にトークンを入れ、
+  // パネルの「送信」相当の UPLOAD を service worker に投げて完了を待つ。
+  await popup.evaluate(
+    ({ port, token }) => chrome.storage.local.set({ config: { server: { port, token } } }),
+    { port: SERVER_PORT, token: SERVER_TOKEN },
+  );
+  const uploadReply = await popup.evaluate(
+    (id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }),
+    frameSession,
+  );
+  assert.equal(uploadReply.ok, true, JSON.stringify(uploadReply));
+  assert.ok(['UPLOADING', 'PROCESSING'].includes(uploadReply.state.state), uploadReply.state.state);
+  // 状態遷移を記録しながら完了を待つ（失敗時の診断用）
+  const transitions = [];
+  let afterUpload;
+  for (let i = 0; i < 200; i++) {
+    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    const key = `${s.state}/${s.processing?.stage ?? '-'}${s.processing?.percent !== undefined ? ` ${s.processing.percent}%` : ''}`;
+    if (transitions[transitions.length - 1] !== key) transitions.push(key);
+    if (!s.processing && (s.state === 'COMPLETED' || s.state === 'IDLE' || s.state === 'ERROR')) {
+      afterUpload = s;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  // 遅れて届く進捗で状態が戻らないことも確認する
+  await popup.waitForTimeout(2500);
+  const settled = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  const trace = `transitions: ${transitions.join(' → ')}\nfinal: ${JSON.stringify(settled)}`;
+  assert.ok(afterUpload, `upload never settled\n${trace}`);
+  assert.equal(afterUpload.error, undefined, `upload error: ${JSON.stringify(afterUpload.error)}\n${trace}`);
+  assert.equal(afterUpload.state, 'COMPLETED', trace);
+  assert.equal(settled.state, 'COMPLETED', trace);
+  assert.equal(settled.processing, undefined, trace);
+  const outDirs = readdirSync(serverOut);
+  const outDir = outDirs.find((d) => d.startsWith(frameSession));
+  assert.ok(outDir, `server output for ${frameSession}: ${outDirs}`);
+  const produced = readdirSync(path.join(serverOut, outDir), { recursive: true }).map(String).sort();
+  for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'pipeline.json']) {
+    assert.ok(produced.includes(f), `missing ${f} in ${produced}`);
+  }
+  assert.ok(produced.some((f) => f.endsWith('slide_001.png')), `slides uploaded: ${produced}`);
+  const srt = readFileSync(path.join(serverOut, outDir, 'transcript.srt'), 'utf8');
+  assert.ok(srt.includes('スモークテストの文字起こし'), srt);
+  const pipelineStatus = JSON.parse(readFileSync(path.join(serverOut, outDir, 'pipeline.json'), 'utf8'));
+  assert.equal(pipelineStatus.stage, 'done');
+  assert.equal(pipelineStatus.result.hasTimeline, true);
+  // 拡張側の status.json も done になり、一覧に「文字起こし済」が出る
+  await popup.reload();
+  await popup.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.textContent.includes(id) && li.textContent.includes('文字起こし済')), '2099-01-01 00:00:01', { timeout: 10_000 });
+  const discardedFrames = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
+  assert.equal(discardedFrames.ok, true, JSON.stringify(discardedFrames));
+  console.log(`server: transcribed via ${outDir} (${produced.length} files)`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
@@ -373,4 +452,5 @@ try {
 } finally {
   await context.close();
   fixtureServer.kill();
+  localServer.kill();
 }

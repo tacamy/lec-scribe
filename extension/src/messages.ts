@@ -3,8 +3,19 @@ import type { ErrorInfo } from './errors';
 import { LecError, toErrorInfo } from './errors';
 import type { SlideMeta } from './opfs/session-store';
 import type { VideoCandidate, VideoStatus } from './probe';
-import type { SessionState } from './state';
+import type { ProcessingProgress, SessionState } from './state';
 import type { TimelineEvent } from './timeline';
+
+/** サーバーへの接続情報（Config['server'] と同じ） */
+export type ServerTarget = { port: number; token: string };
+
+/** サーバーの GET /sessions/:id/status と同じ形 */
+export type ServerStatus = {
+  stage: ProcessingProgress['stage'] | 'uploaded';
+  outputDir?: string;
+  error?: string;
+  result?: { segments: number; durationSec: number; hasTimeline: boolean };
+};
 
 /** Written to session.json when a capture starts. */
 export type SessionMeta = {
@@ -38,6 +49,10 @@ export type ToBackground =
   | { target: 'sw'; type: 'DETECT_STATUS'; sessionId: string; status: VideoStatus }
   /** パネルの「スクショを保存」。今のフレームを 1 枚保存する */
   | { target: 'sw'; type: 'CAPTURE_FRAME' }
+  /** セッションをサーバーへ送って文字起こしする（Stop 後は自動、失敗時はパネルから再送） */
+  | { target: 'sw'; type: 'UPLOAD'; sessionId: string }
+  /** offscreen が送信・処理の進捗を知らせる */
+  | { target: 'sw'; type: 'PROCESS_STATUS'; sessionId: string; progress: Omit<ProcessingProgress, 'sessionId' | 'startedAt'> }
   /** Sent by the offscreen document when the captured track ends on its own (tab closed, capture revoked). */
   | { target: 'sw'; type: 'CAPTURE_ENDED'; reason: string }
   /** Sent by the offscreen document when recording fails mid-session. */
@@ -65,7 +80,11 @@ export type ToOffscreen =
       reason: SlideReason;
     }
   /** 検知用 content script からの再生イベント（SPEC §10）。offscreen が timeline.json に書く */
-  | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent };
+  | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent }
+  /** OPFS のセッションをサーバーへ送り、finalize まで行う。以後は status を polling して PROCESS_STATUS を送る */
+  | { target: 'offscreen'; type: 'UPLOAD'; sessionId: string; server: ServerTarget };
+
+export type UploadResult = { outputDir: string };
 
 export type SlideReason = 'initial' | 'manual' | 'change';
 
@@ -166,6 +185,9 @@ export const sendToBackground = {
   detectStatus: (sessionId: string, status: VideoStatus) =>
     send<object>({ target: 'sw', type: 'DETECT_STATUS', sessionId, status }),
   captureFrame: () => send<CaptureFrameResult>({ target: 'sw', type: 'CAPTURE_FRAME' }),
+  upload: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'UPLOAD', sessionId }),
+  processStatus: (sessionId: string, progress: Omit<ProcessingProgress, 'sessionId' | 'startedAt'>) =>
+    send<object>({ target: 'sw', type: 'PROCESS_STATUS', sessionId, progress }),
   captureEnded: (reason: string) => send<object>({ target: 'sw', type: 'CAPTURE_ENDED', reason }),
   captureError: (error: ErrorInfo) => send<object>({ target: 'sw', type: 'CAPTURE_ERROR', error }),
 };
@@ -182,6 +204,8 @@ export const sendToOffscreen = {
     send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE', ...params }),
   timelineEvent: (sessionId: string, event: TimelineEvent) =>
     send<object>({ target: 'offscreen', type: 'TIMELINE_EVENT', sessionId, event }),
+  upload: (sessionId: string, server: ServerTarget) =>
+    send<UploadResult>({ target: 'offscreen', type: 'UPLOAD', sessionId, server }),
 };
 
 export const sendToContent = {

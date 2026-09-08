@@ -18,6 +18,7 @@ import {
   isActive,
   readState,
   writeState,
+  type ProcessingProgress,
   type SessionState,
   type SessionSummary,
   type WarningCode,
@@ -90,6 +91,10 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return onDetectStatus(msg.sessionId, msg.status, sender.frameId);
     case 'CAPTURE_FRAME':
       return captureFrame();
+    case 'UPLOAD':
+      return { state: await upload(msg.sessionId) };
+    case 'PROCESS_STATUS':
+      return onProcessStatus(msg.sessionId, msg.progress);
     case 'CAPTURE_ENDED':
       return { state: await stop(`capture ended: ${msg.reason}`) };
     case 'CAPTURE_ERROR':
@@ -104,6 +109,7 @@ async function start(tabId: number): Promise<SessionState> {
   const current = await readState();
   if (isActive(current)) throw new LecError('BUSY', 'すでにキャプチャ中です。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
+  if (current.processing) throw new LecError('BUSY', '前のセッションの文字起こしが終わるまでお待ちください。');
 
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
   if (!tab) throw new LecError('NO_TAB', '対象のタブが見つかりません。');
@@ -293,14 +299,116 @@ async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
     lastSession: summary,
   };
   await writeState(next);
+
+  // サーバーが設定されていれば、そのまま送信して文字起こしへ（SPEC §6.4 手順 4）
+  if (next.state === 'COMPLETED' && summary) {
+    const config = await loadConfig();
+    if (config.server.token) {
+      try {
+        return await upload(summary.sessionId);
+      } catch {
+        return readState();
+      }
+    }
+  }
   return next;
 }
+
+/** OPFS のセッションをローカルサーバーへ送り、文字起こしを待つ状態にする */
+async function upload(sessionId: string): Promise<SessionState> {
+  const current = await readState();
+  if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中は送信できません。');
+  if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
+  if (current.processing) throw new LecError('BUSY', '別のセッションを処理中です。');
+  const config = await loadConfig();
+  if (!config.server.token) {
+    throw new LecError('SERVER_REJECTED', 'ローカルサーバーのトークンが未設定です。設定画面で貼り付けてください。');
+  }
+
+  const uploading: SessionState = {
+    ...current,
+    state: 'UPLOADING',
+    error: undefined,
+    warnings: current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'),
+    processing: { sessionId, stage: 'uploading', startedAt: Date.now(), percent: 0 },
+  };
+  await writeState(uploading);
+  try {
+    await ensureOffscreenDocument();
+    const { outputDir } = await sendToOffscreen.upload(sessionId, config.server);
+    const processing: SessionState = {
+      ...uploading,
+      state: 'PROCESSING',
+      processing: { sessionId, stage: 'queued', startedAt: uploading.processing!.startedAt, outputDir },
+    };
+    await writeState(processing);
+    return processing;
+  } catch (e) {
+    await closeOffscreenDocument();
+    const failed: SessionState = {
+      ...current,
+      state: current.state === 'UPLOADING' || current.state === 'PROCESSING' ? 'COMPLETED' : current.state,
+      error: toErrorInfo(e),
+      warnings: [...current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
+      processing: undefined,
+    };
+    await writeState(failed);
+    throw e;
+  }
+}
+
+/** offscreen からの進捗。done / error で処理を閉じる */
+async function onProcessStatus(
+  sessionId: string,
+  progress: Omit<ProcessingProgress, 'sessionId' | 'startedAt'>,
+): Promise<object> {
+  const current = await readState();
+  const processing = current.processing;
+  if (!processing || processing.sessionId !== sessionId) return {};
+
+  if (progress.stage === 'done' || progress.stage === 'error') {
+    if (!isActive(current)) await closeOffscreenDocument();
+    const outputDir = progress.outputDir ?? processing.outputDir;
+    const lastSession =
+      progress.stage === 'done' && current.lastSession?.sessionId === sessionId
+        ? { ...current.lastSession, outputDir }
+        : current.lastSession;
+    await writeState({
+      ...current,
+      state: 'COMPLETED',
+      processing: undefined,
+      lastSession,
+      error: progress.stage === 'error' ? { code: 'SERVER_REJECTED', message: progress.error ?? '文字起こしに失敗しました。' } : undefined,
+    });
+    return {};
+  }
+  // 送信中の進捗は fire-and-forget で届くので、finalize 後に遅れて処理されることがある。
+  // 段階を後戻りさせない
+  if (STAGE_RANK[progress.stage] < STAGE_RANK[processing.stage]) return {};
+  await writeState({
+    ...current,
+    state: progress.stage === 'uploading' ? 'UPLOADING' : 'PROCESSING',
+    processing: { ...processing, ...progress },
+  });
+  return {};
+}
+
+const STAGE_RANK: Record<ProcessingProgress['stage'], number> = {
+  uploading: 0,
+  queued: 1,
+  converting: 2,
+  transcribing: 3,
+  merging: 4,
+  done: 5,
+  error: 5,
+};
 
 /** Downloads the session files through chrome.downloads from blob: URLs minted by the offscreen document. */
 async function exportSession(sessionId: string): Promise<SessionState> {
   const current = await readState();
   if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中はエクスポートできません。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
+  if (current.processing) throw new LecError('BUSY', '文字起こしが終わるまでお待ちください。');
 
   await ensureOffscreenDocument();
   const { files } = await sendToOffscreen.export(sessionId);
@@ -357,6 +465,7 @@ async function discardSession(sessionId: string): Promise<SessionState> {
   const current = await readState();
   if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中は削除できません。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
+  if (current.processing?.sessionId === sessionId) throw new LecError('BUSY', '文字起こし中のセッションは削除できません。');
 
   await ensureOffscreenDocument();
   try {
@@ -375,8 +484,19 @@ async function discardSession(sessionId: string): Promise<SessionState> {
 /** If the worker restarted and the offscreen document is gone, the session cannot continue. */
 async function reconcile(): Promise<void> {
   const state = await readState();
-  if (!isActive(state)) return;
   if (await hasOffscreenDocument()) return;
+  if (state.processing) {
+    // 送信・polling は offscreen document が持っていた。再送で続きから処理できる
+    await writeState({
+      ...state,
+      state: 'COMPLETED',
+      processing: undefined,
+      warnings: [...state.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
+      error: { code: 'SERVER_UNREACHABLE', message: '拡張が再起動したため進捗を見失いました。「送信」で再開できます。' },
+    });
+    return;
+  }
+  if (!isActive(state)) return;
   const summary: SessionSummary | undefined = state.sessionId
     ? {
         sessionId: state.sessionId,

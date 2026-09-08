@@ -33,12 +33,18 @@ export type SlideMeta = {
 };
 
 export type SessionStatus = {
-  stage: 'capturing' | 'captured' | 'error';
+  /** capturing → captured → (サーバー送信後) done。error は録音自体の失敗 */
+  stage: 'capturing' | 'captured' | 'done' | 'error';
   audioBytes?: number;
   durationMs?: number;
   slideCount?: number;
   endedAt?: string;
   error?: string;
+  /** サーバーに送った時刻と、サーバー側の出力先 */
+  uploadedAt?: string;
+  outputDir?: string;
+  /** 文字起こしが終わった時刻 */
+  transcribedAt?: string;
 };
 
 export type StoredSession = {
