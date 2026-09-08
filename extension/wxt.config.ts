@@ -20,8 +20,11 @@ export default defineConfig({
       'downloads', // export of recorded sessions (fallback path, SPEC D-07)
       'sidePanel', // the UI lives in the side panel so it stays open while the page is used
     ],
-    // No popup: clicking the icon toggles the side panel (see background.ts).
-    action: { default_title: 'LecScribe' },
+    // The same page serves as the action popup and as the side panel. The
+    // icon click that opens the popup is what grants activeTab for the tab,
+    // which chrome.tabCapture.getMediaStreamId requires; Start in the popup
+    // then opens the side panel, which stays open while the page is used.
+    action: { default_title: 'LecScribe', default_popup: 'sidepanel.html?mode=popup' },
     minimum_chrome_version: '116',
   },
 });

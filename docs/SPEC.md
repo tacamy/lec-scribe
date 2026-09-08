@@ -181,11 +181,12 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - テスト: Vitest（変化検知、タイムライン写像、SRT / VTT 生成などの純粋関数）。E2E: Playwright + ローカル fixture ページ（Phase 3〜6）。tabCapture を伴う Phase 1・2・7・8 は Mac で手動確認する（[CHECKS.md](./CHECKS.md)）。
 - ユーザー確認済み（Q-07）。
 
-### D-12 UI は Side Panel。状態は offscreen document と `chrome.storage.session` に持つ
+### D-12 UI は「アイコンのポップアップで Start → サイドパネルで監視」。状態は offscreen document と `chrome.storage.session` に持つ
 
-- 当初は パネル だったが、パネル はページをクリックした瞬間に閉じるため、録音中に動画を操作しながら状態を見られない。Phase 2 の実機確認を受けて Side Panel（`chrome.sidePanel`、Chrome 114+）に変更した（2026-09-08）。
-- ツールバーのアイコンでパネルを開閉する（`setPanelBehavior({ openPanelOnActionClick: true })`）。このクリックが `activeTab` の付与を兼ねるため、Start は講義タブでパネルを開いてから押す。
-- パネルもフォーカスを失うことはないが正本にはしない。service worker も 30 秒で停止しうるため、状態は `chrome.storage.session`、録音は offscreen document が持つ。
+- ポップアップはページをクリックした瞬間に閉じるため、録音中に動画を操作しながら状態を見られない。一方 `chrome.tabCapture.getMediaStreamId` は「アイコンをクリックしたその時点のタブ」にだけ許可（`activeTab`）が出て、ページ遷移で失効する。開きっぱなしのサイドパネルから Start すると許可切れで失敗することを実機で確認した（2026-09-08）。
+- そこで同じページ（`sidepanel.html`）をポップアップ（`?mode=popup`）とサイドパネルの両方で使う。アイコンのクリックでポップアップが開き（= activeTab 付与）、Start を押すとキャプチャを開始して `chrome.sidePanel.open()` でサイドパネルを開き、ポップアップは閉じる。以降の監視・Stop・エクスポートはパネルで行う。
+- パネルの Start は許可が残っている場合のみ成功する。失敗時はアイコンから開始するよう案内する。
+- 正本は `chrome.storage.session` と offscreen document。service worker は 30 秒で停止しうる。
 
 ### D-13 `lecture.md` を MVP（Phase 8）に含める
 

@@ -5,6 +5,10 @@ import { listSessions, type StoredSession } from '../../src/opfs/session-store';
 import { INITIAL_STATE, isActive, onStateChange, type SessionState } from '../../src/state';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** The same page is the action popup (`?mode=popup`) and the side panel. */
+const isPopup = new URLSearchParams(location.search).get('mode') === 'popup';
+if (isPopup) document.body.classList.add('popup');
 const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
@@ -65,8 +69,10 @@ function render(state: SessionState) {
     footer.textContent = 'エクスポートすると ~/Downloads/LecScribe/<セッション>/ に audio.webm が保存されます。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
+  } else if (isPopup) {
+    footer.textContent = '講義ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
   } else {
-    footer.textContent = '講義ページで動画を再生した状態で Start を押してください。';
+    footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
   }
 
   if (state.state === 'CAPTURING') startStatsLoop();
@@ -187,7 +193,14 @@ startBtn.addEventListener('click', () => {
   void act(async () => {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) throw new Error('アクティブなタブがありません。');
-    return sendToBackground.start(tab.id);
+    if (isPopup) {
+      // Must run while the click's user activation is still fresh, so before
+      // the round-trip to the worker. The panel then follows the shared state.
+      await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
+    }
+    const result = await sendToBackground.start(tab.id);
+    if (isPopup) window.close();
+    return result;
   });
 });
 

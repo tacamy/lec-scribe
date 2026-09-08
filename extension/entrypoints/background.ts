@@ -35,10 +35,11 @@ export default defineBackground(() => {
     if (delta.state) void serialized(() => onDownloadSettled());
   });
 
-  // A popup closes as soon as the page is clicked; the side panel stays open
-  // next to the lecture. Clicking the icon toggles it and also grants
-  // activeTab for that tab, which getMediaStreamId needs.
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+  // The icon opens the popup (that click grants activeTab for the tab, which
+  // getMediaStreamId needs; an open side panel would not). Start in the popup
+  // opens the side panel for monitoring. Reset the persisted behaviour in
+  // case an earlier build set it to open the panel directly.
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
 
   void serialized(reconcile);
 });

@@ -32,7 +32,7 @@ pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
 pnpm --filter @lec-scribe/server start   # ローカルサーバー（Phase 0: /health のみ）
 ```
 
-UI はサイドパネル（ツールバーのアイコンで開閉）。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
+ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
 
 ## 構成
 
