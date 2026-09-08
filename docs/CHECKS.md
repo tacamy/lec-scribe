@@ -146,8 +146,8 @@ pnpm --filter @lec-scribe/server start      # 表示されるトークンを控�
 | 1 | サイドパネルの「設定」→ トークンを貼り付け → 保存 → 接続テスト | 「サーバー v0.1.0 に接続できました / トークン: OK / whisperkit-cli: あり / ffmpeg: あり」 |
 | 2 | 講義を 2〜3 分録音して `Stop` | 状態が `Uploading…` → `Transcribing…` と進み、Server 行に「送信中 xx%」→「文字起こし中 · 経過時間」 |
 | 3 | 待つ | 状態が `● Done`、Server 行が「完了 · /Users/…/LecScribe/…」。サーバーのターミナルにも進捗が出る |
-| 4 | 出力フォルダを開く | `audio.webm`、`transcript.json` / `.srt` / `.vtt` / `.txt`、`slides/`、`slides.json`、`timeline.json`、`session.json`、`pipeline.json` |
-| 5 | `transcript.srt` を開く | 日本語の文字起こしが動画時刻で並んでいる（一時停止・シークがあっても動画の位置に合う） |
+| 4 | 出力フォルダを開く | 見えるのは `notes.md` と `slides/` だけ。Finder で Cmd+Shift+. を押すと `.lecscribe/` が見え、中に `audio.webm`、`transcript.json` / `.srt` / `.vtt` / `.txt`、`lecture.md`、`slides.json`、`timeline.json`、`session.json`、`pipeline.json` |
+| 5 | `.lecscribe/transcript.srt` を開く | 日本語の文字起こしが動画時刻で並んでいる（一時停止・シークがあっても動画の位置に合う） |
 | 6 | サーバーを止めた状態で録音 → `Stop` | 警告「ローカルサーバーに接続できません」。セッションは残り、サーバー起動後に一覧の「送信」で文字起こしできる |
 | 7 | 拡張を更新（↻）した直後に「送信」 | 文字起こしが動く（再送でサーバー側は上書き） |
 | 8 | 文字起こし中に次の動画で `Start` → 数分録音して `Stop` | 録音は普通にできる（Server 行に前の処理の段階が出続ける）。Stop 後は Server 行に「送信待ち 1 件」。前の処理が終わると自動で送られ、順に文字起こしされる |
@@ -160,10 +160,10 @@ pnpm --filter @lec-scribe/server start      # 表示されるトークンを控�
 
 | # | 操作 | 期待 |
 |---|---|---|
-| 1 | 講義を 10 分ほど録音して `Stop`、文字起こし完了を待つ | 出力フォルダに `lecture.md` ができる |
-| 2 | `lecture.md` を Markdown ビューア（VS Code のプレビューなど）で開く | 見出しが「動画時刻 slide_NNN」、その下に画像と、そのスライドの間に話された内容が句点ごとに改行されて並ぶ |
+| 1 | 講義を 10 分ほど録音して `Stop`、文字起こし完了を待つ | 出力フォルダに `notes.md` ができる（`--llm` なしなら文字起こしそのまま。同じ内容の `lecture.md` が `.lecscribe/` にもある） |
+| 2 | `notes.md` を Markdown ビューア（VS Code のプレビューなど）で開く | 見出しが「動画時刻 slide_NNN」、その下に画像と、そのスライドの間に話された内容が句点ごとに改行されて並ぶ |
 | 3 | 画像と本文を見比べる | 本文がそのスライドの話になっている。切り替え直後の発話が前のスライドに混ざる場合はその時刻を報告（自動検知分は 1.5 秒早く始まったとみなして割り当てている） |
-| 4 | `transcript.json` を開く | 各区間に `slide` が入っている（スライド前の区間にはない） |
+| 4 | `.lecscribe/transcript.json` を開く | 各区間に `slide` が入っている（スライド前の区間にはない） |
 
 ## Phase 9: ノート作成（notes.md）
 
@@ -186,7 +186,7 @@ LEC_SCRIBE_LLM=codex pnpm --filter @lec-scribe/server agent:install
 | # | 操作 | 期待 |
 |---|---|---|
 | 1 | 文字起こし済みのセッションで「やり直す」 | Server 行が「ノート作成中」を経て完了する |
-| 2 | 出力フォルダを開く | `notes.md` がある。`lecture.md` も残っている |
+| 2 | 出力フォルダを開く | `notes.md` が整えた版に置き換わっている。文字起こしそのままの `lecture.md` は `.lecscribe/` に残っている |
 | 3 | `notes.md` を開く | 各節に「要点」の箇条書きと、フィラーの取れた本文。内容が変わっていない（要約・補足されていない） |
 | 4 | `pipeline.json` を見る | `result.notes: true`。`notesError` があれば枠切れなどでその節が文字起こしのまま |
 

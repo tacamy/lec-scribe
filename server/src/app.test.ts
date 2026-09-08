@@ -128,26 +128,43 @@ describe('local server', () => {
     expect(status.stage).toBe('done');
     expect(status.result).toMatchObject({ segments: 2, hasTimeline: true });
 
-    const files = (await readdir(outputDir, { recursive: true })).sort();
-    for (const f of ['audio.webm', 'audio.wav', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'slides/slide_001.png', 'timeline.json', 'session.json', 'pipeline.json']) {
+    // ユーザー向けは notes.md と slides/ だけ。作業ファイルは .lecscribe/ に入る
+    const top = (await readdir(outputDir)).sort();
+    expect(top).toEqual(['.lecscribe', 'notes.md', 'slides']);
+    const files = (await readdir(outputDir, { recursive: true })).map(String).sort();
+    for (const f of [
+      '.lecscribe/audio.webm',
+      '.lecscribe/audio.wav',
+      '.lecscribe/transcript.json',
+      '.lecscribe/transcript.srt',
+      '.lecscribe/transcript.vtt',
+      '.lecscribe/transcript.txt',
+      '.lecscribe/lecture.md',
+      '.lecscribe/timeline.json',
+      '.lecscribe/session.json',
+      '.lecscribe/pipeline.json',
+      'slides/slide_001.png',
+      'notes.md',
+    ]) {
       expect(files).toContain(f);
     }
-    const lecture = await readFile(path.join(outputDir, 'lecture.md'), 'utf8');
+    const lecture = await readFile(path.join(outputDir, '.lecscribe', 'lecture.md'), 'utf8');
     expect(lecture).toContain('# テスト 講義/1');
-    expect(lecture).toContain('![slide_001](slides/slide_001.png)');
+    expect(lecture).toContain('![slide_001](../slides/slide_001.png)');
     expect(lecture).toContain('次の区間');
-    // 整文（codex スタブ）
+    // ノート（codex スタブ）
     expect(status.result).toMatchObject({ notes: true });
     const notes = await readFile(path.join(outputDir, 'notes.md'), 'utf8');
     expect(notes).toContain('# テスト 講義/1（ノート）');
+    expect(notes).toContain('![slide_001](slides/slide_001.png)');
     expect(notes).toContain('- slide_001 の要点');
     expect(notes).toContain('slide_001 の整えた本文。');
-    const transcript = JSON.parse(await readFile(path.join(outputDir, 'transcript.json'), 'utf8')) as {
+    const transcript = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'transcript.json'), 'utf8')) as {
       segments: Array<{ start: number; videoStart: number; text: string }>;
     };
     expect(transcript.segments[0]).toMatchObject({ start: 0, videoStart: 0, text: '最初の区間' });
     expect(transcript.segments[1]).toMatchObject({ start: 5.5, videoStart: 103.5, text: '次の区間' });
-    const srt = await readFile(path.join(outputDir, 'transcript.srt'), 'utf8');
+    const srt = await readFile(path.join(outputDir, '.lecscribe', 'transcript.srt'), 'utf8');
     expect(srt).toContain('00:01:43,500 --> 00:01:50,000\n次の区間');
 
     // 出力フォルダと lecture.md を開く
@@ -160,7 +177,21 @@ describe('local server', () => {
       body: JSON.stringify({ target: 'lecture' }),
     });
     expect(openedMd.status).toBe(200);
-    expect(await readFile(path.join(tmp, 'opened.txt'), 'utf8')).toBe(path.join(outputDir, 'lecture.md'));
+    expect(await readFile(path.join(tmp, 'opened.txt'), 'utf8')).toBe(path.join(outputDir, 'notes.md'));
+  });
+
+  it('moves files of the old flat layout into .lecscribe when a session is processed again', async () => {
+    const sessionId = '20260908-120000-old1';
+    const dir = path.join(config.outDir, `${sessionId}_old`);
+    await (await import('node:fs/promises')).mkdir(path.join(dir, 'slides'), { recursive: true });
+    await writeFile(path.join(dir, 'audio.webm'), 'x');
+    await writeFile(path.join(dir, 'timeline.json'), '[]');
+    await writeFile(path.join(dir, 'lecture.md'), '# old');
+    await writeFile(path.join(dir, 'slides', 'slide_001.png'), 'png');
+    await fetch(`${base}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'old' }) });
+    const top = (await readdir(dir)).sort();
+    expect(top).toEqual(['.lecscribe', 'slides']);
+    expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'timeline.json']);
   });
 
   it('refuses finalize before the audio arrived', async () => {

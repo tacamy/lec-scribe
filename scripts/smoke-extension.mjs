@@ -430,19 +430,25 @@ try {
   const outDirs = readdirSync(serverOut);
   const outDir = outDirs.find((d) => d.startsWith(frameSession));
   assert.ok(outDir, `server output for ${frameSession}: ${outDirs}`);
+  // ユーザー向けは notes.md と slides/ だけ。作業ファイルは .lecscribe/ に入る
+  assert.deepEqual(readdirSync(path.join(serverOut, outDir)).sort(), ['.lecscribe', 'notes.md', 'slides']);
   const produced = readdirSync(path.join(serverOut, outDir), { recursive: true }).map(String).sort();
   for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'pipeline.json']) {
-    assert.ok(produced.includes(f), `missing ${f} in ${produced}`);
+    assert.ok(produced.includes(`.lecscribe/${f}`), `missing .lecscribe/${f} in ${produced}`);
   }
   assert.ok(produced.some((f) => f.endsWith('slide_001.png')), `slides uploaded: ${produced}`);
-  const srt = readFileSync(path.join(serverOut, outDir, 'transcript.srt'), 'utf8');
+  const work = path.join(serverOut, outDir, '.lecscribe');
+  const srt = readFileSync(path.join(work, 'transcript.srt'), 'utf8');
   assert.ok(srt.includes('スモークテストの文字起こし'), srt);
-  const pipelineStatus = JSON.parse(readFileSync(path.join(serverOut, outDir, 'pipeline.json'), 'utf8'));
+  const pipelineStatus = JSON.parse(readFileSync(path.join(work, 'pipeline.json'), 'utf8'));
   assert.equal(pipelineStatus.stage, 'done');
   assert.equal(pipelineStatus.result.hasTimeline, true);
   assert.equal(pipelineStatus.result.slides, 4);
-  const lectureMd = readFileSync(path.join(serverOut, outDir, 'lecture.md'), 'utf8');
-  assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](slides/slide_001.png)'), lectureMd.slice(0, 300));
+  const lectureMd = readFileSync(path.join(work, 'lecture.md'), 'utf8');
+  assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](../slides/slide_001.png)'), lectureMd.slice(0, 300));
+  // LLM なしなので notes.md は文字起こしそのまま（画像は slides/ を相対参照）
+  const notesMd = readFileSync(path.join(serverOut, outDir, 'notes.md'), 'utf8');
+  assert.ok(notesMd.includes('# smoke frames') && notesMd.includes('![slide_001](slides/slide_001.png)'), notesMd.slice(0, 300));
   // 拡張側の status.json も done になり、一覧に「フォルダを開く」と「やり直す」が出る
   await popup.reload();
   await popup.waitForFunction(

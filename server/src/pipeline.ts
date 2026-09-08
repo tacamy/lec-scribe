@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
+import { NOTES_FILE, migrateLayout, workPath } from './layout.ts';
 import { createBackend, polish } from './llm.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment } from './merge.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -32,15 +33,19 @@ export type PipelineStatus = {
 export const PIPELINE_FILE = 'pipeline.json';
 
 export async function readPipelineStatus(dir: string): Promise<PipelineStatus | null> {
-  try {
-    return JSON.parse(await readFile(path.join(dir, PIPELINE_FILE), 'utf8')) as PipelineStatus;
-  } catch {
-    return null;
+  for (const file of [workPath(dir, PIPELINE_FILE), path.join(dir, PIPELINE_FILE)]) {
+    try {
+      return JSON.parse(await readFile(file, 'utf8')) as PipelineStatus;
+    } catch {
+      // 旧配置も見る
+    }
   }
+  return null;
 }
 
-async function writeStatus(dir: string, status: PipelineStatus): Promise<PipelineStatus> {
-  await writeFile(path.join(dir, PIPELINE_FILE), JSON.stringify(status, null, 2));
+export async function writeStatus(dir: string, status: PipelineStatus): Promise<PipelineStatus> {
+  await mkdir(workPath(dir), { recursive: true });
+  await writeFile(workPath(dir, PIPELINE_FILE), JSON.stringify(status, null, 2));
   return status;
 }
 
@@ -84,8 +89,9 @@ export class Pipeline {
     };
 
     try {
-      const audioWebm = path.join(dir, 'audio.webm');
-      const audioWav = path.join(dir, 'audio.wav');
+      await migrateLayout(dir);
+      const audioWebm = workPath(dir, 'audio.webm');
+      const audioWav = workPath(dir, 'audio.wav');
 
       await step('converting', async () => {
         this.log(`ffmpeg: ${audioWebm} → wav 16kHz mono`);
@@ -107,7 +113,7 @@ export class Pipeline {
         if (r.code !== 0) throw new Error(`ffmpeg failed (${r.code}): ${r.stderr.trim().split('\n').slice(-5).join(' / ')}`);
       });
 
-      const reportDir = path.join(dir, 'whisperkit');
+      const reportDir = workPath(dir, 'whisperkit');
       const segments = await step('transcribing', async () => {
         await rm(reportDir, { recursive: true, force: true });
         await mkdir(reportDir, { recursive: true });
@@ -125,11 +131,11 @@ export class Pipeline {
       });
 
       const result = await step('merging', async () => {
-        const timeline = await readJson(path.join(dir, 'timeline.json'));
+        const timeline = await readJson(workPath(dir, 'timeline.json'));
         const events = isTimeline(timeline) ? timeline : null;
-        const slidesJson = await readJson(path.join(dir, 'slides.json'));
+        const slidesJson = await readJson(workPath(dir, 'slides.json'));
         const slides = isSlideList(slidesJson) ? slidesJson : [];
-        const session = (await readJson(path.join(dir, 'session.json'))) as
+        const session = (await readJson(workPath(dir, 'session.json'))) as
           | { title?: string; url?: string; startedAt?: string }
           | undefined;
         const mapped: MergedSegment[] = assignSlides(
@@ -142,7 +148,7 @@ export class Pipeline {
         );
         const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
         await writeFile(
-          path.join(dir, 'transcript.json'),
+          workPath(dir, 'transcript.json'),
           JSON.stringify(
             {
               language: this.config.language,
@@ -155,13 +161,19 @@ export class Pipeline {
             2,
           ),
         );
-        await writeFile(path.join(dir, 'transcript.srt'), toSrt(forSubtitles));
-        await writeFile(path.join(dir, 'transcript.vtt'), toVtt(forSubtitles));
-        await writeFile(path.join(dir, 'transcript.txt'), toTxt(forSubtitles));
-        // 講義ノート（SPEC §13.4）: スライドごとに画像とその間の発話
+        await writeFile(workPath(dir, 'transcript.srt'), toSrt(forSubtitles));
+        await writeFile(workPath(dir, 'transcript.vtt'), toVtt(forSubtitles));
+        await writeFile(workPath(dir, 'transcript.txt'), toTxt(forSubtitles));
+        // 講義ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
+        const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides };
+        await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
+        // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする
         await writeFile(
-          path.join(dir, 'lecture.md'),
-          buildLectureMarkdown({ title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides }),
+          path.join(dir, NOTES_FILE),
+          buildLectureMarkdown({
+            ...lectureInput,
+            note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
+          }),
         );
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         return {
@@ -204,7 +216,7 @@ export class Pipeline {
           );
           if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
           await writeFile(
-            path.join(dir, 'notes.md'),
+            path.join(dir, NOTES_FILE),
             buildNotesMarkdown({
               title: result.session?.title,
               url: result.session?.url,

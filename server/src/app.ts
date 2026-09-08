@@ -6,7 +6,8 @@ import { pipeline as streamPipeline } from 'node:stream/promises';
 import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
 import { slugify } from './format.ts';
-import { Pipeline, readPipelineStatus, type PipelineStatus } from './pipeline.ts';
+import { NOTES_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
+import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
 
 export const VERSION = '0.1.0';
@@ -108,10 +109,11 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
       if (!dir) {
         const slug = slugify(meta.title);
         dir = path.join(config.outDir, slug ? `${meta.sessionId}_${slug}` : meta.sessionId);
-        await mkdir(path.join(dir, 'slides'), { recursive: true });
         dirCache.set(meta.sessionId, dir);
       }
-      await writeFile(path.join(dir, 'session.json'), JSON.stringify({ ...meta, receivedAt: new Date().toISOString() }, null, 2));
+      await ensureLayout(dir);
+      await migrateLayout(dir);
+      await writeFile(workPath(dir, 'session.json'), JSON.stringify({ ...meta, receivedAt: new Date().toISOString() }, null, 2));
       log(`session ${meta.sessionId} → ${dir}`);
       sendJson(res, 201, { ok: true, sessionId: meta.sessionId, outputDir: dir });
       return;
@@ -135,7 +137,8 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
         return;
       }
-      const target = path.join(dir, name);
+      // 画像はユーザー向けの slides/ に、それ以外の作業ファイルは .lecscribe/ に置く
+      const target = name.startsWith(`${SLIDES_DIR}/`) ? path.join(dir, name) : workPath(dir, name);
       const tmp = `${target}.part`;
       await mkdir(path.dirname(target), { recursive: true });
       await streamPipeline(req, createWriteStream(tmp));
@@ -147,8 +150,9 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
 
     // POST /sessions/:id/finalize
     if (req.method === 'POST' && parts[2] === 'finalize' && parts.length === 3) {
+      await migrateLayout(dir);
       try {
-        await stat(path.join(dir, 'audio.webm'));
+        await stat(workPath(dir, 'audio.webm'));
       } catch {
         sendJson(res, 409, { ok: false, error: { code: 'NO_AUDIO', message: 'audio.webm がまだありません。' } });
         return;
@@ -158,7 +162,7 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
         return;
       }
       const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString() };
-      await writeFile(path.join(dir, 'pipeline.json'), JSON.stringify(queued, null, 2));
+      await writeStatus(dir, queued);
       void pipeline.enqueue(dir);
       sendJson(res, 202, { ok: true, ...queued });
       return;
@@ -167,7 +171,7 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
     // POST /sessions/:id/open { target?: 'folder' | 'lecture' } — 出力を Finder / 既定のアプリで開く
     if (req.method === 'POST' && parts[2] === 'open' && parts.length === 3) {
       const body = ((await readJsonBody(req)) ?? {}) as { target?: string };
-      const target = body.target === 'lecture' ? path.join(dir, 'lecture.md') : dir;
+      const target = body.target === 'lecture' ? path.join(dir, NOTES_FILE) : dir;
       try {
         await stat(target);
       } catch {

@@ -118,8 +118,13 @@ export function buildLectureMarkdown(input: {
   segments: readonly MergedSegment[];
   slides: readonly SlideEntry[];
   leadSec?: number;
+  /** 画像の相対パスの前置き。作業フォルダに置くときは "../slides/" */
+  imagePrefix?: string;
+  /** 見出し下に添える注記 */
+  note?: string;
 }): string {
   const leadSec = input.leadSec ?? CHANGE_LEAD_SEC;
+  const imagePrefix = input.imagePrefix ?? 'slides/';
   const sections = groupSections(input.segments, input.slides, leadSec);
 
   const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}`, ''];
@@ -127,11 +132,12 @@ export function buildLectureMarkdown(input: {
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
   lines.push(`- スライド: ${input.slides.length} 枚 / 文字起こし: ${input.segments.length} 区間（時刻は動画の再生位置）`);
+  if (input.note) lines.push(`- ${input.note}`);
   lines.push('');
 
   for (const section of sections) {
     lines.push(`## ${section.heading}`, '');
-    if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
+    if (section.slide) lines.push(`![${section.id}](${imagePrefix}${section.slide.filename})`, '');
     lines.push(section.texts.length > 0 ? toParagraph(section.texts) : '（このスライドの間の発話はありません）', '');
   }
   if (sections.length === 0) lines.push('（文字起こしがありません）', '');

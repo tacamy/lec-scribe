@@ -39,6 +39,10 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起�
 
 ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
 
+### 出力フォルダ
+
+`~/LecScribe/<日時>_<タイトル>/` に、ユーザー向けの `notes.md` と `slides/` だけが見える形で出力します。音声・文字起こし（json / srt / vtt / txt）・timeline などの作業ファイルは隠しフォルダ `.lecscribe/` にまとめています（Finder では Cmd+Shift+. で表示）。
+
 ### 話し言葉を整えて要点を付ける（任意）
 
 文字起こしは話し言葉のままです。サーバー起動時に `--llm` を指定すると、フィラーを除いて書き言葉に整え、節ごとの要点を付けた `notes.md` も作ります。

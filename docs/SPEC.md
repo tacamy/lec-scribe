@@ -670,22 +670,25 @@ audio.webm
 
 ## 14. 出力ファイル
 
+ユーザーが見るのは `notes.md` と `slides/` だけにし、作業ファイルは隠しフォルダ `.lecscribe/` に寄せる（2026-09-09）。セッションフォルダを移動・改名しても中身の対応が壊れないよう、別の場所には置かない。旧配置（作業ファイルがトップレベル）のフォルダは、次に処理したときに自動で並べ替える。
+
 ```text
-~/LecScribe/2026-09-08_1030_<タイトル>/
-├── session.json
-├── audio.webm
-├── audio.wav            （既定では処理後に削除）
-├── transcript.json
-├── transcript.txt
-├── transcript.srt
-├── transcript.vtt
+~/LecScribe/20260908-103005-ab12_<タイトル>/
+├── notes.md             ノート。--llm 指定時は整えた本文と要点、未指定時は文字起こしそのまま
 ├── slides/
 │   ├── slide_001.png
 │   └── ...
-├── slides.json
-├── timeline.json
-├── lecture.md
-└── notes.md             （--llm 指定時のみ。話し言葉を整えた本文と要点）
+└── .lecscribe/          作業ファイル
+    ├── session.json
+    ├── audio.webm
+    ├── audio.wav        （既定では処理後に削除）
+    ├── transcript.json / .txt / .srt / .vtt
+    ├── slides.json
+    ├── timeline.json
+    ├── capture-status.json
+    ├── pipeline.json
+    ├── lecture.md       文字起こしそのままの版（画像は ../slides/ を参照）
+    └── whisperkit/      whisperkit-cli の report
 ```
 
 `slides.json` の要素:
