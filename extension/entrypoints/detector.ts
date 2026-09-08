@@ -1,6 +1,6 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import type { Config } from '../src/config';
-import { ChangeDetector, toGrayscale, type Verdict } from '../src/detect';
+import { ChangeDetector, type Frame, type Verdict } from '../src/detect';
 import { LecError } from '../src/errors';
 import {
   hasTarget,
@@ -268,11 +268,11 @@ function snapshot(current: Session): VideoStatus {
   };
 }
 
-/** 比較用の縮小グレースケール画像を取る */
-function grayFrame(current: Session): Uint8Array {
+/** 比較用の縮小 RGBA 画像を取る（getImageData は毎回新しいバッファを返すのでそのまま保持できる） */
+function grayFrame(current: Session): Frame {
   const { detectWidth: w, detectHeight: h } = current.detect;
   current.smallCtx.drawImage(current.video, 0, 0, w, h);
-  return toGrayscale(current.smallCtx.getImageData(0, 0, w, h).data, w * h);
+  return current.smallCtx.getImageData(0, 0, w, h).data;
 }
 
 function canSample(current: Session): boolean {

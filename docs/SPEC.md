@@ -447,21 +447,21 @@ MVP では実装しない。必要になった場合は v0.2 §8.4 の設計を�
 
 ```text
 sample()                                   // sampleIntervalMs ごと
-  gray = grayscale(resize(frame, detectWidth, detectHeight))
-  diffPrev = ratio(|gray - prevGray| >= pixelDiffThreshold)
-  prevGray = gray
+  small = resize(frame, detectWidth, detectHeight)          // RGBA
+  diffPrev = ratio(max(|ΔR|,|ΔG|,|ΔB|) >= pixelDiffThreshold)   // 直前サンプルとの比較
+  prev = small
   state == WATCHING:
     diffPrev >= changeThreshold → state = STABILIZING, stabilizeStart = now, stableCount = 0
   state == STABILIZING:
     diffPrev < stableThreshold → stableCount++
     else                       → stableCount = 0
     stableCount >= stableSamples または 経過 >= maxStabilizeMs:
-      diffSaved = ratio(|gray - lastSavedGray| >= pixelDiffThreshold)
+      diffSaved = ratio(max(|ΔR|,|ΔG|,|ΔB|) >= pixelDiffThreshold)   // 最後に保存した画像との比較
       diffSaved >= dedupeThreshold かつ 前回保存から minShotIntervalMs 以上 → save()
       state = WATCHING
 
 save()
-  lastSavedGray = gray
+  lastSaved = small
   full = drawImage(video) → toBlob → SLIDE メッセージ
 ```
 
@@ -469,7 +469,7 @@ save()
 - 変化が確定しても `minShotIntervalMs` が経っていない場合は捨てずに保留し、次のサンプルや一時停止時の判定で保存する（連続した切り替えの 2 枚目を落とさないため）。
 - 一時停止・終了の瞬間は画面が静止していることが確実なので、安定待ち中なら即判定する。
 - 閾値の根拠（2026-09-08、fixture を 160×90 グレースケールで実測）: 本文テキストだけが変わるスライドの切り替えで隣接サンプル差 約 3.2%、見出しの明暗と大きな番号が変わる切り替えで約 19%、講師ワイプ相当の動きだけなら 0.4〜0.9%。当初案の 5% ではテキストのみの変化を見逃すため 2% にした。箇条書きが 1 行ずつ増えるような小さな変化（1% 前後）は検知できないことがある（既知の限界。手動保存で補う）。
-- グレースケール変換は `0.299R + 0.587G + 0.114B`。`ImageData` の走査は `Uint8ClampedArray` を直接扱う。
+- 画素の比較は RGB 各チャンネルの差の最大値で行う（`ImageData` の RGBA 配列をそのまま走査、アルファは無視）。当初はグレースケール（輝度）で比べる案だったが、輝度が同じで色だけ変わる切り替え（カラー → モノクロ）を原理的に見逃すため変更した（2026-09-08）。fixture の実測ではノイズの底（0.4〜0.9%）も切り替え時の差（約 19.5%）も輝度比較と同じで、コスト増もない。
 - `diffRatio(a, b, threshold)` などを純粋関数として切り出し、Vitest で fixture 画像を使って閾値の挙動をテストする。
 
 ### 9.3 誤検知対策
@@ -731,7 +731,7 @@ audio.webm
 
 ## 17. パフォーマンス・長時間対応
 
-- 比較は 160×90 グレースケール（原案 §37）。保存時のみフル解像度。
+- 比較は 160×90 の RGB（原案 §37 のグレースケールから変更、§9.2）。保存時のみフル解像度。
 - 全音声・全フレームを RAM に持たない（timeslice → OPFS、フレームは直前 1 枚のみ保持）。
 - 目標: 180 分でスライド 300 枚以下、拡張の常駐メモリ 200 MB 以下 ⚠️（Phase 5 で計測）。
 - `navigator.storage.estimate()` で残容量を監視し、1 GB 未満で警告する。
