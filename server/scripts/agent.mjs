@@ -20,7 +20,8 @@ const plistPath = path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
 // 「ログイン項目と機能拡張」に表示される名前は実行ファイルの署名者（node なら Node.js Foundation）に
 // なってしまうので、小さなアプリバンドル経由で起動し、その名前を出させる
 const appDir = path.join(home, 'Applications', `${APP_NAME}.app`);
-const appExecutable = path.join(appDir, 'Contents', 'MacOS', 'lec-scribe-server');
+// 表示名は実行ファイル名から取られることがあるので、実行ファイル自体を表示したい名前にする
+const appExecutable = path.join(appDir, 'Contents', 'MacOS', APP_NAME);
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 const logDir = path.join(home, 'Library', 'Logs', 'lec-scribe');
 const logPath = path.join(logDir, 'server.log');
@@ -35,6 +36,8 @@ const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/
 
 /** ~/Applications/LecScribe Server.app を作る。中身は node でサーバーを exec するだけのスクリプト */
 function writeAppBundle() {
+  // 古い名前の実行ファイルが残らないように作り直す
+  if (existsSync(appDir)) rmSync(appDir, { recursive: true });
   mkdirSync(path.join(appDir, 'Contents', 'MacOS'), { recursive: true });
   writeFileSync(
     path.join(appDir, 'Contents', 'Info.plist'),
@@ -45,7 +48,7 @@ function writeAppBundle() {
   <key>CFBundleIdentifier</key><string>${LABEL}</string>
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
-  <key>CFBundleExecutable</key><string>lec-scribe-server</string>
+  <key>CFBundleExecutable</key><string>${APP_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
