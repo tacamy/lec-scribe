@@ -17,6 +17,13 @@ export type ServerConfig = {
   openBin: string;
   /** 処理後に audio.wav を残すか */
   keepWav: boolean;
+  /** ノート作成（話し言葉を整えて要点を付ける）の呼び出し先（SPEC §13.5）。none なら notes.md を作らない */
+  llm: 'none' | 'codex' | 'openai' | 'ollama';
+  llmModel: string;
+  codexBin: string;
+  openaiApiKey: string;
+  ollamaUrl: string;
+  llmCharsPerCall: number;
 };
 
 export const DEFAULT_PORT = 47321;
@@ -36,7 +43,19 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     ffmpegBin: pick('ffmpeg', 'LEC_SCRIBE_FFMPEG', 'ffmpeg'),
     openBin: pick('open', 'LEC_SCRIBE_OPEN', 'open'),
     keepWav: args['keep-wav'] === 'true' || env['LEC_SCRIBE_KEEP_WAV'] === '1',
+    llm: parseLlm(pick('llm', 'LEC_SCRIBE_LLM', 'none')),
+    llmModel: pick('llm-model', 'LEC_SCRIBE_LLM_MODEL', ''),
+    codexBin: pick('codex', 'LEC_SCRIBE_CODEX', 'codex'),
+    openaiApiKey: env['OPENAI_API_KEY'] ?? '',
+    ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
+    llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '4000')),
   };
+}
+
+function parseLlm(value: string): ServerConfig['llm'] {
+  if (value === 'codex' || value === 'openai' || value === 'ollama') return value;
+  if (value !== 'none') console.warn(`unknown --llm "${value}", using none`);
+  return 'none';
 }
 
 /** `--key value` / `--key=value` / `--flag`（= "true"）を読む */

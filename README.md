@@ -17,11 +17,12 @@
 | 5 | 画面変化の自動検知 | 完了（Mac で確認済み） |
 | 6 | 再生イベントのタイムライン記録（録音時刻 ⇄ 動画時刻） | 完了（Mac で確認済み） |
 | 7 | Mac ローカルサーバー + ffmpeg + WhisperKit で文字起こし | 完了（Mac で確認済み。131 秒の録音を 2 回目 42 秒で処理） |
-| 8 | スライドと文字起こしの統合（`lecture.md`） | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 8 | スライドと文字起こしの統合（`lecture.md`） | 完了（Mac で確認済み） |
+| 9 | LLM で話し言葉を整えて要点を付けたノート（`notes.md`、任意） | 完了（`codex exec` で確認済み。OpenAI API / Ollama も選択可） |
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.3（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
+| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.4（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
 | [docs/CHECKS.md](docs/CHECKS.md) | Phase ごとの手動確認手順と記録 |
 
 ## 使い方（開発中）
@@ -37,6 +38,19 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起�
 ```
 
 ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
+
+### 話し言葉を整えて要点を付ける（任意）
+
+文字起こしは話し言葉のままです。サーバー起動時に `--llm` を指定すると、フィラーを除いて書き言葉に整え、節ごとの要点を付けた `notes.md` も作ります。
+
+```sh
+pnpm --filter @lec-scribe/server start -- --llm codex            # Codex CLI（ChatGPT の定額枠、要 codex login）
+pnpm --filter @lec-scribe/server start -- --llm openai            # OpenAI API（環境変数 OPENAI_API_KEY）
+pnpm --filter @lec-scribe/server start -- --llm ollama --llm-model qwen2.5:32b   # ローカル LLM
+LEC_SCRIBE_LLM=codex pnpm --filter @lec-scribe/server agent:install             # 常駐サーバーに渡す場合
+```
+
+`codex` と `openai` では文字起こしのテキストが外部に送られます（音声・画像は送りません）。
 
 ### サーバーの常駐化（macOS）
 

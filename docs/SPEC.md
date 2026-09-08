@@ -1,4 +1,4 @@
-# LecScribe 仕様書 v0.3
+# LecScribe 仕様書 v0.4
 
 大学講義動画（大学サイトに埋め込まれた HTML5 / Brightcove 動画）を Chrome で再生しながら、音声をローカル録音し、スライドが切り替わったときだけ動画領域のスクリーンショットを保存し、講義終了後に Mac 上の WhisperKit で日本語文字起こしを行い、スライドと文字起こしを時間軸で統合した講義ノートを生成する。
 
@@ -6,6 +6,7 @@
 
 改訂履歴:
 
+- v0.4（2026-09-09）: Phase 7〜9 の実装で確定した事項を反映。`whisperkit-cli` 1.1.0 のフラグと report の形（§13.1）、モデル比較（`large-v3` を既定に維持）、スライド割り当ての 1.5 秒補正（§13.4）、LLM による `notes.md`（§13.5、`codex exec` / OpenAI API / Ollama）、launchd 常駐（README）。UI は「アイコンのポップアップで Start → サイドパネルで監視」（D-12）。
 - v0.3（2026-09-08）: 未決事項への回答を反映。前面タブ前提にしてバックグラウンド対策を MVP から外し、MVP の tabCapture を音声のみに簡素化。crop 経路と iframe 権限フローは将来項目へ。再生速度 1.0x、既定モデル `large-v3`、サーバーは Node.js + TypeScript、出力先 `~/LecScribe` を確定。実サイトの `<video>` が同一ページ内の MSE（`blob:`）再生であることを確認。
 - v0.2（2026-09-08）: 原案 v0.1 を技術検証して改訂。
 
@@ -654,6 +655,19 @@ audio.webm
 
 ---
 
+### 13.5 ノート作成: 話し言葉を整えて要点を付ける（Phase 9、任意）
+
+文字起こしは話し言葉のままなので、LLM でフィラーを除いて書き言葉に整え、節ごとの要点を付けた `notes.md` を作る。`lecture.md`（文字起こしそのまま）は残す。
+
+- 呼び出し先はサーバー起動時の `--llm` で選ぶ（既定 `none` = 作らない）。
+  - `codex`: Codex CLI の `codex exec` を非対話で呼ぶ。ChatGPT アカウントの定額枠で動き API キー不要。`--output-schema` で JSON の形を固定する。枠（5 時間・週）に当たると失敗する。OpenAI は自動処理には API キーを案内しているため、個人の少量利用に限る
+  - `openai`: OpenAI API（`OPENAI_API_KEY`、従量課金）
+  - `ollama`: ローカルの Ollama（テキストも外に出さない。既定モデル `qwen2.5:32b`）
+- 入力はスライドごとの節（`groupSections`）。本文の文字数が `--llm-chars`（既定 4000）を超えないよう数節ずつまとめて呼び、返答は `{ sections: [{ id, summary[], text }] }` の JSON。
+- プロンプトの要点: 内容と順序を変えない、フィラーと言い直しの除去、です・ます調、専門用語はそのまま、要約や補足はしない、要点は 2〜6 項目。
+- 失敗（枠切れ、JSON 崩れ）はそのバッチだけ諦め、`notes.md` では文字起こしのまま載せる。ノート作成が全滅しても文字起こしまでは `done` にし、`pipeline.json` の `result.notesError` に理由を残す。
+- 文字起こしテキストが外部に出るのは `codex` と `openai` のときだけ。音声・画像は送らない。
+
 ## 14. 出力ファイル
 
 ```text
@@ -670,7 +684,8 @@ audio.webm
 │   └── ...
 ├── slides.json
 ├── timeline.json
-└── lecture.md
+├── lecture.md
+└── notes.md             （--llm 指定時のみ。話し言葉を整えた本文と要点）
 ```
 
 `slides.json` の要素:

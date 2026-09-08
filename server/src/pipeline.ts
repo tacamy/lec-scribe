@@ -3,21 +3,30 @@ import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
-import { assignSlides, buildLectureMarkdown, isSlideList, type MergedSegment } from './merge.ts';
+import { createBackend, polish } from './llm.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment } from './merge.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
 /** pipeline.json の内容。拡張が GET /sessions/:id/status で読む */
 export type PipelineStatus = {
-  stage: 'uploaded' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'done' | 'error';
+  stage: 'uploaded' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'polishing' | 'done' | 'error';
   outputDir: string;
   startedAt?: string;
   updatedAt: string;
   error?: string;
   /** 完了時の要約 */
-  result?: { segments: number; durationSec: number; hasTimeline: boolean; slides: number };
+  result?: {
+    segments: number;
+    durationSec: number;
+    hasTimeline: boolean;
+    slides: number;
+    /** notes.md を作れたか。ノート作成が無効なら undefined */
+    notes?: boolean;
+    notesError?: string;
+  };
   /** 各段階にかかった秒 */
-  timings?: Partial<Record<'converting' | 'transcribing' | 'merging', number>>;
+  timings?: Partial<Record<'converting' | 'transcribing' | 'merging' | 'polishing', number>>;
 };
 
 export const PIPELINE_FILE = 'pipeline.json';
@@ -156,14 +165,60 @@ export class Pipeline {
         );
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         return {
-          segments: mapped.length,
-          durationSec: Math.round(mapped[mapped.length - 1]!.end),
-          hasTimeline: events !== null,
-          slides: slides.length,
+          summary: {
+            segments: mapped.length,
+            durationSec: Math.round(mapped[mapped.length - 1]!.end),
+            hasTimeline: events !== null,
+            slides: slides.length,
+          },
+          sections: groupSections(mapped, slides),
+          session,
         };
       });
 
-      return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result });
+      // ノート作成（任意）。失敗しても文字起こしまでは done にする
+      let notes: { notes?: boolean; notesError?: string } = {};
+      const backend = createBackend({
+        kind: this.config.llm,
+        model: this.config.llmModel,
+        codexBin: this.config.codexBin,
+        openaiApiKey: this.config.openaiApiKey,
+        ollamaUrl: this.config.ollamaUrl,
+        charsPerCall: this.config.llmCharsPerCall,
+      });
+      if (backend) {
+        notes = await step('polishing', async () => {
+          const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
+          const { results: polished, errors } = await polish(
+            inputs,
+            backend,
+            {
+              kind: this.config.llm,
+              model: this.config.llmModel,
+              codexBin: this.config.codexBin,
+              openaiApiKey: this.config.openaiApiKey,
+              ollamaUrl: this.config.ollamaUrl,
+              charsPerCall: this.config.llmCharsPerCall,
+            },
+            this.log,
+          );
+          if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
+          await writeFile(
+            path.join(dir, 'notes.md'),
+            buildNotesMarkdown({
+              title: result.session?.title,
+              url: result.session?.url,
+              startedAt: result.session?.startedAt,
+              backendName: backend.name,
+              sections: result.sections,
+              polished,
+            }),
+          );
+          return errors.length > 0 ? { notes: true, notesError: errors.join(' / ') } : { notes: true };
+        }).catch((e: unknown) => ({ notes: false, notesError: e instanceof Error ? e.message : String(e) }));
+      }
+
+      return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.log(`pipeline error: ${message}`);

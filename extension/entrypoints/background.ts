@@ -399,8 +399,9 @@ const STAGE_RANK: Record<ProcessingProgress['stage'], number> = {
   converting: 2,
   transcribing: 3,
   merging: 4,
-  done: 5,
-  error: 5,
+  polishing: 5,
+  done: 6,
+  error: 6,
 };
 
 /** Downloads the session files through chrome.downloads from blob: URLs minted by the offscreen document. */

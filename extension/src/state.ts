@@ -36,7 +36,7 @@ export type SessionSummary = {
 /** サーバーへの送信と文字起こしの進捗（UPLOADING / PROCESSING の間） */
 export type ProcessingProgress = {
   sessionId: string;
-  stage: 'uploading' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'done' | 'error';
+  stage: 'uploading' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'polishing' | 'done' | 'error';
   startedAt: number;
   /** 送信中のみ 0〜100 */
   percent?: number;

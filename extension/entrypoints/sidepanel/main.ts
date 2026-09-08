@@ -55,6 +55,7 @@ const STAGE_TEXT: Record<ProcessingProgress['stage'], string> = {
   converting: '音声を変換中',
   transcribing: '文字起こし中',
   merging: '統合中',
+  polishing: 'ノート作成中',
   done: '完了',
   error: 'エラー',
 };

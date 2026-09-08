@@ -38,6 +38,11 @@ beforeAll(async () => {
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
+  // codex スタブ: --output-last-message のファイルに、プロンプト中の id をそのまま返す JSON を書く
+  const codex = await writeStub(
+    'codex',
+    'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; ids=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | sed \'s/id="//; s/"//\'); body=""; for id in $ids; do body="$body{\\"id\\":\\"$id\\",\\"summary\\":[\\"$id の要点\\"],\\"text\\":\\"$id の整えた本文。\\"},"; done; printf \'{"sections":[%s]}\' "${body%,}" > "$out"',
+  );
   config = {
     host: '127.0.0.1',
     port: 0,
@@ -49,6 +54,12 @@ beforeAll(async () => {
     ffmpegBin: ffmpeg,
     openBin: open,
     keepWav: true,
+    llm: 'codex',
+    llmModel: '',
+    codexBin: codex,
+    openaiApiKey: '',
+    ollamaUrl: 'http://127.0.0.1:1',
+    llmCharsPerCall: 4000,
   };
   const { server } = createApp(config, TOKEN);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -125,6 +136,12 @@ describe('local server', () => {
     expect(lecture).toContain('# テスト 講義/1');
     expect(lecture).toContain('![slide_001](slides/slide_001.png)');
     expect(lecture).toContain('次の区間');
+    // 整文（codex スタブ）
+    expect(status.result).toMatchObject({ notes: true });
+    const notes = await readFile(path.join(outputDir, 'notes.md'), 'utf8');
+    expect(notes).toContain('# テスト 講義/1（ノート）');
+    expect(notes).toContain('- slide_001 の要点');
+    expect(notes).toContain('slide_001 の整えた本文。');
     const transcript = JSON.parse(await readFile(path.join(outputDir, 'transcript.json'), 'utf8')) as {
       segments: Array<{ start: number; videoStart: number; text: string }>;
     };

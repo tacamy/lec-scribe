@@ -66,8 +66,41 @@ export function toParagraph(texts: readonly string[]): string {
     .join('\n');
 }
 
-function clock(seconds: number): string {
+export function clock(seconds: number): string {
   return formatTimestamp(seconds).slice(0, 8);
+}
+
+/** lecture.md / notes.md の 1 節。冒頭（スライドなし）は slide が undefined */
+export type Section = {
+  id: string;
+  heading: string;
+  slide?: SlideEntry;
+  texts: string[];
+};
+
+/** 区間をスライドごとに束ねる。冒頭の発話は id "intro" */
+export function groupSections(
+  segments: readonly MergedSegment[],
+  slides: readonly SlideEntry[],
+  leadSec = CHANGE_LEAD_SEC,
+): Section[] {
+  const ordered = [...slides].sort((a, b) => slideStart(a, leadSec) - slideStart(b, leadSec));
+  const assigned = assignSlides(segments, ordered, leadSec);
+  const sections: Section[] = [];
+  const before = assigned.filter((s) => !s.slide);
+  if (before.length > 0) {
+    sections.push({ id: 'intro', heading: `${clock(before[0]!.videoStart)} 冒頭（スライドなし）`, texts: before.map((s) => s.text) });
+  }
+  for (const slide of ordered) {
+    const name = slide.filename.replace(/\.[a-z0-9]+$/i, '');
+    sections.push({
+      id: name,
+      heading: `${clock(slideStart(slide, leadSec))} ${name}`,
+      slide,
+      texts: assigned.filter((s) => s.slide === slide.filename).map((s) => s.text),
+    });
+  }
+  return sections;
 }
 
 function formatDate(iso: string | undefined): string | undefined {
@@ -87,26 +120,53 @@ export function buildLectureMarkdown(input: {
   leadSec?: number;
 }): string {
   const leadSec = input.leadSec ?? CHANGE_LEAD_SEC;
-  const slides = [...input.slides].sort((a, b) => slideStart(a, leadSec) - slideStart(b, leadSec));
-  const segments = assignSlides(input.segments, slides, leadSec);
+  const sections = groupSections(input.segments, input.slides, leadSec);
 
   const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}`, ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
-  lines.push(`- スライド: ${slides.length} 枚 / 文字起こし: ${segments.length} 区間（時刻は動画の再生位置）`);
+  lines.push(`- スライド: ${input.slides.length} 枚 / 文字起こし: ${input.segments.length} 区間（時刻は動画の再生位置）`);
   lines.push('');
 
-  const before = segments.filter((s) => !s.slide);
-  if (before.length > 0) {
-    lines.push(`## ${clock(before[0]!.videoStart)} 冒頭（スライドなし）`, '', toParagraph(before.map((s) => s.text)), '');
+  for (const section of sections) {
+    lines.push(`## ${section.heading}`, '');
+    if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
+    lines.push(section.texts.length > 0 ? toParagraph(section.texts) : '（このスライドの間の発話はありません）', '');
   }
-  for (const slide of slides) {
-    const own = segments.filter((s) => s.slide === slide.filename);
-    const name = slide.filename.replace(/\.[a-z0-9]+$/i, '');
-    lines.push(`## ${clock(slideStart(slide, leadSec))} ${name}`, '', `![${name}](slides/${slide.filename})`, '');
-    lines.push(own.length > 0 ? toParagraph(own.map((s) => s.text)) : '（このスライドの間の発話はありません）', '');
+  if (sections.length === 0) lines.push('（文字起こしがありません）', '');
+  return lines.join('\n');
+}
+
+/**
+ * notes.md: LLM で整えた本文と要点。整えられなかった節は文字起こしのまま載せる（SPEC §13.5）
+ */
+export function buildNotesMarkdown(input: {
+  title?: string;
+  startedAt?: string;
+  url?: string;
+  backendName: string;
+  sections: readonly Section[];
+  polished: ReadonlyMap<string, { summary: string[]; text: string }>;
+}): string {
+  const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}（ノート）`, ''];
+  const recorded = formatDate(input.startedAt);
+  if (recorded) lines.push(`- 収録: ${recorded}`);
+  if (input.url) lines.push(`- 元ページ: ${input.url}`);
+  lines.push(`- 話し言葉を読みやすく整え、要点を付けたもの（${input.backendName}）。文字起こしそのままの版は lecture.md`, '');
+
+  for (const section of input.sections) {
+    lines.push(`## ${section.heading}`, '');
+    if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
+    const p = input.polished.get(section.id);
+    if (p) {
+      if (p.summary.length > 0) lines.push('**要点**', '', ...p.summary.map((s) => `- ${s}`), '');
+      lines.push(p.text || '（このスライドの間の発話はありません）', '');
+    } else if (section.texts.length > 0) {
+      lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(section.texts), '');
+    } else {
+      lines.push('（このスライドの間の発話はありません）', '');
+    }
   }
-  if (slides.length === 0 && before.length === 0) lines.push('（文字起こしがありません）', '');
   return lines.join('\n');
 }

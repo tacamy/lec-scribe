@@ -90,6 +90,10 @@ function plistXml() {
     <key>PATH</key><string>${escape(process.env.PATH ?? '/usr/bin:/bin')}</string>
     <key>HOME</key><string>${escape(home)}</string>
     <key>LEC_SCRIBE_PORT</key><string>${port}</string>
+${Object.entries(process.env)
+  .filter(([k]) => (k.startsWith('LEC_SCRIBE_') && k !== 'LEC_SCRIBE_PORT') || k === 'OPENAI_API_KEY')
+  .map(([k, v]) => `    <key>${k}</key><string>${escape(v ?? '')}</string>`)
+  .join('\n')}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
