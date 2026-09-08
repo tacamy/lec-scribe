@@ -1,8 +1,13 @@
-# LecScribe 仕様書 v0.2
+# LecScribe 仕様書 v0.3
 
 大学講義動画（大学サイトに埋め込まれた HTML5 / Brightcove 動画）を Chrome で再生しながら、音声をローカル録音し、スライドが切り替わったときだけ動画領域のスクリーンショットを保存し、講義終了後に Mac 上の WhisperKit で日本語文字起こしを行い、スライドと文字起こしを時間軸で統合した講義ノートを生成する。
 
 本書は原案 v0.1（[spec-v0.1-original.md](./spec-v0.1-original.md)）を技術検証したうえで改訂したもの。原案から変えた点・確定した点は §5 に、未決事項は §20 にまとめる。実装時は本書を正とする。
+
+改訂履歴:
+
+- v0.3（2026-09-08）: 未決事項への回答を反映。前面タブ前提にしてバックグラウンド対策を MVP から外し、MVP の tabCapture を音声のみに簡素化。crop 経路と iframe 権限フローは将来項目へ。再生速度 1.0x、既定モデル `large-v3`、サーバーは Node.js + TypeScript、出力先 `~/LecScribe` を確定。実サイトの `<video>` が同一ページ内の MSE（`blob:`）再生であることを確認。
+- v0.2（2026-09-08）: 原案 v0.1 を技術検証して改訂。
 
 凡例: ✅ 一次情報で確認済み ／ ⚠️ 実機での確認が必要（該当 Phase で検証する）
 
@@ -30,6 +35,7 @@ v0.2 で追加した目的:
 | 項目 | 内容 |
 |---|---|
 | OS | macOS 14 Sonoma 以降（WhisperKit の要件 ✅）、Apple Silicon |
+| 開発機 | MacBook Pro（Apple M3 Max、64 GB） |
 | ブラウザ | Chrome 安定版（Manifest V3、offscreen API） |
 | 対象動画 | 大学サイト上の HTML5 動画。Brightcove Player（video.js ベース、`<video class="vjs-tech">`）を第一想定 |
 | 言語 | 日本語講義 |
@@ -65,10 +71,10 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 │  大学サイトのタブ                                                       │
 │   ┌─ content script（動画のある frame に注入）───────────────────┐       │
 │   │ <video> 検出 / drawImage で変化検知 / 再生イベント記録        │       │
-│   │ （副経路用に座標通知）                                      │       │
+│   │ 前面タブ前提（§8.6）                                        │       │
 │   └───────────────┬──────────────────────────────────────────┘       │
 │                   │ runtime message（スライドPNG, timeline）            │
-│   tabCapture（audio + 低fps video）                                    │
+│   tabCapture（audio のみ）                                             │
 │         │         ▼                                                  │
 │   ┌─ offscreen document ──────────────────────────────────────────┐   │
 │   │ getUserMedia(streamId)                                         │   │
@@ -99,7 +105,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - MV3 の service worker には DOM も MediaStream もないため、`chrome.tabCapture.capture()` は使えない。
 - service worker で `chrome.tabCapture.getMediaStreamId({ targetTabId })` を呼び、その ID を offscreen document に渡し、そこで `navigator.mediaDevices.getUserMedia()`（`chromeMediaSource: 'tab'`）を実行する。Google 公式サンプル `sample.tabcapture-recorder` と同じ構成。
 - offscreen document は拡張あたり同時に 1 つ。`reasons: ['USER_MEDIA']`。offscreen document で使える拡張 API は `chrome.runtime` のみ ✅。
-- streamId は取得後すみやかに 1 回だけ使う。audio と video を別々に取り直すことはできない前提で、Start 時に両方まとめて要求する（D-03）。
+- streamId は取得後すみやかに 1 回だけ使う。MVP は音声のみを要求する（D-03）。
 
 ### D-02 AirPods への音声パススルーは Web Audio で行う ✅（二重再生の有無は Phase 1 で確認 ⚠️）
 
@@ -108,24 +114,23 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - 万一「二重に聞こえる」場合に備え、設定 `audio.passthrough: true | false` を持つ。
 - `AudioContext` は生成後に `resume()` を呼ぶ（suspended 対策）。
 
-### D-03 スライド用フレームの取得元は「`<video>` 要素の直接 drawImage」を主経路にする（原案からの主要変更）
+### D-03 スライド用フレームは content script が `<video>` 要素を直接 drawImage して取得する（原案からの主要変更）
 
-原案は tabCapture の映像を座標で crop する方式だった。v0.2 では 2 経路を持ち、主経路を変更する。
+原案は tabCapture の映像を座標で crop する方式だった。v0.3 では `<video>` を直接読む方式のみを MVP に採用し、tabCapture は音声のみで開始する。
 
-| | 主経路: content script が `<video>` を canvas に drawImage | 副経路: tabCapture video を crop |
+| | 採用: content script が `<video>` を canvas に drawImage | 将来: tabCapture video を crop |
 |---|---|---|
-| 解像度 | 動画ネイティブ（例 1280×720 / 1920×1080） | 表示サイズ × DPR に依存 |
+| 解像度 | 動画ネイティブ（実サイトは 1280×720 の見込み） | 表示サイズ × DPR に依存 |
 | プレイヤー UI / カーソル / 字幕オーバーレイ | 映らない | 映る（除外処理が必要） |
 | fullscreen / zoom / リサイズ / スクロール | 影響なし | 座標再計算が必要 |
 | 動画が viewport 外 | 取得できる | 取得できない |
 | cross-origin 動画（CORS ヘッダなしの直リンク） | canvas が tainted になり不可 | 可 |
-| DRM（EME） | 黒画面 | 黒画面 |
-| タブがバックグラウンド | フレームが更新されない可能性 ⚠️ | キャプチャ中は描画が継続する見込み ⚠️ |
+| タブがバックグラウンド | フレームが更新されない（前面タブ前提、§8.6） | キャプチャ中は描画が継続する見込み |
 
-- Brightcove / video.js の Chrome 再生は MSE（`blob:` URL）であり、MediaSource 経由の動画は同一オリジン扱いのため canvas は tainted にならない見込み ⚠️（Phase 4 で実サイト確認）。
-- Start 時の probe で「1×1 の drawImage → getImageData が SecurityError を投げるか」「`video.mediaKeys` があるか」を調べ、経路を決める。
-- tabCapture は **常に audio + 低フレームレート video** で開始する。理由は (a) 副経路の供給源になる、(b) 映像キャプチャ中のタブは非表示でも描画が継続する（タブキャスト用途と同じ挙動）ため、バックグラウンド時の取りこぼし対策になる ⚠️。`maxFrameRate: 5` と `maxWidth / maxHeight` を指定して負荷を抑える。
-- これにより原案 §15（再生バー・カーソル等の除外）と §36（座標更新）は副経路のみの要件になる。
+- 実サイトの `<video>` は `src="blob:https://<大学ドメイン>/…"` の MSE 再生であることを確認済み（Q-02）。MediaSource 経由の動画は同一オリジン扱いのため canvas は tainted にならない見込み ⚠️（Phase 4 で確認）。
+- Start 時の probe で「1×1 の drawImage → getImageData が SecurityError を投げるか」「`video.mediaKeys` があるか」を調べ、どちらかに該当すればスライド機能を無効化して音声のみ続行する（§8.5）。
+- **前面タブ前提**: バックグラウンド対策（tabCapture 映像の crop 経路）は座標変換・コントロールバー除外・DPR 対応が必要で効果も未検証のため、MVP から外す（ユーザー判断、Q-03）。タブが非表示になった場合は警告し、復帰後の差分検知で回復する。
+- これにより原案 §15（再生バー・カーソル等の除外）と §36（座標更新）は不要になる。crop 経路が必要になった場合の設計は v0.2 の本節と §8.4 を参照する。
 
 ### D-04 「録音時刻 ⇄ 動画時刻」のタイムラインを新設（原案の欠落）
 
@@ -138,6 +143,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - 1.5x などで録音した音声は Whisper の精度が落ちる。MVP では popup に警告を出すにとどめる。
 - 将来: timeline の `rate` を使い、サーバー側で ffmpeg `atempo` により 1.0x に正規化する。
+- ユーザー判断（Q-04）: 視聴は 1.0x で行う。2x では時間圧縮された音声になり誤認識が目立つ。録音後に伸長し直す案も二重の時間伸縮で劣化するため採用しない。
 
 ### D-06 録音中の保存先は拡張の OPFS（Origin Private File System）
 
@@ -156,11 +162,11 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - Chrome の WebM は duration ヘッダを持たない ✅ が、ffmpeg のデコードには支障ない。
 - 代替案（AudioWorklet で直接 WAV 16 kHz を書く）は ffmpeg 依存をなくせるが実装量が増えるため見送り。
 
-### D-09 iframe 内の動画は「activeTab → 足りなければオリジン単位で権限要求」 ✅
+### D-09 iframe 対応は MVP から外す（実サイトは同一ページ内の `<video>`）✅
 
-- `activeTab` は cross-origin iframe への注入を許可しない（同一オリジンの frame のみ）✅。
-- Start 時はまず `activeTab + chrome.scripting.executeScript({ allFrames: true })`。動画が見つからず cross-origin `<iframe>` がある場合、popup がその `src` のオリジンに対して `chrome.permissions.request({ origins })` を行い（`optional_host_permissions`）、再注入する。`permissions.request` はユーザー操作中でしか呼べないため popup で行う。
-- 最終手段として矩形のユーザー指定（副経路）を用意する（MVP では未実装。§20 Q-06）。
+- 実サイトでは `document.querySelector('video')` で `<video id="…_html5_api" class="vjs-tech">` が取得できることを確認済み（Q-01）。Brightcove の in-page embed で、iframe ではない。
+- MVP は `activeTab + chrome.scripting.executeScript({ allFrames: true })` のみ。`optional_host_permissions` は宣言しない。
+- 将来 cross-origin iframe 内の動画に対応する場合: `activeTab` は cross-origin iframe への注入を許可しない ✅ ため、popup がその `src` のオリジンに対して `chrome.permissions.request({ origins })` を行い（`optional_host_permissions`、ユーザー操作中に限る）、再注入する。
 
 ### D-10 localhost 認証は「サーバー生成トークン + Origin 検査」（原案の向きを反転）
 
@@ -172,7 +178,8 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - モノレポ（pnpm workspaces）: `extension/`（WXT + TypeScript）、`server/`（Node.js 22 + TypeScript、ランタイム依存なし）、`docs/`、`fixtures/`。
 - 拡張とサーバーを同じ言語にして保守しやすくする。WXT は MV3 のマニフェスト生成と HMR を備え、offscreen document は unlisted page として、content script は `registration: 'runtime'` として扱える ⚠️（Phase 0 で確認）。
-- テスト: Vitest（変化検知、タイムライン写像、SRT / VTT 生成などの純粋関数）。E2E: Playwright + ローカル fixture ページ（Phase 3〜6）。tabCapture を伴う Phase 1・2・7・8 は Mac で手動確認する。
+- テスト: Vitest（変化検知、タイムライン写像、SRT / VTT 生成などの純粋関数）。E2E: Playwright + ローカル fixture ページ（Phase 3〜6）。tabCapture を伴う Phase 1・2・7・8 は Mac で手動確認する（[CHECKS.md](./CHECKS.md)）。
+- ユーザー確認済み（Q-07）。
 
 ### D-12 UI は popup。状態は offscreen document と `chrome.storage.session` に持つ
 
@@ -207,7 +214,6 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
     "downloads"     // エクスポート（フォールバック）
   ],
   "host_permissions": ["http://127.0.0.1/*"],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "action": { "default_popup": "popup.html" },
   "background": { "service_worker": "background.js", "type": "module" },
   "options_ui": { "page": "options.html", "open_in_tab": true }
@@ -215,7 +221,8 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 ```
 
 - `content_scripts` は宣言しない。常時注入せず、Start 時に `activeTab` の範囲で注入する。
-- `<all_urls>` の host permission は要求しない。
+- `<all_urls>` や `optional_host_permissions` は要求しない。
+- permission は Phase ごとに必要になった時点で追加する（Phase 1 時点: `tabCapture` / `offscreen` / `activeTab` / `storage`）。
 
 ### 6.2 コンテキストと責務
 
@@ -223,8 +230,8 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 |---|---|---|
 | popup | Start / Stop、状態表示、権限要求 UI、再送 / エクスポート / 破棄 | 閉じると消える。`storage.session` の変更を購読して描画する |
 | service worker | 状態機械、streamId 取得、content script 注入、offscreen 作成、メッセージ配線、タブの閉鎖・遷移監視 | 30 秒で停止しうる。状態は `storage.session` に置き、起動時に復元する |
-| offscreen document | `getUserMedia`、AudioContext パススルー、MediaRecorder、OPFS 書き込み、副経路フレーム、サーバーへのアップロードと進捗取得 | 録音の正本。使える拡張 API は `chrome.runtime` のみ |
-| content script | `<video>` 検出と probe、主経路のフレーム取得と変化検知、タイムライン記録、副経路用の座標通知 | ページ遷移で消える。動画のある frame にだけ注入する |
+| offscreen document | `getUserMedia`、AudioContext パススルー、MediaRecorder、OPFS 書き込み、サーバーへのアップロードと進捗取得 | 録音の正本。使える拡張 API は `chrome.runtime` のみ |
+| content script | `<video>` 検出と probe、フレーム取得と変化検知、タイムライン記録、非表示検知 | ページ遷移で消える。動画のある frame にだけ注入する |
 | options | サーバーポート / トークン、検知パラメータ、音声設定 | `storage.local` |
 
 ### 6.3 Start シーケンス
@@ -232,12 +239,12 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 1. popup: 現在のタブを取得し、service worker に `START { tabId }` を送る
 2. service worker: 進行中セッションがあれば拒否する（同時 1 セッション）
 3. service worker: `chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probe })` を実行。戻り値は frame ごとの `{ frameId, result }` で、各 frame の `<video>` 候補（§6.6 `VideoCandidate`）と cross-origin `<iframe>` の `src` 一覧が得られる
-4. 候補がなく cross-origin iframe がある場合: popup に「`<origin>` へのアクセスを許可して開始」を表示 → `chrome.permissions.request` → 3 へ戻る。候補が皆無なら `NO_VIDEO` エラー
+4. 候補が皆無なら `NO_VIDEO` エラー（cross-origin iframe 内の動画は MVP 非対応、D-09）
 5. service worker: 候補のうち最良の 1 つ（§8.1）を選び、その `frameId` にだけ検知用 content script を注入する
 6. service worker: `chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['USER_MEDIA'], justification })`（既存があれば再利用）
 7. service worker: `chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })` → offscreen に `CAPTURE_START { sessionId, streamId, config }`
 8. offscreen: `getUserMedia` → AudioContext パススルー → OPFS にセッションディレクトリ作成 → `MediaRecorder.start(timeslice)` → `recorderStartEpochMs = Date.now()` を返す
-9. service worker → content script: `DETECT_START { sessionId, config, recorderStartEpochMs, mode: 'direct' | 'crop' }`
+9. service worker → content script: `DETECT_START { sessionId, config, recorderStartEpochMs }`
 10. content script: timeline に `start` を記録し、初回スライドを保存し、サンプリングを開始する
 11. service worker: 状態を `CAPTURING` にして `storage.session` を更新 → popup が反映する
 
@@ -274,7 +281,7 @@ type SessionState = {
   startedAt?: string;          // ISO 8601
   slideCount: number;
   audioBytes: number;
-  frameSource?: 'direct' | 'crop' | 'none';
+  frameSource?: 'direct' | 'none';
   warnings: WarningCode[];     // PLAYBACK_RATE, TAB_HIDDEN, SERVER_UNREACHABLE, DRM, NAVIGATED, ...
   progress?: { stage: string; percent?: number };
   outputDir?: string;
@@ -291,13 +298,12 @@ type SessionState = {
 { type: 'START', tabId } | { type: 'STOP' } | { type: 'RETRY_UPLOAD' } | { type: 'EXPORT' } | { type: 'DISCARD' }
 
 // sw → content
-{ type: 'DETECT_START', sessionId, config, recorderStartEpochMs, mode }
+{ type: 'DETECT_START', sessionId, config, recorderStartEpochMs }
 { type: 'DETECT_STOP' }
 
 // content → offscreen
 { type: 'SLIDE', sessionId, seq, videoTime, t, capturedAt, width, height, mime, dataBase64 }
 { type: 'TIMELINE_EVENT', sessionId, event: TimelineEvent }
-{ type: 'VIDEO_RECT', rect, dpr, innerWidth, innerHeight }        // 副経路用
 { type: 'DETECT_STATUS', frameSource, lastFrameAt, playbackRate, visibility }
 
 // sw → offscreen
@@ -337,12 +343,11 @@ type VideoCandidate = {
 ```ts
 const stream = await navigator.mediaDevices.getUserMedia({
   audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
-  video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId,
-                        maxFrameRate: 5, maxWidth: 1920, maxHeight: 1080 } },
+  video: false,
 } as MediaStreamConstraints);
 ```
 
-- video は D-03 の理由で常に要求する。副経路を使わない間はトラックを保持するだけで `<video>` には接続しない。
+- 映像は要求しない（D-03）。streamId は 1 回しか使えないため、将来 crop 経路を追加する場合は Start 時点で `video` を含めて要求する必要がある。
 - 型定義上 `mandatory` は非標準のためキャストする。
 
 ### 7.2 パススルー
@@ -387,29 +392,27 @@ await ctx.resume();
 
 §6.6 の `VideoCandidate` を返す。taint 判定は 1×1 の canvas に `drawImage(video, 0, 0, 1, 1)` → `getImageData` が `SecurityError` を投げるかで行う。`readyState < 2` の場合は `loadeddata` を最大 5 秒待つ。
 
-### 8.3 主経路（direct）
+### 8.3 フレーム取得
 
 - 検知用 canvas（既定 160×90、`willReadFrequently: true`）と保存用 canvas（動画ネイティブ解像度、`maxSlideWidth` で縮小）を持つ。
 - サンプリングは `video.requestVideoFrameCallback` を使い、`sampleIntervalMs` 間隔に間引く。未対応時は `setInterval`。
 - `requestVideoFrameCallback` は一時停止中は発火しないため、原案 §19（一時停止中は検知停止）が自然に満たされる。
 - 保存は `canvas.toBlob('image/png')` → base64 → offscreen へ送信。
 
-### 8.4 副経路（crop）
+### 8.4 crop 経路（将来）
 
-- offscreen document が tabCapture の video トラックを `<video>` に接続し、`drawImage` で取り込む。
-- content script は `ResizeObserver`、`scroll`、`resize`、`fullscreenchange` で `VIDEO_RECT { rect, dpr, innerWidth, innerHeight }` を送る。
-- offscreen は `scaleX = frame.width / innerWidth`、`scaleY = frame.height / innerHeight` で crop 矩形を求める。
-- video.js のコントロールバー（`.vjs-control-bar`）の高さ分を矩形から除外する（原案 §15）。
-- 動画が viewport 外、またはウィンドウが極小の場合は取得できないため警告する。
+MVP では実装しない。必要になった場合は v0.2 §8.4 の設計を採用する: offscreen document が tabCapture の video トラックを取り込み、content script から届く矩形・DPR・viewport サイズで crop し、`.vjs-control-bar` を除外する。
 
 ### 8.5 DRM
 
 `video.mediaKeys` が非 null の場合は「DRM 保護動画のためスライド保存は無効」と表示し、音声のみ続行する（音声も取得できない可能性がある）。回避処理は実装しない。
 
-### 8.6 バックグラウンドタブ ⚠️
+### 8.6 前面タブ前提（バックグラウンド非対応）
 
-- 主経路で `playing` 状態なのに 5 秒以上フレームが来ない場合、`TAB_HIDDEN` を警告し、副経路が使えるなら切り替える。
-- Phase 4 で「タブ非表示時に主経路 / 副経路それぞれでフレームが更新されるか」を確認し、結果に応じて既定経路を見直す。
+- 対象タブは「表示中のウィンドウの前面タブ」に置く。macOS では Chrome のウィンドウが他のウィンドウで完全に隠れると非表示扱いになるため、別アプリで作業する場合はウィンドウを並べる。
+- 非表示中は `requestVideoFrameCallback` が止まりフレームが更新されない。`visibilitychange` で hidden になった、または `playing` 状態なのに 5 秒以上フレームが来ない場合は `TAB_HIDDEN` を警告する。
+- 復帰後は最後に保存した画像との差分で不足分を保存するため、スライドの取りこぼしは起きにくい。ただしそのスライドの `videoTime` は切り替え時刻ではなく復帰時刻になる。
+- 録音とタイムライン記録は非表示中も継続する（音声再生中のタブはタイマー抑制の対象外 ✅）。
 
 ---
 
@@ -459,7 +462,7 @@ save()
 
 ### 9.3 誤検知対策
 
-- 主経路ではプレイヤー UI とカーソルは映らないため、対策対象は「講師のカメラ映像（ワイプ）」と「動画内の小さなアニメーション」に絞られる。
+- `<video>` を直接読むためプレイヤー UI とカーソルは映らず、対策対象は「講師のカメラ映像（ワイプ）」と「動画内の小さなアニメーション」に絞られる。
 - 第 1 段階は上記の全体差分率で運用し、実講義で閾値を調整する。
 - 第 2 段階（必要なら）: 画面を 8×8 ブロックに分け、`changeThreshold` を超えたブロック数の割合で判定する。ワイプ内の動きは少数ブロックに閉じるため抑制できる。
 - 第 3 段階（将来）: 除外矩形をユーザーが指定できるようにする。
@@ -540,7 +543,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 |---|---|
 | bind | `127.0.0.1` のみ |
 | port | 47321 |
-| out | `~/LecScribe` |
+| out | `~/LecScribe`（ユーザー確認済み、Q-08） |
 | model | `large-v3`（§13.2） |
 | token | `~/.lec-scribe/token`（初回起動時に生成して表示） |
 
@@ -599,7 +602,7 @@ audio.webm
 
 | モデル | 用途 |
 |---|---|
-| `large-v3` | 日本語精度優先（既定） |
+| `large-v3` | 日本語精度優先（既定。開発機は M3 Max / 64 GB のため速度面の制約は小さい） |
 | `large-v3_turbo` | 速度優先。Phase 7 で精度差を実講義で比較して既定を決める |
 
 初回実行時にモデル（数 GB）がダウンロードされる。サーバーの `--warmup` で事前取得できるようにする。
@@ -700,10 +703,10 @@ audio.webm
 | 事象 | 検出 | 表示 | 復旧 |
 |---|---|---|---|
 | streamId 取得失敗 / getUserMedia 失敗 | 例外 | 「タブのキャプチャを開始できません」 | offscreen を閉じて IDLE |
-| video 要素なし | probe | 「動画が見つかりません」。cross-origin iframe があれば権限要求 | 再試行 |
-| canvas tainted | probe | 副経路へ自動切替、警告表示 | — |
+| video 要素なし | probe | 「動画が見つかりません」 | 再試行 |
+| canvas tainted | probe | 「この動画からはスライドを取得できません」 | 音声のみ続行 |
 | DRM | probe | 「スライド保存は無効」 | 音声のみ続行 |
-| タブ非表示でフレーム停止 | フレーム間隔 | 「タブを表示してください」 | 副経路があれば切替 |
+| タブ非表示 | `visibilitychange` / フレーム間隔 | 「タブを前面に表示してください」 | 復帰後に差分で回復 |
 | 再生速度 ≠ 1.0 | `ratechange` | 警告 | — |
 | タブ閉鎖 / トラック終了 | `tabs.onRemoved` / `track.onended` | 「録音を終了しました」 | 自動 Stop |
 | ページ遷移 | content script 消失 | 「動画ページから移動しました」 | 録音継続、検知停止 |
@@ -718,7 +721,6 @@ audio.webm
 
 - 比較は 160×90 グレースケール（原案 §37）。保存時のみフル解像度。
 - 全音声・全フレームを RAM に持たない（timeslice → OPFS、フレームは直前 1 枚のみ保持）。
-- tabCapture video は 5 fps 上限。
 - 目標: 180 分でスライド 300 枚以下、拡張の常駐メモリ 200 MB 以下 ⚠️（Phase 5 で計測）。
 - `navigator.storage.estimate()` で残容量を監視し、1 GB 未満で警告する。
 
@@ -748,7 +750,7 @@ audio.webm
 ### Phase 1: tabCapture + AirPods パススルー（原案の最重要確認）
 
 - Start で getMediaStreamId → offscreen → getUserMedia → AudioContext。Stop で解放
-- 完了条件: 大学サイトの動画を再生中に Start しても AirPods から音が途切れず、二重にも聞こえない ⚠️。Stop 後も再生が続く
+- 完了条件: 大学サイトの動画を再生中に Start しても AirPods から音が途切れず、二重にも聞こえない ⚠️。Stop 後も再生が続く。手順は [CHECKS.md](./CHECKS.md)
 
 ### Phase 2: 録音
 
@@ -757,13 +759,13 @@ audio.webm
 
 ### Phase 3: 動画要素検出
 
-- 動的注入、probe、権限要求 UI
-- 完了条件: fixture と大学サイトの両方で `VideoCandidate` が返る。iframe の実サイトで権限要求フローが動く（該当する場合）
+- 動的注入、probe
+- 完了条件: fixture と大学サイトの両方で `VideoCandidate` が返る
 
 ### Phase 4: フレーム取得
 
-- 主経路 / 副経路、taint 判定、DRM 判定、座標通知
-- 完了条件: 両経路で動画領域だけの画像が保存される。タブ非表示・fullscreen・ウィンドウ縮小時の挙動を記録し、既定経路を確定する ⚠️
+- drawImage によるフレーム取得、taint 判定、DRM 判定、非表示検知
+- 完了条件: 大学サイトで動画フレームだけの画像が保存される（tainted にならないことを確認 ⚠️）。fullscreen・ウィンドウ縮小・タブ非表示時の挙動を記録する
 
 ### Phase 5: 変化検知
 
@@ -793,20 +795,20 @@ audio.webm
 
 ## 20. 未決事項（要回答・要実機確認）
 
-| ID | 内容 | 影響 | 決め方 |
-|---|---|---|---|
-| Q-01 | 実サイトの `<video>` は同一ページ内か、cross-origin iframe 内か | D-09 の分岐 | DevTools で `document.querySelector('video')` が取れるか確認 |
-| Q-02 | 実サイトの動画が MSE（`blob:` src）か。DRM（`video.mediaKeys`）があるか | D-03 の主経路可否 | Phase 4 の probe で判定 |
-| Q-03 | 視聴スタイル: タブを前面に置くか、別アプリで作業しながら聞くか | バックグラウンド対策の優先度（§8.6） | ユーザー回答 |
-| Q-04 | 1.0x 以外の速度で視聴したいか | D-05 の優先度 | ユーザー回答 |
-| Q-05 | Mac のチップ / メモリ | モデル既定（§13.2） | ユーザー回答 |
-| Q-06 | 動画が見つからない場合の矩形ユーザー指定を MVP に含めるか | 副経路 UI の工数 | Q-01 の結果次第。同一ページなら不要 |
-| Q-07 | サーバーを Node/TS で書く提案でよいか（Python 案もある） | D-11 | ユーザー回答 |
-| Q-08 | 出力ディレクトリ名（既定 `~/LecScribe`）と命名規則 | §14 | ユーザー回答 |
-| Q-09 | tabCapture 中のタブが非表示でも `<video>` の drawImage が更新されるか | D-03 | Phase 4 で確認 |
-| Q-10 | 拡張ページから 127.0.0.1 への fetch に PNA / LNA の制限がかかるか | §12.3 | Phase 7 で確認 |
-| Q-11 | WhisperKit CLI の現行コマンド名（`whisperkit-cli` / `argmax-cli`）とフラグ、report JSON の形式 | §13.1 | Phase 7 で確認 |
-| Q-12 | パススルーで二重再生が起きないか | D-02 | Phase 1 で確認 |
+| ID | 内容 | 状態 |
+|---|---|---|
+| Q-01 | 実サイトの `<video>` は同一ページ内か、cross-origin iframe 内か | **解決**: 同一ページ内。`document.querySelector('video')` で `id="…_html5_api" class="vjs-tech"` が取れる（D-09） |
+| Q-02 | 実サイトの動画が MSE（`blob:` src）か。DRM があるか | **一部解決**: `src` は `blob:https://<大学ドメイン>/…`（MSE）。DRM の有無は Phase 4 の probe（`video.mediaKeys`）で確認 |
+| Q-03 | 視聴スタイル（前面タブか、別アプリで作業しながらか） | **解決**: バックグラウンド対策は MVP から外し、前面タブ前提にする（D-03、§8.6） |
+| Q-04 | 再生速度 | **解決**: 1.0x で視聴する（D-05） |
+| Q-05 | Mac のチップ / メモリ | **解決**: M3 Max / 64 GB。既定モデルは `large-v3`（§13.2） |
+| Q-06 | 矩形ユーザー指定を MVP に含めるか | **解決**: 含めない（Q-01 の結果より不要） |
+| Q-07 | サーバーの言語 | **解決**: Node.js + TypeScript（D-11） |
+| Q-08 | 出力ディレクトリ | **解決**: `~/LecScribe`（§12.1） |
+| Q-09 | tabCapture 中のタブが非表示でも `<video>` の drawImage が更新されるか | 優先度低。前面タブ前提のため Phase 4 で挙動を記録するのみ |
+| Q-10 | 拡張ページから 127.0.0.1 への fetch に PNA / LNA の制限がかかるか | Phase 7 で確認 ⚠️ |
+| Q-11 | WhisperKit CLI の現行コマンド名とフラグ、report JSON の形式 | Phase 7 で確認 ⚠️ |
+| Q-12 | パススルーで二重再生が起きないか | Phase 1 で確認 ⚠️（[CHECKS.md](./CHECKS.md)） |
 
 ---
 
@@ -853,3 +855,4 @@ type Config = {
 | `whisperkit-cli` は `brew install whisperkit-cli`、macOS 14 以降、入力は wav / mp3 / m4a / flac | argmaxinc/WhisperKit README |
 | `--language`, `--report`, `--report-path`, `--chunking-strategy vad`, `--skip-special-tokens` | argmaxinc/WhisperKit の issue #211 / #357 と CLI 利用例 |
 | 音声再生中のタブはバックグラウンドのタイマー抑制を免除される | Chrome Developers ブログ「Background tabs in Chrome 57」 |
+| 実サイトの `<video>` は同一ページ内の Brightcove in-page embed（`class="vjs-tech"`、`src` は `blob:` の MSE、表示 768×432、poster 1280×720） | ユーザーが DevTools で確認（2026-09-08） |

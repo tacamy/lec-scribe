@@ -7,29 +7,51 @@
 
 ## 状態
 
-仕様検討中（実装未着手）。
+| Phase | 内容 | 状態 |
+|---|---|---|
+| 0 | 足場（pnpm workspace、WXT、Vitest、Playwright スモーク、fixture、CI） | 完了 |
+| 1 | tabCapture + AirPods パススルー | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 2〜8 | 録音 → 動画検出 → フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.2（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
+| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.3（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
+| [docs/CHECKS.md](docs/CHECKS.md) | Phase ごとの手動確認手順と記録 |
 | [docs/spec-v0.1-original.md](docs/spec-v0.1-original.md) | 原案 v0.1 |
 
-## 予定構成
+## 使い方（開発中）
+
+```sh
+pnpm install
+pnpm build                       # 拡張を extension/.output/chrome-mv3 にビルド
+pnpm typecheck && pnpm test      # 型検査と単体テスト
+node scripts/smoke-extension.mjs # headless Chromium で拡張を読み込むスモークテスト
+pnpm fixtures:make               # 合成スライド動画を生成（Phase 3 以降で使用）
+pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
+pnpm --filter @lec-scribe/server start   # ローカルサーバー（Phase 0: /health のみ）
+```
+
+Chrome への読み込み方と Phase 1 の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
+
+## 構成
 
 ```text
 lec-scribe/
 ├── extension/   Chrome 拡張（WXT + TypeScript）
-├── server/      Mac ローカルサーバー（Node.js 22 + TypeScript）
+│   ├── entrypoints/  background.ts / popup/ / offscreen/
+│   └── src/          config, state, messages, format（純粋関数は Vitest）
+├── server/      Mac ローカルサーバー（Node.js 22 + TypeScript、依存なし）
 ├── fixtures/    動作確認用のローカルプレイヤーページと合成スライド動画
-└── docs/        仕様・調整記録
+├── scripts/     スモークテスト
+└── docs/        仕様・確認手順
 ```
 
-## 動作要件（予定）
+## 動作要件
 
 - macOS 14 以降、Apple Silicon
-- Chrome 安定版
-- Node.js 22、pnpm
-- `brew install whisperkit-cli ffmpeg`
+- Chrome 安定版（116 以降）
+- Node.js 22、pnpm 10
+- `brew install whisperkit-cli ffmpeg`（Phase 7 以降）
 
 ## ライセンス
 
