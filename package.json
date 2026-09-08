@@ -1,0 +1,22 @@
+{
+  "name": "lec-scribe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capture university lecture videos in Chrome: local audio recording, slide-change screenshots, and on-device Japanese transcription with WhisperKit.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "fixtures:make": "node fixtures/make-slides.mjs",
+    "fixtures:serve": "node fixtures/serve.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

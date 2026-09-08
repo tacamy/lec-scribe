@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1c1c1e;
+  --muted: #6e6e73;
+  --bg: #ffffff;
+  --border: #e5e5ea;
+  --accent: #0a84ff;
+  --danger: #ff3b30;
+  --ok: #34c759;
+  --warn: #ff9f0a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #f2f2f7;
+    --muted: #98989d;
+    --bg: #1c1c1e;
+    --border: #3a3a3c;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  width: 300px;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+.popup { padding: 14px 16px 12px; display: grid; gap: 12px; }
+.header { display: flex; align-items: baseline; justify-content: space-between; }
+h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.phase { font-size: 11px; color: var(--muted); }
+.status { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.elapsed { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot[data-state="CAPTURING"] { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.dot[data-state="STARTING"], .dot[data-state="STOPPING"] { background: var(--warn); }
+.dot[data-state="ERROR"] { background: var(--danger); }
+.dot[data-state="IDLE"] { background: var(--ok); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.rows { display: grid; gap: 6px; }
+.row { display: flex; gap: 10px; }
+.label { width: 48px; color: var(--muted); flex: none; }
+.value { min-width: 0; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-left: 58px; }
+.meterFill { height: 100%; width: 0; background: var(--ok); transition: width 120ms linear; }
+.message { margin: 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); white-space: pre-wrap; word-break: break-word; }
+.actions { display: grid; }
+button { font: inherit; font-weight: 600; padding: 9px 12px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; }
+button.danger { background: var(--danger); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+.footer { color: var(--muted); font-size: 11px; }

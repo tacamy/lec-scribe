@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>LecScribe fixture player</title>
+    <style>
+      body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f4f6; color: #222; }
+      header { padding: 12px 20px; background: #222; color: #fff; }
+      main { max-width: 900px; margin: 24px auto; padding: 0 16px; }
+      /* Mimics the video.js DOM used by Brightcove Player (SPEC §8.1). */
+      .video-js { position: relative; width: 768px; height: 432px; background: #000; margin: 0 auto; }
+      .video-js video.vjs-tech { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .vjs-control-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; background: rgba(43, 51, 63, 0.7); display: flex; align-items: center; gap: 8px; padding: 0 10px; color: #fff; font-size: 12px; }
+      .vjs-control-bar .progress { flex: 1; height: 4px; background: rgba(255,255,255,0.3); }
+      .vjs-control-bar .progress > div { height: 100%; background: #fff; width: 0; }
+      .panel { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px auto; width: 768px; }
+      .panel code { background: #fff; padding: 2px 6px; border-radius: 4px; }
+      button { font: inherit; padding: 4px 10px; }
+    </style>
+  </head>
+  <body>
+    <header>LecScribe fixture — 合成スライド動画（<code>slides.webm</code>）を video.js 風の DOM で再生します</header>
+    <main>
+      <div class="video-js" id="fixturePlayer">
+        <video id="fixturePlayer_html5_api" class="vjs-tech" preload="auto" playsinline src="slides.webm"></video>
+        <div class="vjs-control-bar">
+          <span id="cbTime">00:00</span>
+          <div class="progress"><div id="cbProgress"></div></div>
+          <span id="cbRate">1x</span>
+        </div>
+      </div>
+      <div class="panel">
+        <button id="play">Play</button>
+        <button id="pause">Pause</button>
+        <button data-seek="-30">−30s</button>
+        <button data-seek="30">+30s</button>
+        <button data-rate="1">1x</button>
+        <button data-rate="1.5">1.5x</button>
+        <button data-rate="2">2x</button>
+        <span>currentTime <code id="ct">0.00</code></span>
+        <span>paused <code id="paused">true</code></span>
+        <span>rate <code id="rate">1</code></span>
+        <span>readyState <code id="rs">0</code></span>
+      </div>
+      <p>生成: <code>pnpm fixtures:make</code>／配信: <code>pnpm fixtures:serve</code> → <code>http://127.0.0.1:8787/player.html</code></p>
+    </main>
+    <script>
+      const v = document.getElementById('fixturePlayer_html5_api');
+      const $ = (id) => document.getElementById(id);
+      document.getElementById('play').onclick = () => v.play();
+      document.getElementById('pause').onclick = () => v.pause();
+      for (const b of document.querySelectorAll('[data-seek]')) b.onclick = () => { v.currentTime = Math.max(0, v.currentTime + Number(b.dataset.seek)); };
+      for (const b of document.querySelectorAll('[data-rate]')) b.onclick = () => { v.playbackRate = Number(b.dataset.rate); };
+      const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      const tick = () => {
+        $('ct').textContent = v.currentTime.toFixed(2);
+        $('paused').textContent = String(v.paused);
+        $('rate').textContent = String(v.playbackRate);
+        $('rs').textContent = String(v.readyState);
+        $('cbTime').textContent = fmt(v.currentTime);
+        $('cbRate').textContent = `${v.playbackRate}x`;
+        if (Number.isFinite(v.duration) && v.duration > 0) $('cbProgress').style.width = `${(v.currentTime / v.duration) * 100}%`;
+        requestAnimationFrame(tick);
+      };
+      tick();
+    </script>
+  </body>
+</html>
