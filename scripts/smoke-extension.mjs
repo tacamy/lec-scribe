@@ -49,6 +49,19 @@ try {
   assert.equal(state.ok, true);
   assert.equal(state.state.state, 'IDLE');
 
+  // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
+  await popup.setViewportSize({ width: 320, height: 700 });
+  const overflow = await popup.evaluate(() => {
+    const long = 'airU 京都芸術大学 - 12章｜グラフィックデザインの歴史と現在 '.repeat(4) + 'https://example.invalid/'.repeat(6);
+    document.getElementById('tabValue').textContent = long;
+    document.getElementById('videoValue').textContent = long;
+    document.getElementById('footer').textContent = long;
+    return { scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth };
+  });
+  assert.ok(overflow.scroll <= overflow.client, `panel overflows: ${JSON.stringify(overflow)}`);
+  await popup.reload();
+  await popup.waitForSelector('#startBtn');
+
   // STOP while idle is a no-op.
   const stopped = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'STOP' }));
   assert.equal(stopped.ok, true);
@@ -200,40 +213,105 @@ try {
   assert.deepEqual(probed.probe.crossOriginIframes, []);
   console.log(`probe: ${chosen.player} ${chosen.videoWidth}x${chosen.videoHeight} via ${chosen.selector}`);
 
+  // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。
+  // offscreen.html をタブとして開き、合成ストリームでセッションを始めておく。
+  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0 };
+  const frameSession = '20990101-000001-smok';
+  const off2 = await context.newPage();
+  off2.on('pageerror', (e) => errors.push(String(e)));
+  await off2.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off2.waitForFunction(() => !!globalThis.__lecscribe);
+  await off2.evaluate(async ({ sessionId, slide }) => {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    globalThis.__smokeAudio = { ctx, osc };
+    await globalThis.__lecscribe.startFromStream(
+      dest.stream,
+      { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 }, slide },
+      { sessionId, title: 'smoke frames', startedAt: new Date().toISOString() },
+    );
+  }, { sessionId: frameSession, slide: slideConfig });
+
   // 検知スクリプトを注入し、frame 宛のメッセージで直接動かす
   const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
-  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index }) => {
+  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     return chrome.tabs.sendMessage(
       tabId,
-      { target: 'content', type: 'DETECT_START', sessionId: 'smoke', selector, index, recorderStartEpochMs: Date.now() },
+      { target: 'content', type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs: Date.now(), slide },
       { frameId },
     );
-  }, target);
+  }, { ...target, sessionId: frameSession, slide: slideConfig });
   assert.equal(detect.ok, true, JSON.stringify(detect));
   assert.equal(detect.status.playing, true);
   assert.equal(detect.status.visible, true);
   assert.equal(detect.status.playbackRate, 1);
   assert.equal(detect.status.taintFree, true);
 
+  // 最初の 1 枚が自動で保存される
+  await off2.waitForFunction(() => globalThis.__lecscribe.stats().slideCount >= 1, null, { timeout: 10_000 });
+
   await lecture.click('#pause');
   await lecture.waitForTimeout(300);
+  // 手動保存（パネルの「スクショを保存」相当）
+  const manual = await popup.evaluate(
+    ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'CAPTURE_FRAME', reason: 'manual' }, { frameId }),
+    target,
+  );
+  assert.equal(manual.ok, true, JSON.stringify(manual));
+  assert.equal(manual.slide.seq, 2);
+  assert.equal(manual.slide.filename, 'slide_002.png');
+  assert.deepEqual([manual.slide.width, manual.slide.height], expectedSize);
+  assert.ok(manual.slide.videoTime > 0, `videoTime ${manual.slide.videoTime}`);
+  assert.ok(manual.slide.t >= 0);
+
   // 二重注入しても壊れないこと: もう一度注入 → DETECT_START → DETECT_STOP
-  const again = await popup.evaluate(async ({ tabId, frameId, selector, index }) => {
+  const again = await popup.evaluate(async ({ tabId, frameId, selector, index, slide }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     const started = await chrome.tabs.sendMessage(
       tabId,
-      { target: 'content', type: 'DETECT_START', sessionId: 'smoke2', selector, index, recorderStartEpochMs: Date.now() },
+      { target: 'content', type: 'DETECT_START', sessionId: 'smoke2', selector, index, recorderStartEpochMs: Date.now(), slide },
       { frameId },
     );
     const stopped = await chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId });
     return { started, stopped };
-  }, target);
+  }, { ...target, slide: slideConfig });
   assert.equal(again.started.ok, true, JSON.stringify(again.started));
   assert.equal(again.started.status.paused, true);
   assert.equal(again.stopped.ok, true);
   console.log(`detector: ${detect.status.player} playing→paused ok`);
   await lecture.close();
+
+  // offscreen 側: 停止 → エクスポート → PNG の中身を確認 → 破棄
+  const frames = await off2.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const stopped = await api.stop();
+    const { files } = await api.export(sessionId);
+    const first = files.find((f) => f.filename.endsWith('slides/slide_001.png'));
+    const head = first ? Array.from(new Uint8Array(await (await fetch(first.url)).arrayBuffer()).slice(0, 24)) : null;
+    const meta = files.find((f) => f.filename.endsWith('slides.json'));
+    const slides = meta ? JSON.parse(await (await fetch(meta.url)).text()) : null;
+    api.revoke(files.map((f) => f.url));
+    await api.discard(sessionId);
+    globalThis.__smokeAudio.osc.stop();
+    await globalThis.__smokeAudio.ctx.close();
+    return { stopped, names: files.map((f) => f.filename), head, slides };
+  }, frameSession);
+  await off2.close();
+  for (const rel of ['slides/slide_001.png', 'slides/slide_002.png', 'slides.json', 'audio.webm']) {
+    assert.ok(frames.names.includes(`LecScribe/${frameSession}/${rel}`), `missing ${rel}: ${frames.names}`);
+  }
+  assert.ok(frames.head, 'slide_001.png readable');
+  assert.deepEqual(frames.head.slice(0, 8), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'PNG signature');
+  const be32 = (b, i) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+  assert.deepEqual([be32(frames.head, 16), be32(frames.head, 20)], expectedSize, 'PNG IHDR size = video size');
+  assert.equal(frames.slides.length, 2);
+  assert.deepEqual(frames.slides.map((s) => s.reason), ['initial', 'manual']);
+  console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');

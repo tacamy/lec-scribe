@@ -16,11 +16,13 @@ const elapsed = $('elapsed');
 const audioValue = $('audioValue');
 const meterFill = $('meterFill');
 const videoValue = $('videoValue');
+const slidesValue = $('slidesValue');
 const tabValue = $('tabValue');
 const warningsList = $<HTMLUListElement>('warnings');
 const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
+const snapBtn = $<HTMLButtonElement>('snapBtn');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
@@ -62,6 +64,7 @@ function render(state: SessionState) {
   stopBtn.hidden = !active;
   startBtn.disabled = !!state.exporting;
   stopBtn.disabled = state.state === 'STOPPING';
+  snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
 
   if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
@@ -153,8 +156,9 @@ function describeProbe(probe: ProbeSummary): string {
   return parts.join(' · ');
 }
 
-function showMessage(text: string) {
+function showMessage(text: string, kind: 'error' | 'info' = 'error') {
   message.textContent = text;
+  message.className = kind === 'info' ? 'message info' : 'message';
   message.hidden = false;
 }
 
@@ -165,6 +169,9 @@ function applyStats(stats: CaptureStats) {
   meterFill.style.width = `${percent}%`;
   audioValue.textContent = stats.capturing
     ? `録音中 ${formatBytes(stats.audioBytes)}${stats.passthrough ? '' : '（パススルー off）'}${stats.silent ? ' — 無音' : ''}`
+    : '—';
+  slidesValue.textContent = stats.capturing
+    ? `${stats.slideCount} 枚${stats.lastSlideVideoTime !== null ? `（最終 ${formatElapsed(stats.lastSlideVideoTime * 1000)}）` : ''}`
     : '—';
 }
 
@@ -186,6 +193,7 @@ function stopStatsLoop() {
   statsTimer = undefined;
   elapsed.textContent = '';
   meterFill.style.width = '0';
+  slidesValue.textContent = '—';
 }
 
 async function renderSessions() {
@@ -208,7 +216,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   id.title = session.meta?.title ?? session.sessionId;
   const meta = document.createElement('span');
   meta.className = 'sessionMeta';
-  const parts = [formatBytes(session.audioBytes)];
+  const parts = [formatBytes(session.audioBytes), `${session.slideCount} 枚`];
   if (session.status?.durationMs !== undefined) parts.unshift(formatElapsed(session.status.durationMs));
   meta.textContent = parts.join(' · ');
   main.append(id, meta);
@@ -283,6 +291,20 @@ startBtn.addEventListener('click', () => {
 stopBtn.addEventListener('click', () => {
   stopBtn.disabled = true;
   void act(() => sendToBackground.stop());
+});
+
+snapBtn.addEventListener('click', async () => {
+  snapBtn.disabled = true;
+  message.hidden = true;
+  try {
+    const { slide } = await sendToBackground.captureFrame();
+    showMessage(`${slide.filename} を保存しました（${slide.width}×${slide.height}、${formatBytes(slide.bytes)}）`, 'info');
+  } catch (e) {
+    const info = toErrorInfo(e);
+    showMessage(`${info.message} (${info.code})`);
+  } finally {
+    snapBtn.disabled = false;
+  }
 });
 
 onStateChange(render);

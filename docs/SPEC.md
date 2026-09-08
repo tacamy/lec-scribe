@@ -402,7 +402,8 @@ await ctx.resume();
 - 検知用 canvas（既定 160×90、`willReadFrequently: true`）と保存用 canvas（動画ネイティブ解像度、`maxSlideWidth` で縮小）を持つ。
 - サンプリングは `video.requestVideoFrameCallback` を使い、`sampleIntervalMs` 間隔に間引く。未対応時は `setInterval`。
 - `requestVideoFrameCallback` は一時停止中は発火しないため、原案 §19（一時停止中は検知停止）が自然に満たされる。
-- 保存は `canvas.toBlob('image/png')` → base64 → offscreen へ送信。
+- 保存は `canvas.toBlob('image/png')` → base64 → offscreen へ送信（`SLIDE`）。offscreen が `slides/slide_NNN.png` を書き、`slides.json` を更新する。連番は offscreen が振る。
+- Phase 4 の確認用に、サイドパネルの「スクショを保存」で今のフレームを 1 枚保存できる（`CAPTURE_FRAME`）。Phase 5 以降も手動保存として残す。
 
 ### 8.4 crop 経路（将来）
 

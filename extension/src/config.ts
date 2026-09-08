@@ -1,16 +1,22 @@
 /**
- * User-adjustable settings. Persisted in chrome.storage.local under `config`.
- * Only the sections needed by the phases implemented so far are declared;
- * see docs/SPEC.md Appendix A for the full planned shape.
+ * ユーザーが変えられる設定。chrome.storage.local の `config` に保存する。
+ * 実装済みの Phase で使う項目だけ宣言する。全体像は docs/SPEC.md 付録 A。
  */
 export type Config = {
   audio: {
-    /** Route captured tab audio back to the default output device (AirPods etc.). */
+    /** キャプチャした音声を既定の出力デバイス（AirPods 等）へ流す */
     passthrough: boolean;
-    /** Opus bitrate for the recording (Phase 2). */
+    /** Opus のビットレート */
     bitsPerSecond: number;
-    /** MediaRecorder timeslice (Phase 2). */
+    /** MediaRecorder の timeslice */
     timesliceMs: number;
+  };
+  slide: {
+    imageFormat: 'png' | 'jpeg';
+    /** imageFormat が jpeg のときの品質（0〜1） */
+    jpegQuality: number;
+    /** 保存画像の幅の上限。0 なら動画のネイティブ解像度のまま */
+    maxSlideWidth: number;
   };
 };
 
@@ -20,20 +26,23 @@ export const DEFAULT_CONFIG: Config = {
     bitsPerSecond: 64_000,
     timesliceMs: 10_000,
   },
+  slide: {
+    imageFormat: 'png',
+    jpegQuality: 0.9,
+    maxSlideWidth: 0,
+  },
 };
 
 const STORAGE_KEY = 'config';
 
-/** Shallow-merge stored overrides onto the defaults, section by section. */
+/** 保存された上書きを既定値にセクション単位で浅くマージする */
 export function mergeConfig(base: Config, override: unknown): Config {
   if (!override || typeof override !== 'object') return structuredClone(base);
   const o = override as Partial<Record<keyof Config, unknown>>;
   const out = structuredClone(base);
   for (const key of Object.keys(base) as (keyof Config)[]) {
     const section = o[key];
-    if (section && typeof section === 'object') {
-      out[key] = { ...out[key], ...(section as object) } as Config[typeof key];
-    }
+    if (section && typeof section === 'object') Object.assign(out[key], section);
   }
   return out;
 }

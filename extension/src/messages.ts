@@ -1,6 +1,7 @@
 import type { Config } from './config';
 import type { ErrorInfo } from './errors';
 import { LecError, toErrorInfo } from './errors';
+import type { SlideMeta } from './opfs/session-store';
 import type { VideoCandidate, VideoStatus } from './probe';
 import type { SessionState } from './state';
 
@@ -34,6 +35,8 @@ export type ToBackground =
   | { target: 'sw'; type: 'PROBE'; tabId: number }
   /** 検知用 content script からの動画の状態 */
   | { target: 'sw'; type: 'DETECT_STATUS'; sessionId: string; status: VideoStatus }
+  /** パネルの「スクショを保存」。今のフレームを 1 枚保存する */
+  | { target: 'sw'; type: 'CAPTURE_FRAME' }
   /** Sent by the offscreen document when the captured track ends on its own (tab closed, capture revoked). */
   | { target: 'sw'; type: 'CAPTURE_ENDED'; reason: string }
   /** Sent by the offscreen document when recording fails mid-session. */
@@ -45,7 +48,23 @@ export type ToOffscreen =
   | { target: 'offscreen'; type: 'GET_STATS' }
   | { target: 'offscreen'; type: 'EXPORT'; sessionId: string }
   | { target: 'offscreen'; type: 'REVOKE'; urls: string[] }
-  | { target: 'offscreen'; type: 'DISCARD'; sessionId: string };
+  | { target: 'offscreen'; type: 'DISCARD'; sessionId: string }
+  /** 検知用 content script が取得したフレーム（SPEC §6.6 SLIDE）。offscreen が OPFS に保存する */
+  | {
+      target: 'offscreen';
+      type: 'SLIDE';
+      sessionId: string;
+      videoTime: number;
+      t: number;
+      capturedAt: string;
+      width: number;
+      height: number;
+      mime: string;
+      dataBase64: string;
+      reason: SlideReason;
+    };
+
+export type SlideReason = 'initial' | 'manual' | 'change';
 
 /** service worker → 検知用 content script（chrome.tabs.sendMessage で frame を指定して送る） */
 export type ToContent =
@@ -56,8 +75,10 @@ export type ToContent =
       selector: string;
       index: number;
       recorderStartEpochMs: number;
+      slide: Config['slide'];
     }
-  | { target: 'content'; type: 'DETECT_STOP' };
+  | { target: 'content'; type: 'DETECT_STOP' }
+  | { target: 'content'; type: 'CAPTURE_FRAME'; reason: SlideReason };
 
 export type AnyMessage = ToBackground | ToOffscreen | ToContent;
 
@@ -83,11 +104,15 @@ export type CaptureStats = {
   passthrough: boolean;
   elapsedMs: number;
   audioBytes: number;
+  slideCount: number;
+  lastSlideVideoTime: number | null;
 };
 
 export type ExportFile = { url: string; filename: string; bytes: number };
 export type ExportResult = { files: ExportFile[] };
 export type DetectStartResult = { status: VideoStatus };
+export type SlideSaveResult = { seq: number; filename: string; bytes: number };
+export type CaptureFrameResult = { slide: SlideMeta };
 
 export type Reply<T> = ({ ok: true } & T) | { ok: false; error: ErrorInfo };
 
@@ -136,6 +161,7 @@ export const sendToBackground = {
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
   detectStatus: (sessionId: string, status: VideoStatus) =>
     send<object>({ target: 'sw', type: 'DETECT_STATUS', sessionId, status }),
+  captureFrame: () => send<CaptureFrameResult>({ target: 'sw', type: 'CAPTURE_FRAME' }),
   captureEnded: (reason: string) => send<object>({ target: 'sw', type: 'CAPTURE_ENDED', reason }),
   captureError: (error: ErrorInfo) => send<object>({ target: 'sw', type: 'CAPTURE_ERROR', error }),
 };
@@ -148,16 +174,26 @@ export const sendToOffscreen = {
   export: (sessionId: string) => send<ExportResult>({ target: 'offscreen', type: 'EXPORT', sessionId }),
   revoke: (urls: string[]) => send<object>({ target: 'offscreen', type: 'REVOKE', urls }),
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
+  slide: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE' }>, 'target' | 'type'>) =>
+    send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE', ...params }),
 };
 
 export const sendToContent = {
   detectStart: (
     tabId: number,
     frameId: number,
-    params: { sessionId: string; selector: string; index: number; recorderStartEpochMs: number },
+    params: {
+      sessionId: string;
+      selector: string;
+      index: number;
+      recorderStartEpochMs: number;
+      slide: Config['slide'];
+    },
   ) => sendToFrame<DetectStartResult>(tabId, frameId, { target: 'content', type: 'DETECT_START', ...params }),
   detectStop: (tabId: number, frameId: number) =>
     sendToFrame<object>(tabId, frameId, { target: 'content', type: 'DETECT_STOP' }),
+  captureFrame: (tabId: number, frameId: number, reason: SlideReason) =>
+    sendToFrame<CaptureFrameResult>(tabId, frameId, { target: 'content', type: 'CAPTURE_FRAME', reason }),
 };
 
 /**

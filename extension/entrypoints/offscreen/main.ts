@@ -10,18 +10,23 @@ import {
   type ExportFile,
   type ExportResult,
   type SessionMeta,
+  type SlideSaveResult,
   type ToOffscreen,
 } from '../../src/messages';
 import {
   AUDIO_FILE,
   SESSION_FILE,
   SESSIONS_DIR,
+  SLIDES_DIR,
+  SLIDES_FILE,
   STATUS_FILE,
   deleteSession,
+  listFiles,
   readFile,
   sessionDir,
   writeJson,
   type SessionStatus,
+  type SlideMeta,
 } from '../../src/opfs/session-store';
 import type { WriterRequest, WriterResponse } from '../../src/opfs/writer.worker';
 
@@ -108,6 +113,8 @@ type Capture = {
   recorder: MediaRecorder;
   writer: AudioFileWriter;
   dir: FileSystemDirectoryHandle;
+  slidesDir: FileSystemDirectoryHandle | null;
+  slides: SlideMeta[];
   stopping: boolean;
 };
 
@@ -133,6 +140,8 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return revokeUrls(msg.urls);
     case 'DISCARD':
       return discardSession(msg.sessionId);
+    case 'SLIDE':
+      return saveSlide(msg);
   }
 }
 
@@ -214,6 +223,8 @@ async function startFromStream(stream: MediaStream, config: Config, meta: Sessio
     recorder,
     writer,
     dir,
+    slidesDir: null,
+    slides: [],
     stopping: false,
   };
   capture = current;
@@ -286,6 +297,7 @@ async function finishCapture(current: Capture, error: string | undefined): Promi
     stage: failure ? 'error' : 'captured',
     audioBytes,
     durationMs,
+    slideCount: current.slides.length,
     endedAt: new Date().toISOString(),
     ...(failure ? { error: failure } : {}),
   };
@@ -316,7 +328,18 @@ async function onTrackEnded(current: Capture, reason: string): Promise<void> {
 
 function getStats(): CaptureStats {
   const current = capture;
-  if (!current) return { capturing: false, audioLevel: 0, silent: true, passthrough: false, elapsedMs: 0, audioBytes: 0 };
+  if (!current) {
+    return {
+      capturing: false,
+      audioLevel: 0,
+      silent: true,
+      passthrough: false,
+      elapsedMs: 0,
+      audioBytes: 0,
+      slideCount: 0,
+      lastSlideVideoTime: null,
+    };
+  }
   const now = Date.now();
   const level = Math.min(1, current.peakLevel);
   current.peakLevel = 0;
@@ -327,7 +350,43 @@ function getStats(): CaptureStats {
     passthrough: current.passthrough,
     elapsedMs: now - current.startedEpochMs,
     audioBytes: current.writer.bytes,
+    slideCount: current.slides.length,
+    lastSlideVideoTime: current.slides[current.slides.length - 1]?.videoTime ?? null,
   };
+}
+
+/** content script から届いたフレームを slides/ に書き、slides.json を更新する */
+async function saveSlide(msg: Extract<ToOffscreen, { type: 'SLIDE' }>): Promise<SlideSaveResult> {
+  const current = capture;
+  if (!current || current.sessionId !== msg.sessionId) {
+    throw new LecError('NOT_CAPTURING', 'このセッションはキャプチャ中ではありません。');
+  }
+  const seq = current.slides.length + 1;
+  const filename = `slide_${String(seq).padStart(3, '0')}.${msg.mime === 'image/jpeg' ? 'jpg' : 'png'}`;
+  const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0));
+  try {
+    current.slidesDir ??= await current.dir.getDirectoryHandle(SLIDES_DIR, { create: true });
+    const file = await current.slidesDir.getFileHandle(filename, { create: true });
+    const writable = await file.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+    current.slides.push({
+      filename,
+      seq,
+      videoTime: msg.videoTime,
+      t: msg.t,
+      capturedAt: msg.capturedAt,
+      width: msg.width,
+      height: msg.height,
+      source: 'direct',
+      reason: msg.reason,
+      bytes: bytes.byteLength,
+    });
+    await writeJson(current.dir, SLIDES_FILE, current.slides);
+  } catch (e) {
+    throw new LecError('STORAGE_FAILED', `スライド画像を保存できません: ${toErrorInfo(e).message}`);
+  }
+  return { seq, filename, bytes: bytes.byteLength };
 }
 
 /** Creates blob: URLs for the session files; the worker downloads them (SPEC §11.2). */
@@ -340,12 +399,20 @@ async function exportSession(sessionId: string): Promise<ExportResult> {
     throw new LecError('NO_SESSION', `セッション ${sessionId} が見つかりません。`);
   }
   const files: ExportFile[] = [];
-  for (const name of [AUDIO_FILE, SESSION_FILE, STATUS_FILE]) {
-    const file = await readFile(dir, name);
-    if (!file) continue;
+  const add = (file: File, relative: string) => {
     const url = URL.createObjectURL(file);
     exportUrls.add(url);
-    files.push({ url, filename: `LecScribe/${sessionId}/${name}`, bytes: file.size });
+    files.push({ url, filename: `LecScribe/${sessionId}/${relative}`, bytes: file.size });
+  };
+  for (const name of [AUDIO_FILE, SESSION_FILE, STATUS_FILE, SLIDES_FILE]) {
+    const file = await readFile(dir, name);
+    if (file) add(file, name);
+  }
+  try {
+    const slidesDir = await dir.getDirectoryHandle(SLIDES_DIR);
+    for (const file of await listFiles(slidesDir)) add(file, `${SLIDES_DIR}/${file.name}`);
+  } catch {
+    // スライドなし
   }
   if (!files.some((f) => f.filename.endsWith(AUDIO_FILE))) {
     revokeUrls(files.map((f) => f.url));

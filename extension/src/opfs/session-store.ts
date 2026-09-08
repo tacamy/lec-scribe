@@ -11,11 +11,31 @@ export const SESSIONS_DIR = 'sessions';
 export const AUDIO_FILE = 'audio.webm';
 export const SESSION_FILE = 'session.json';
 export const STATUS_FILE = 'status.json';
+export const SLIDES_DIR = 'slides';
+export const SLIDES_FILE = 'slides.json';
+
+/** slides.json の要素（SPEC §14） */
+export type SlideMeta = {
+  filename: string;
+  seq: number;
+  /** video.currentTime */
+  videoTime: number;
+  /** 録音開始からの秒 */
+  t: number;
+  capturedAt: string;
+  width: number;
+  height: number;
+  source: 'direct';
+  /** 何をきっかけに保存したか（initial / manual / change） */
+  reason: string;
+  bytes: number;
+};
 
 export type SessionStatus = {
   stage: 'capturing' | 'captured' | 'error';
   audioBytes?: number;
   durationMs?: number;
+  slideCount?: number;
   endedAt?: string;
   error?: string;
 };
@@ -25,6 +45,7 @@ export type StoredSession = {
   meta?: SessionMeta;
   status?: SessionStatus;
   audioBytes: number;
+  slideCount: number;
 };
 
 export async function sessionsRoot(create: boolean): Promise<FileSystemDirectoryHandle> {
@@ -63,6 +84,15 @@ export async function readJson<T>(dir: FileSystemDirectoryHandle, name: string):
   }
 }
 
+/** ディレクトリ直下のファイルを名前順に返す */
+export async function listFiles(dir: FileSystemDirectoryHandle): Promise<File[]> {
+  const files: File[] = [];
+  for await (const [, handle] of dir.entries()) {
+    if (handle.kind === 'file') files.push(await (handle as FileSystemFileHandle).getFile());
+  }
+  return files.sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   const sessions = await sessionsRoot(false);
   await sessions.removeEntry(sessionId, { recursive: true });
@@ -83,7 +113,14 @@ export async function listSessions(): Promise<StoredSession[]> {
     const meta = await readJson<SessionMeta>(dir, SESSION_FILE);
     const status = await readJson<SessionStatus>(dir, STATUS_FILE);
     const audio = await readFile(dir, AUDIO_FILE);
-    out.push({ sessionId: name, meta, status, audioBytes: audio?.size ?? status?.audioBytes ?? 0 });
+    const slides = await readJson<SlideMeta[]>(dir, SLIDES_FILE);
+    out.push({
+      sessionId: name,
+      meta,
+      status,
+      audioBytes: audio?.size ?? status?.audioBytes ?? 0,
+      slideCount: Array.isArray(slides) ? slides.length : 0,
+    });
   }
   return out.sort((a, b) => (a.sessionId < b.sessionId ? 1 : -1));
 }

@@ -1,6 +1,17 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
+import type { Config } from '../src/config';
 import { LecError } from '../src/errors';
-import { hasTarget, replyWith, sendToBackground, type DetectStartResult, type ToContent } from '../src/messages';
+import {
+  hasTarget,
+  replyWith,
+  sendToBackground,
+  sendToOffscreen,
+  type CaptureFrameResult,
+  type DetectStartResult,
+  type SlideReason,
+  type ToContent,
+} from '../src/messages';
+import type { SlideMeta } from '../src/opfs/session-store';
 import type { VideoStatus } from '../src/probe';
 
 /**
@@ -29,12 +40,16 @@ type Session = {
   video: HTMLVideoElement;
   selector: string;
   recorderStartEpochMs: number;
+  slide: Config['slide'];
   lastFrameAt: number | null;
   taintFree: boolean | null;
   heartbeat: number;
   frameCallback: number | null;
+  /** フレーム取得中（同時に 2 枚は撮らない） */
+  grabbing: boolean;
   onEvent: (event: Event) => void;
   onVisibility: () => void;
+  onInitial: () => void;
 };
 
 /** 再生が（再）開始されるイベント。ここから「フレームが来ない時間」を測り直す */
@@ -71,6 +86,10 @@ async function handleMessage(msg: ToContent): Promise<object | void> {
       return startDetection(msg);
     case 'DETECT_STOP':
       return stopDetection();
+    case 'CAPTURE_FRAME': {
+      if (!session) throw new LecError('NOT_CAPTURING', '動画を追跡していません。');
+      return grabFrame(session, msg.reason);
+    }
   }
 }
 
@@ -97,10 +116,13 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     video,
     selector: msg.selector,
     recorderStartEpochMs: msg.recorderStartEpochMs,
+    slide: msg.slide,
     lastFrameAt: null,
     taintFree: null,
     heartbeat: 0,
     frameCallback: null,
+    grabbing: false,
+    onInitial: () => void grabFrame(current, 'initial').catch(() => undefined),
     onEvent: (event) => {
       // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
       // 再生の再開やシークの時点でフレーム時刻を今にそろえる（SPEC §8.6）。
@@ -125,6 +147,11 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   }
 
   session = current;
+
+  // 最初の 1 枚は無条件に保存する（SPEC §9.2）。まだ読み込み中なら読み込み後に撮る
+  if (video.readyState >= 2 && video.videoWidth > 0) current.onInitial();
+  else video.addEventListener('loadeddata', current.onInitial, { once: true });
+
   return { status: snapshot(current) };
 }
 
@@ -133,6 +160,7 @@ function stopDetection(): object {
   session = null;
   if (!current) return {};
   for (const name of VIDEO_EVENTS) current.video.removeEventListener(name, current.onEvent);
+  current.video.removeEventListener('loadeddata', current.onInitial);
   document.removeEventListener('visibilitychange', current.onVisibility);
   window.clearInterval(current.heartbeat);
   if (current.frameCallback !== null && typeof current.video.cancelVideoFrameCallback === 'function') {
@@ -179,6 +207,78 @@ function snapshot(current: Session): VideoStatus {
     drm: video.mediaKeys !== null && video.mediaKeys !== undefined,
     updatedAt: Date.now(),
   };
+}
+
+/**
+ * <video> の今のフレームを canvas に描いて画像にし、offscreen document に保存させる
+ * （SPEC §8.3）。プレイヤー UI やカーソルは映らず、解像度は動画のネイティブ値。
+ */
+async function grabFrame(current: Session, reason: SlideReason): Promise<CaptureFrameResult> {
+  const { video, slide } = current;
+  if (video.readyState < 2 || video.videoWidth === 0) throw new LecError('NO_VIDEO', '動画がまだ読み込まれていません。');
+  if (current.taintFree === null) current.taintFree = checkTaint(video);
+  if (current.taintFree === false) {
+    throw new LecError('CAPTURE_FAILED', 'この動画は canvas に描けないため画像を取得できません（cross-origin）。');
+  }
+  if (current.grabbing) throw new LecError('BUSY', '前の画像の保存が終わっていません。');
+  current.grabbing = true;
+  try {
+    const scale = slide.maxSlideWidth > 0 && video.videoWidth > slide.maxSlideWidth ? slide.maxSlideWidth / video.videoWidth : 1;
+    const width = Math.round(video.videoWidth * scale);
+    const height = Math.round(video.videoHeight * scale);
+    const videoTime = video.currentTime;
+    const capturedAt = new Date();
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new LecError('CAPTURE_FAILED', 'canvas を作成できません。');
+    ctx.drawImage(video, 0, 0, width, height);
+
+    const mime = slide.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, slide.jpegQuality));
+    if (!blob) throw new LecError('CAPTURE_FAILED', '画像のエンコードに失敗しました。');
+
+    const saved = await sendToOffscreen.slide({
+      sessionId: current.sessionId,
+      videoTime,
+      t: (capturedAt.getTime() - current.recorderStartEpochMs) / 1000,
+      capturedAt: capturedAt.toISOString(),
+      width,
+      height,
+      mime,
+      dataBase64: await blobToBase64(blob),
+      reason,
+    });
+    const meta: SlideMeta = {
+      filename: saved.filename,
+      seq: saved.seq,
+      videoTime,
+      t: (capturedAt.getTime() - current.recorderStartEpochMs) / 1000,
+      capturedAt: capturedAt.toISOString(),
+      width,
+      height,
+      source: 'direct',
+      reason,
+      bytes: saved.bytes,
+    };
+    return { slide: meta };
+  } finally {
+    current.grabbing = false;
+  }
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      resolve(dataUrl.slice(dataUrl.indexOf(',') + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function report(current: Session): Promise<void> {

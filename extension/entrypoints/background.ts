@@ -1,5 +1,5 @@
 import { defineBackground } from 'wxt/utils/define-background';
-import { loadConfig } from '../src/config';
+import { loadConfig, type Config } from '../src/config';
 import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
 import { makeSessionId } from '../src/format';
 import {
@@ -88,6 +88,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return { probe: await runProbe(msg.tabId) };
     case 'DETECT_STATUS':
       return onDetectStatus(msg.sessionId, msg.status, sender.frameId);
+    case 'CAPTURE_FRAME':
+      return captureFrame();
     case 'CAPTURE_ENDED':
       return { state: await stop(`capture ended: ${msg.reason}`) };
     case 'CAPTURE_ERROR':
@@ -144,7 +146,7 @@ async function start(tabId: number): Promise<SessionState> {
     }
     const config = await loadConfig();
     const result = await sendToOffscreen.captureStart(streamId, config, meta);
-    const detection = await startDetection(tabId, probe, meta.sessionId, result.recorderStartEpochMs);
+    const detection = await startDetection(tabId, probe, meta.sessionId, result.recorderStartEpochMs, config);
     const capturing: SessionState = {
       ...starting,
       ...detection,
@@ -186,6 +188,7 @@ async function startDetection(
   probe: ProbeSummary | undefined,
   sessionId: string,
   recorderStartEpochMs: number,
+  config: Config,
 ): Promise<Detection> {
   const chosen = probe?.chosen;
   if (!chosen) {
@@ -200,6 +203,7 @@ async function startDetection(
       selector: chosen.selector,
       index: chosen.index,
       recorderStartEpochMs,
+      slide: config.slide,
     });
     return { frameSource: 'direct', frameId: chosen.frameId, video: status, warnings: videoWarnings(status) };
   } catch (e) {
@@ -236,6 +240,16 @@ async function onDetectStatus(sessionId: string, status: VideoStatus, frameId: n
   const others = current.warnings.filter((w) => !VIDEO_WARNINGS.has(w));
   await writeState({ ...current, frameSource: 'direct', video: status, warnings: [...others, ...videoWarnings(status)] });
   return {};
+}
+
+/** パネルの「スクショを保存」: 今のフレームを 1 枚保存する（Phase 4 の動作確認用。Phase 5 で自動化） */
+async function captureFrame(): Promise<object> {
+  const current = await readState();
+  if (current.state !== 'CAPTURING') throw new LecError('NOT_CAPTURING', 'キャプチャ中ではありません。');
+  if (current.tabId === undefined || current.frameId === undefined || current.frameSource !== 'direct') {
+    throw new LecError('NO_VIDEO', '追跡中の動画がありません。');
+  }
+  return sendToContent.captureFrame(current.tabId, current.frameId, 'manual');
 }
 
 async function onTabNavigated(tabId: number): Promise<void> {

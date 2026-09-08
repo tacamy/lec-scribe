@@ -12,8 +12,9 @@
 | 0 | 足場（pnpm workspace、WXT、Vitest、Playwright スモーク、fixture、CI） | 完了 |
 | 1 | tabCapture + 音声パススルー | 完了（Mac で確認済み: パススルー動作、二重再生なし） |
 | 2 | 録音（OPFS へ逐次保存 → エクスポート） | 完了（Mac で確認済み） |
-| 3 | 講義ページの `<video>` 検出と状態追跡 | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
-| 4〜8 | フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
+| 3 | 講義ページの `<video>` 検出と状態追跡 | 完了（Mac で確認済み） |
+| 4 | `<video>` からのフレーム取得と画像保存（開始時 1 枚 + 手動） | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 5〜8 | 変化検知 → スライド保存の自動化とタイムライン → WhisperKit → 統合 | 未着手 |
 
 | ドキュメント | 内容 |
 |---|---|
