@@ -14,6 +14,7 @@ import {
 } from '../src/messages';
 import type { SlideMeta } from '../src/opfs/session-store';
 import type { VideoStatus } from '../src/probe';
+import { videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
 
 /**
  * 検知用 content script（SPEC §6.2, §8）。
@@ -47,6 +48,7 @@ type Session = {
   /** 比較用の縮小フレームを描く canvas */
   smallCtx: CanvasRenderingContext2D;
   sampleTimer: number;
+  tickTimer: number;
   lastVerdict: Verdict | null;
   lastFrameAt: number | null;
   taintFree: boolean | null;
@@ -61,6 +63,8 @@ type Session = {
 
 /** 再生が（再）開始されるイベント。ここから「フレームが来ない時間」を測り直す */
 const RESTART_EVENTS = new Set(['play', 'playing', 'seeked']);
+/** タイムラインに記録する <video> のイベント（SPEC §10.1） */
+const TIMELINE_EVENTS = new Set<string>(['play', 'pause', 'seeked', 'ratechange', 'waiting', 'playing', 'ended']);
 
 let session: Session | null = null;
 
@@ -81,7 +85,7 @@ export default defineUnlistedScript(() => {
   chrome.runtime.onMessage.addListener(listener);
   window.__lecscribeDetector = {
     dispose() {
-      stopDetection();
+      void stopDetection();
       chrome.runtime.onMessage.removeListener(listener);
     },
   };
@@ -114,7 +118,7 @@ function findVideo(selector: string, index: number): HTMLVideoElement | undefine
 }
 
 function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): DetectStartResult {
-  stopDetection();
+  void stopDetection();
   const video = findVideo(msg.selector, msg.index);
   if (!video) throw new LecError('NO_VIDEO', '動画要素が見つかりません。');
 
@@ -134,6 +138,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     detector: new ChangeDetector(msg.detect),
     smallCtx,
     sampleTimer: 0,
+    tickTimer: 0,
     lastVerdict: null,
     lastFrameAt: null,
     taintFree: null,
@@ -145,6 +150,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
       // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
       // 再生の再開やシークの時点でフレーム時刻を今にそろえる（SPEC §8.6）。
       if (RESTART_EVENTS.has(event.type)) current.lastFrameAt = Date.now();
+      if (TIMELINE_EVENTS.has(event.type)) recordTimeline(current, event.type as TimelineEventType);
       // 停止した瞬間の画面は確実に静止しているので、安定待ち中なら即判定する
       if (event.type === 'pause' || event.type === 'ended') flushDetection(current);
       void report(current);
@@ -155,6 +161,10 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   document.addEventListener('visibilitychange', current.onVisibility);
   current.heartbeat = window.setInterval(() => void report(current), HEARTBEAT_MS);
   current.sampleTimer = window.setInterval(() => sampleOnce(current), msg.detect.sampleIntervalMs);
+  // 再生中は定期的に記録して、バッファリングなどによるずれの上限を抑える
+  current.tickTimer = window.setInterval(() => {
+    if (!video.paused && !video.ended) recordTimeline(current, 'tick');
+  }, msg.detect.tickIntervalMs);
 
   // 描画されたフレームの時刻を追う。非表示タブでは止まるので、
   // 「再生中なのにフレームが来ない」= TAB_HIDDEN の判定に使う（SPEC §8.6）。
@@ -168,6 +178,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   }
 
   session = current;
+  recordTimeline(current, 'start');
 
   // 最初の 1 枚は無条件に保存する（SPEC §9.2）。まだ読み込み中なら読み込み後に撮る
   if (video.readyState >= 2 && video.videoWidth > 0) current.onInitial();
@@ -176,7 +187,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   return { status: snapshot(current) };
 }
 
-function stopDetection(): object {
+async function stopDetection(): Promise<object> {
   const current = session;
   session = null;
   if (!current) return {};
@@ -185,10 +196,28 @@ function stopDetection(): object {
   document.removeEventListener('visibilitychange', current.onVisibility);
   window.clearInterval(current.heartbeat);
   window.clearInterval(current.sampleTimer);
+  window.clearInterval(current.tickTimer);
   if (current.frameCallback !== null && typeof current.video.cancelVideoFrameCallback === 'function') {
     current.video.cancelVideoFrameCallback(current.frameCallback);
   }
+  // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
+  await sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, 'stop')).catch(() => undefined);
   return {};
+}
+
+function timelineEvent(current: Session, type: TimelineEventType): TimelineEvent {
+  const { video } = current;
+  return {
+    t: (Date.now() - current.recorderStartEpochMs) / 1000,
+    videoTime: video.currentTime,
+    rate: video.playbackRate,
+    state: videoState(video),
+    type,
+  };
+}
+
+function recordTimeline(current: Session, type: TimelineEventType): void {
+  void sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, type)).catch(() => undefined);
 }
 
 /** canvas に描けるか（tainted でないか）を一度だけ判定する */

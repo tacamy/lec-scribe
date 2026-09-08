@@ -258,6 +258,7 @@ try {
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
     minShotIntervalMs: 1000,
+    tickIntervalMs: 1000,
   };
   const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
   const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide, detect }) => {
@@ -320,11 +321,13 @@ try {
     const head = first ? Array.from(new Uint8Array(await (await fetch(first.url)).arrayBuffer()).slice(0, 24)) : null;
     const meta = files.find((f) => f.filename.endsWith('slides.json'));
     const slides = meta ? JSON.parse(await (await fetch(meta.url)).text()) : null;
+    const tl = files.find((f) => f.filename.endsWith('timeline.json'));
+    const timeline = tl ? JSON.parse(await (await fetch(tl.url)).text()) : null;
     api.revoke(files.map((f) => f.url));
     await api.discard(sessionId);
     globalThis.__smokeAudio.osc.stop();
     await globalThis.__smokeAudio.ctx.close();
-    return { stopped, names: files.map((f) => f.filename), head, slides };
+    return { stopped, names: files.map((f) => f.filename), head, slides, timeline };
   }, frameSession);
   await off2.close();
   for (const rel of ['slides/slide_001.png', 'slides/slide_004.png', 'slides.json', 'audio.webm']) {
@@ -339,6 +342,30 @@ try {
   // 切り替わりの時刻: スライド 2 は 2 秒、3 は 4 秒に出るので、その少し後に保存されている
   assert.ok(frames.slides[1].videoTime > 2 && frames.slides[1].videoTime < 4, `slide 2 at ${frames.slides[1].videoTime}`);
   assert.ok(frames.slides[2].videoTime > 4, `slide 3 at ${frames.slides[2].videoTime}`);
+
+  // Phase 6: タイムライン。start → 再生イベント/tick → ended → stop の順で、
+  // 録音時刻 t から動画時刻を復元するとスライドの videoTime と一致する
+  assert.ok(Array.isArray(frames.timeline) && frames.timeline.length > 0, 'timeline.json');
+  const types = frames.timeline.map((e) => e.type);
+  assert.equal(types[0], 'start');
+  assert.equal(types[types.length - 1], 'stop');
+  assert.ok(types.includes('ended'), `timeline types: ${types}`);
+  assert.ok(types.includes('tick'), `timeline types: ${types}`);
+  assert.ok(frames.timeline.every((e, i) => i === 0 || e.t >= frames.timeline[i - 1].t), 'timeline is ordered by t');
+  const toVideoTime = (events, t) => {
+    let base;
+    for (const e of events) {
+      if (e.t <= t) base = e;
+      else break;
+    }
+    if (!base) return t;
+    return base.state === 'playing' ? base.videoTime + (t - base.t) * base.rate : base.videoTime;
+  };
+  for (const s of frames.slides) {
+    const mapped = toVideoTime(frames.timeline, s.t);
+    assert.ok(Math.abs(mapped - s.videoTime) < 0.6, `${s.filename}: t=${s.t} → ${mapped.toFixed(2)} vs videoTime ${s.videoTime.toFixed(2)}`);
+  }
+  console.log(`timeline: ${frames.timeline.length} events (${[...new Set(types)].join(', ')})`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);

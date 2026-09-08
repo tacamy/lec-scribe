@@ -4,6 +4,7 @@ import { LecError, toErrorInfo } from './errors';
 import type { SlideMeta } from './opfs/session-store';
 import type { VideoCandidate, VideoStatus } from './probe';
 import type { SessionState } from './state';
+import type { TimelineEvent } from './timeline';
 
 /** Written to session.json when a capture starts. */
 export type SessionMeta = {
@@ -62,7 +63,9 @@ export type ToOffscreen =
       mime: string;
       dataBase64: string;
       reason: SlideReason;
-    };
+    }
+  /** 検知用 content script からの再生イベント（SPEC §10）。offscreen が timeline.json に書く */
+  | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent };
 
 export type SlideReason = 'initial' | 'manual' | 'change';
 
@@ -177,6 +180,8 @@ export const sendToOffscreen = {
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
   slide: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE' }>, 'target' | 'type'>) =>
     send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE', ...params }),
+  timelineEvent: (sessionId: string, event: TimelineEvent) =>
+    send<object>({ target: 'offscreen', type: 'TIMELINE_EVENT', sessionId, event }),
 };
 
 export const sendToContent = {

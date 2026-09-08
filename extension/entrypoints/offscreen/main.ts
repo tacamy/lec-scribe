@@ -20,6 +20,7 @@ import {
   SLIDES_DIR,
   SLIDES_FILE,
   STATUS_FILE,
+  TIMELINE_FILE,
   deleteSession,
   listFiles,
   readFile,
@@ -28,6 +29,7 @@ import {
   type SessionStatus,
   type SlideMeta,
 } from '../../src/opfs/session-store';
+import type { TimelineEvent } from '../../src/timeline';
 import type { WriterRequest, WriterResponse } from '../../src/opfs/writer.worker';
 
 /**
@@ -115,6 +117,9 @@ type Capture = {
   dir: FileSystemDirectoryHandle;
   slidesDir: FileSystemDirectoryHandle | null;
   slides: SlideMeta[];
+  timeline: TimelineEvent[];
+  /** timeline.json の書き込みを直列にする（古い内容で上書きしないため） */
+  timelineWrite: Promise<void>;
   stopping: boolean;
 };
 
@@ -142,7 +147,21 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return discardSession(msg.sessionId);
     case 'SLIDE':
       return saveSlide(msg);
+    case 'TIMELINE_EVENT':
+      return recordTimelineEvent(msg.sessionId, msg.event);
   }
+}
+
+/** 再生イベントを timeline.json に追記する（SPEC §10.1） */
+async function recordTimelineEvent(sessionId: string, event: TimelineEvent): Promise<void> {
+  const current = capture;
+  if (!current || current.sessionId !== sessionId) {
+    throw new LecError('NOT_CAPTURING', 'このセッションはキャプチャ中ではありません。');
+  }
+  current.timeline.push(event);
+  const snapshot = current.timeline.slice();
+  current.timelineWrite = current.timelineWrite.then(() => writeJson(current.dir, TIMELINE_FILE, snapshot)).catch(() => undefined);
+  await current.timelineWrite;
 }
 
 async function startCapture(streamId: string, config: Config, meta: SessionMeta): Promise<CaptureStartResult> {
@@ -225,6 +244,8 @@ async function startFromStream(stream: MediaStream, config: Config, meta: Sessio
     dir,
     slidesDir: null,
     slides: [],
+    timeline: [],
+    timelineWrite: Promise.resolve(),
     stopping: false,
   };
   capture = current;
@@ -287,6 +308,7 @@ async function finishCapture(current: Capture, error: string | undefined): Promi
   } catch (e) {
     storageError = toErrorInfo(e).message;
   }
+  await current.timelineWrite;
   const durationMs = Date.now() - current.startedEpochMs;
 
   current.stream.getTracks().forEach((t) => t.stop());
@@ -404,7 +426,7 @@ async function exportSession(sessionId: string): Promise<ExportResult> {
     exportUrls.add(url);
     files.push({ url, filename: `LecScribe/${sessionId}/${relative}`, bytes: file.size });
   };
-  for (const name of [AUDIO_FILE, SESSION_FILE, STATUS_FILE, SLIDES_FILE]) {
+  for (const name of [AUDIO_FILE, SESSION_FILE, STATUS_FILE, SLIDES_FILE, TIMELINE_FILE]) {
     const file = await readFile(dir, name);
     if (file) add(file, name);
   }

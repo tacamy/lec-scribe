@@ -39,6 +39,8 @@ export type Config = {
     dedupeThreshold: number;
     /** 保存間隔の下限 */
     minShotIntervalMs: number;
+    /** 再生中にタイムラインへ定期的に記録する間隔（SPEC §10.1） */
+    tickIntervalMs: number;
   };
 };
 
@@ -66,6 +68,7 @@ export const DEFAULT_CONFIG: Config = {
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
     minShotIntervalMs: 2000,
+    tickIntervalMs: 10_000,
   },
 };
 

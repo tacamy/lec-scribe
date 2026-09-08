@@ -13,6 +13,7 @@ export const SESSION_FILE = 'session.json';
 export const STATUS_FILE = 'status.json';
 export const SLIDES_DIR = 'slides';
 export const SLIDES_FILE = 'slides.json';
+export const TIMELINE_FILE = 'timeline.json';
 
 /** slides.json の要素（SPEC §14） */
 export type SlideMeta = {
