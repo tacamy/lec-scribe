@@ -8,6 +8,8 @@ export type ErrorCode =
   | 'STORAGE_FAILED'
   | 'NO_SESSION'
   | 'EXPORT_FAILED'
+  | 'PROBE_FAILED'
+  | 'NO_VIDEO'
   | 'NOT_CAPTURING'
   | 'INTERNAL';
 

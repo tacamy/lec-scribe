@@ -19,7 +19,11 @@ export default defineConfig({
       'storage', // config (local) and live state (session)
       'downloads', // export of recorded sessions (fallback path, SPEC D-07)
       'sidePanel', // the UI lives in the side panel so it stays open while the page is used
+      'scripting', // probe と検知用 content script を Start したタブにだけ注入する
     ],
+    // ローカルサーバー（Phase 7）向け。fixture ページ（127.0.0.1:8787）への
+    // 注入テストにも使う。大学サイトへの常時アクセスは要求しない（activeTab のみ）。
+    host_permissions: ['http://127.0.0.1/*'],
     // The same page serves as the action popup and as the side panel. The
     // icon click that opens the popup is what grants activeTab for the tab,
     // which chrome.tabCapture.getMediaStreamId requires; Start in the popup

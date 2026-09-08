@@ -9,8 +9,7 @@
     "zip": "wxt zip",
     "prepare:types": "wxt prepare",
     "typecheck": "wxt prepare && tsc --noEmit",
-    "test": "vitest run",
-    "lint": "echo \"(lint: not configured yet)\""
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/chrome": "^0.2.9",

@@ -7,8 +7,7 @@
     "start": "node --experimental-strip-types src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "lint": "echo \"(lint: not configured yet)\""
+    "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

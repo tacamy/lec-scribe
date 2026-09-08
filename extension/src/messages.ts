@@ -1,6 +1,7 @@
 import type { Config } from './config';
 import type { ErrorInfo } from './errors';
 import { LecError, toErrorInfo } from './errors';
+import type { VideoCandidate, VideoStatus } from './probe';
 import type { SessionState } from './state';
 
 /** Written to session.json when a capture starts. */
@@ -9,6 +10,14 @@ export type SessionMeta = {
   title?: string;
   url?: string;
   startedAt: string;
+};
+
+/** Start 前に走らせる probe の要約（SPEC §6.3 手順 3） */
+export type ProbeSummary = {
+  chosen?: VideoCandidate;
+  videoCount: number;
+  frames: number;
+  crossOriginIframes: string[];
 };
 
 /**
@@ -21,6 +30,10 @@ export type ToBackground =
   | { target: 'sw'; type: 'GET_STATE' }
   | { target: 'sw'; type: 'EXPORT'; sessionId: string }
   | { target: 'sw'; type: 'DISCARD'; sessionId: string }
+  /** 指定タブの <video> を調べる（Start 前の表示用） */
+  | { target: 'sw'; type: 'PROBE'; tabId: number }
+  /** 検知用 content script からの動画の状態 */
+  | { target: 'sw'; type: 'DETECT_STATUS'; sessionId: string; status: VideoStatus }
   /** Sent by the offscreen document when the captured track ends on its own (tab closed, capture revoked). */
   | { target: 'sw'; type: 'CAPTURE_ENDED'; reason: string }
   /** Sent by the offscreen document when recording fails mid-session. */
@@ -34,7 +47,19 @@ export type ToOffscreen =
   | { target: 'offscreen'; type: 'REVOKE'; urls: string[] }
   | { target: 'offscreen'; type: 'DISCARD'; sessionId: string };
 
-export type AnyMessage = ToBackground | ToOffscreen;
+/** service worker → 検知用 content script（chrome.tabs.sendMessage で frame を指定して送る） */
+export type ToContent =
+  | {
+      target: 'content';
+      type: 'DETECT_START';
+      sessionId: string;
+      selector: string;
+      index: number;
+      recorderStartEpochMs: number;
+    }
+  | { target: 'content'; type: 'DETECT_STOP' };
+
+export type AnyMessage = ToBackground | ToOffscreen | ToContent;
 
 export type CaptureStartResult = {
   /** Date.now() taken right after the recorder started; the origin of the recording clock (SPEC §10). */
@@ -62,6 +87,7 @@ export type CaptureStats = {
 
 export type ExportFile = { url: string; filename: string; bytes: number };
 export type ExportResult = { files: ExportFile[] };
+export type DetectStartResult = { status: VideoStatus };
 
 export type Reply<T> = ({ ok: true } & T) | { ok: false; error: ErrorInfo };
 
@@ -72,17 +98,31 @@ export function hasTarget<T extends AnyMessage['target']>(
   return !!msg && typeof msg === 'object' && (msg as { target?: unknown }).target === target;
 }
 
-async function send<T>(msg: AnyMessage): Promise<T> {
+function unwrap<T>(reply: Reply<T> | undefined, type: string): T {
+  if (!reply) throw new LecError('INTERNAL', `Empty reply for ${type}`);
+  if (!reply.ok) throw new LecError(reply.error.code, reply.error.message);
+  const { ok: _ok, ...rest } = reply;
+  return rest as T;
+}
+
+async function send<T>(msg: ToBackground | ToOffscreen): Promise<T> {
   let reply: Reply<T> | undefined;
   try {
     reply = (await chrome.runtime.sendMessage(msg)) as Reply<T> | undefined;
   } catch (e) {
     throw new LecError('INTERNAL', `No receiver for ${msg.type}: ${toErrorInfo(e).message}`);
   }
-  if (!reply) throw new LecError('INTERNAL', `Empty reply for ${msg.type}`);
-  if (!reply.ok) throw new LecError(reply.error.code, reply.error.message);
-  const { ok: _ok, ...rest } = reply;
-  return rest as T;
+  return unwrap(reply, msg.type);
+}
+
+async function sendToFrame<T>(tabId: number, frameId: number, msg: ToContent): Promise<T> {
+  let reply: Reply<T> | undefined;
+  try {
+    reply = (await chrome.tabs.sendMessage(tabId, msg, { frameId })) as Reply<T> | undefined;
+  } catch (e) {
+    throw new LecError('INTERNAL', `No content script for ${msg.type}: ${toErrorInfo(e).message}`);
+  }
+  return unwrap(reply, msg.type);
 }
 
 type StateReply = { state: SessionState };
@@ -93,6 +133,9 @@ export const sendToBackground = {
   getState: () => send<StateReply>({ target: 'sw', type: 'GET_STATE' }),
   export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
   discard: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId }),
+  probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
+  detectStatus: (sessionId: string, status: VideoStatus) =>
+    send<object>({ target: 'sw', type: 'DETECT_STATUS', sessionId, status }),
   captureEnded: (reason: string) => send<object>({ target: 'sw', type: 'CAPTURE_ENDED', reason }),
   captureError: (error: ErrorInfo) => send<object>({ target: 'sw', type: 'CAPTURE_ERROR', error }),
 };
@@ -107,6 +150,16 @@ export const sendToOffscreen = {
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
 };
 
+export const sendToContent = {
+  detectStart: (
+    tabId: number,
+    frameId: number,
+    params: { sessionId: string; selector: string; index: number; recorderStartEpochMs: number },
+  ) => sendToFrame<DetectStartResult>(tabId, frameId, { target: 'content', type: 'DETECT_START', ...params }),
+  detectStop: (tabId: number, frameId: number) =>
+    sendToFrame<object>(tabId, frameId, { target: 'content', type: 'DETECT_STOP' }),
+};
+
 /**
  * Wrap an async handler so it can be used with chrome.runtime.onMessage:
  * replies with { ok: true, ...result } or { ok: false, error } and returns
@@ -117,7 +170,7 @@ export function replyWith<M>(
 ) {
   return (msg: M, sender: chrome.runtime.MessageSender, sendResponse: (r: Reply<object>) => void) => {
     handler(msg, sender).then(
-      (result) => sendResponse({ ok: true, ...(result ?? {}) }),
+      (result) => sendResponse({ ok: true, ...result }),
       (e: unknown) => sendResponse({ ok: false, error: toErrorInfo(e) }),
     );
     return true;

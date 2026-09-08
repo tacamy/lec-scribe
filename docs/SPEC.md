@@ -224,7 +224,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - `content_scripts` は宣言しない。常時注入せず、Start 時に `activeTab` の範囲で注入する。
 - `<all_urls>` や `optional_host_permissions` は要求しない。
-- permission は Phase ごとに必要になった時点で追加する（Phase 1 時点: `tabCapture` / `offscreen` / `activeTab` / `storage`）。
+- permission は Phase ごとに必要になった時点で追加する（Phase 3 時点: `tabCapture` / `offscreen` / `activeTab` / `storage` / `downloads` / `sidePanel` / `scripting`。host_permissions は `http://127.0.0.1/*` のみで、ローカルサーバーと fixture ページへの注入テストに使う）。
 
 ### 6.2 コンテキストと責務
 
@@ -241,12 +241,12 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 1. パネル: 現在のタブを取得し、service worker に `START { tabId }` を送る
 2. service worker: 進行中セッションがあれば拒否する（同時 1 セッション）
 3. service worker: `chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probe })` を実行。戻り値は frame ごとの `{ frameId, result }` で、各 frame の `<video>` 候補（§6.6 `VideoCandidate`）と cross-origin `<iframe>` の `src` 一覧が得られる
-4. 候補が皆無なら `NO_VIDEO` エラー（cross-origin iframe 内の動画は MVP 非対応、D-09）
-5. service worker: 候補のうち最良の 1 つ（§8.1）を選び、その `frameId` にだけ検知用 content script を注入する
-6. service worker: `chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['USER_MEDIA'], justification })`（既存があれば再利用）
-7. service worker: `chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })` → offscreen に `CAPTURE_START { sessionId, streamId, config }`
-8. offscreen: `getUserMedia` → AudioContext パススルー → OPFS にセッションディレクトリ作成 → `MediaRecorder.start(timeslice)` → `recorderStartEpochMs = Date.now()` を返す
-9. service worker → content script: `DETECT_START { sessionId, config, recorderStartEpochMs }`
+4. 候補が皆無なら警告 `NO_VIDEO` を付けて音声のみ録音する（エラーにはしない。cross-origin iframe 内の動画は MVP 非対応で、iframe があれば `CROSS_ORIGIN_IFRAME` も付ける。D-09）
+5. service worker: `chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['USER_MEDIA'], justification })`（既存があれば再利用）
+6. service worker: `chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })` → offscreen に `CAPTURE_START { streamId, config, meta }`
+7. offscreen: `getUserMedia` → AudioContext パススルー → OPFS にセッションディレクトリ作成 → `MediaRecorder.start(timeslice)` → `recorderStartEpochMs = Date.now()` を返す
+8. service worker: 候補のうち最良の 1 つ（§8.1）を選び、その `frameId` にだけ検知用 content script（`detector.js`）を `chrome.scripting.executeScript({ files })` で注入する。失敗しても録音は続け、警告 `NO_VIDEO` を付ける
+9. service worker → content script: `DETECT_START { sessionId, selector, index, recorderStartEpochMs }` → 応答の `VideoStatus` を状態に保存する
 10. content script: timeline に `start` を記録し、初回スライドを保存し、サンプリングを開始する
 11. service worker: 状態を `CAPTURING` にして `storage.session` を更新 → パネル が反映する
 
@@ -300,13 +300,16 @@ type SessionState = {
 { type: 'START', tabId } | { type: 'STOP' } | { type: 'RETRY_UPLOAD' } | { type: 'EXPORT' } | { type: 'DISCARD' }
 
 // sw → content
-{ type: 'DETECT_START', sessionId, config, recorderStartEpochMs }
+{ type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs }   // chrome.tabs.sendMessage(tabId, msg, { frameId })
 { type: 'DETECT_STOP' }
 
 // content → offscreen
 { type: 'SLIDE', sessionId, seq, videoTime, t, capturedAt, width, height, mime, dataBase64 }
 { type: 'TIMELINE_EVENT', sessionId, event: TimelineEvent }
-{ type: 'DETECT_STATUS', frameSource, lastFrameAt, playbackRate, visibility }
+{ type: 'DETECT_STATUS', sessionId, status: VideoStatus }   // content → sw。再生イベント時と 5 秒ごと
+
+// popup → sw（Start 前の表示用）
+{ type: 'PROBE', tabId }   // → { probe: { chosen?: VideoCandidate, videoCount, frames, crossOriginIframes } }
 
 // sw → offscreen
 { type: 'CAPTURE_START', sessionId, streamId, config }             // → { recorderStartEpochMs }
@@ -705,7 +708,7 @@ audio.webm
 | 事象 | 検出 | 表示 | 復旧 |
 |---|---|---|---|
 | streamId 取得失敗 / getUserMedia 失敗 | 例外 | 「タブのキャプチャを開始できません」 | offscreen を閉じて IDLE |
-| video 要素なし | probe | 「動画が見つかりません」 | 再試行 |
+| video 要素なし | probe | 警告「動画が見つかりません。音声のみ録音します」 | 録音は継続 |
 | canvas tainted | probe | 「この動画からはスライドを取得できません」 | 音声のみ続行 |
 | DRM | probe | 「スライド保存は無効」 | 音声のみ続行 |
 | タブ非表示 | `visibilitychange` / フレーム間隔 | 「タブを前面に表示してください」 | 復帰後に差分で回復 |

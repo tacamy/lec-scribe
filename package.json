@@ -12,11 +12,12 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
+    "lint": "oxlint extension/src extension/entrypoints server/src scripts fixtures",
     "fixtures:make": "node fixtures/make-slides.mjs",
     "fixtures:serve": "node fixtures/serve.mjs"
   },
   "devDependencies": {
+    "oxlint": "^1.82.0",
     "playwright": "1.56.1"
   }
 }

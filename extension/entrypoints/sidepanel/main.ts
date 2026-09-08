@@ -1,8 +1,9 @@
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
-import { sendToBackground, sendToOffscreen, type CaptureStats } from '../../src/messages';
+import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, type StoredSession } from '../../src/opfs/session-store';
-import { INITIAL_STATE, isActive, onStateChange, type SessionState } from '../../src/state';
+import type { VideoStatus } from '../../src/probe';
+import { INITIAL_STATE, isActive, onStateChange, type SessionState, type WarningCode } from '../../src/state';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -14,7 +15,9 @@ const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
 const audioValue = $('audioValue');
 const meterFill = $('meterFill');
+const videoValue = $('videoValue');
 const tabValue = $('tabValue');
+const warningsList = $<HTMLUListElement>('warnings');
 const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
@@ -31,6 +34,17 @@ const STATE_LABEL: Record<SessionState['state'], string> = {
   PROCESSING: 'Transcribing…',
   COMPLETED: 'Done',
   ERROR: 'Error',
+};
+
+const WARNING_TEXT: Record<WarningCode, string> = {
+  PLAYBACK_RATE: '再生速度が 1.0x ではありません。文字起こしの精度が落ちるので 1.0x を推奨します。',
+  TAB_HIDDEN: 'タブが非表示です。表示に戻るまでスライド検知は止まります（録音は継続）。',
+  NAVIGATED: '動画ページから移動しました。録音は続いていますが、スライド検知は止まっています。',
+  NO_VIDEO: '動画が見つかりません。音声のみ録音します。',
+  CROSS_ORIGIN_IFRAME: '別ドメインの iframe 内の動画は現在未対応です。',
+  DRM: 'DRM 保護された動画のため、スライド画像は取得できません。',
+  TAINTED: 'この動画からはスライド画像を取得できません（cross-origin）。音声のみ録音します。',
+  SERVER_UNREACHABLE: 'ローカルサーバーに接続できません。',
 };
 
 let current: SessionState = INITIAL_STATE;
@@ -63,6 +77,9 @@ function render(state: SessionState) {
         : '—';
   }
 
+  videoValue.textContent = active ? describeVideo(state) : '—';
+  renderWarnings(active ? state.warnings : []);
+
   if (state.state === 'CAPTURING') {
     footer.textContent = '音声を録音中です。スピーカーや AirPods から聞こえ、二重になっていないか確認してください。';
   } else if (state.state === 'COMPLETED') {
@@ -80,6 +97,60 @@ function render(state: SessionState) {
 
   if (active) sessionsSection.hidden = true;
   else void renderSessions();
+}
+
+function describeVideo(state: SessionState): string {
+  const video = state.video;
+  if (state.frameSource !== 'direct' || !video) return '動画なし（音声のみ）';
+  return `${formatVideo(video)} · ${video.playbackRate}x · ${videoPhase(video)} · ${formatElapsed(video.currentTime * 1000)}`;
+}
+
+function formatVideo(video: Pick<VideoStatus, 'player' | 'videoWidth' | 'videoHeight'>): string {
+  const size = video.videoWidth > 0 ? `${video.videoWidth}×${video.videoHeight}` : '読込中';
+  return `${video.player} ${size}`;
+}
+
+function videoPhase(video: VideoStatus): string {
+  if (video.ended) return '終了';
+  if (video.paused) return '一時停止';
+  return video.playing ? '再生中' : '待機中';
+}
+
+function renderWarnings(codes: WarningCode[]) {
+  warningsList.replaceChildren(
+    ...codes.map((code) => {
+      const li = document.createElement('li');
+      li.textContent = WARNING_TEXT[code];
+      return li;
+    }),
+  );
+  warningsList.hidden = codes.length === 0;
+}
+
+/** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
+async function showProbe() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id) return;
+    const { probe } = await sendToBackground.probe(tab.id);
+    if (isActive(current)) return;
+    videoValue.textContent = describeProbe(probe);
+    if (!probe.chosen) {
+      const codes: WarningCode[] = ['NO_VIDEO'];
+      if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
+      renderWarnings(codes);
+    }
+  } catch {
+    // 内部ページなど、調べられないタブでは何も出さない
+  }
+}
+
+function describeProbe(probe: ProbeSummary): string {
+  if (!probe.chosen) return '動画が見つかりません';
+  const c = probe.chosen;
+  const parts = [formatVideo(c), c.playing ? '再生中' : c.paused ? '一時停止' : '待機中'];
+  if (probe.videoCount > 1) parts.push(`他 ${probe.videoCount - 1} 件`);
+  return parts.join(' · ');
 }
 
 function showMessage(text: string) {
@@ -215,4 +286,7 @@ stopBtn.addEventListener('click', () => {
 });
 
 onStateChange(render);
-void sendToBackground.getState().then(({ state }) => render(state));
+void sendToBackground.getState().then(({ state }) => {
+  render(state);
+  if (isPopup && !isActive(state)) void showProbe();
+});

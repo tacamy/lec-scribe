@@ -11,8 +11,9 @@
 |---|---|---|
 | 0 | 足場（pnpm workspace、WXT、Vitest、Playwright スモーク、fixture、CI） | 完了 |
 | 1 | tabCapture + 音声パススルー | 完了（Mac で確認済み: パススルー動作、二重再生なし） |
-| 2 | 録音（OPFS へ逐次保存 → エクスポート） | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
-| 3〜8 | 動画検出 → フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
+| 2 | 録音（OPFS へ逐次保存 → エクスポート） | 完了（Mac で確認済み） |
+| 3 | 講義ページの `<video>` 検出と状態追跡 | 実装済み。Mac 実機での確認待ち（[docs/CHECKS.md](docs/CHECKS.md)） |
+| 4〜8 | フレーム取得 → 変化検知 → スライド保存 → WhisperKit → 統合 | 未着手 |
 
 | ドキュメント | 内容 |
 |---|---|
@@ -39,7 +40,7 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー（Phase 0: /
 ```text
 lec-scribe/
 ├── extension/   Chrome 拡張（WXT + TypeScript）
-│   ├── entrypoints/  background.ts / sidepanel/ / offscreen/
+│   ├── entrypoints/  background.ts / sidepanel/ / offscreen/ / detector.ts（動画のある frame に注入）
 │   └── src/          config, state, messages, format, opfs/（純粋関数は Vitest）
 ├── server/      Mac ローカルサーバー（Node.js 22 + TypeScript、依存なし）
 ├── fixtures/    動作確認用のローカルプレイヤーページと合成スライド動画

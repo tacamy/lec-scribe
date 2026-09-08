@@ -9,7 +9,7 @@
     <main class="panel">
       <header class="header">
         <h1>LecScribe</h1>
-        <span class="phase">Phase 2</span>
+        <span class="phase">Phase 3</span>
       </header>
 
       <section class="status">
@@ -25,10 +25,16 @@
         </div>
         <div class="meter" aria-hidden="true"><div class="meterFill" id="meterFill"></div></div>
         <div class="row">
+          <span class="label">Video</span>
+          <span class="value" id="videoValue">—</span>
+        </div>
+        <div class="row">
           <span class="label">Tab</span>
           <span class="value ellipsis" id="tabValue" title="">—</span>
         </div>
       </section>
+
+      <ul class="warnings" id="warnings" hidden></ul>
 
       <p class="message" id="message" hidden></p>
 

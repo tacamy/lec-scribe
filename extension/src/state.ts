@@ -1,4 +1,5 @@
 import type { ErrorInfo } from './errors';
+import type { VideoStatus } from './probe';
 
 /** See docs/SPEC.md §6.5. */
 export type CaptureState =
@@ -11,7 +12,15 @@ export type CaptureState =
   | 'COMPLETED'
   | 'ERROR';
 
-export type WarningCode = 'PLAYBACK_RATE' | 'TAB_HIDDEN' | 'SERVER_UNREACHABLE' | 'DRM' | 'NAVIGATED';
+export type WarningCode =
+  | 'PLAYBACK_RATE'
+  | 'TAB_HIDDEN'
+  | 'NAVIGATED'
+  | 'NO_VIDEO'
+  | 'CROSS_ORIGIN_IFRAME'
+  | 'DRM'
+  | 'TAINTED'
+  | 'SERVER_UNREACHABLE';
 
 export type SessionSummary = {
   sessionId: string;
@@ -24,6 +33,8 @@ export type SessionSummary = {
 
 export type ExportProgress = {
   sessionId: string;
+  /** Date.now() at the time the downloads were created */
+  startedAt: number;
   downloadIds: number[];
   /** Blob URLs created by the offscreen document; revoked once every download settles. */
   urls: string[];
@@ -38,6 +49,12 @@ export type SessionState = {
   startedAt?: string;
   warnings: WarningCode[];
   error?: ErrorInfo;
+  /** スライド用フレームの取得元。'direct' = content script が <video> を直接読む、'none' = 音声のみ */
+  frameSource?: 'direct' | 'none';
+  /** 検知用 content script を注入した frame */
+  frameId?: number;
+  /** 検知用 content script から届いた直近の動画の状態 */
+  video?: VideoStatus;
   /** The session that just finished (COMPLETED / ERROR) or the previous one (IDLE). */
   lastSession?: SessionSummary;
   /** An export (chrome.downloads) in flight. */

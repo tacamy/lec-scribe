@@ -10,7 +10,7 @@
 
 ## 構成
 
-- `extension/` — WXT + TypeScript。`entrypoints/background.ts`（service worker、状態機械）、`entrypoints/offscreen/`（tabCapture のストリームと録音の正本）、`entrypoints/sidepanel/`（同じページをポップアップ `?mode=popup` とサイドパネルで使う）、`src/`（config / state / messages / format / opfs）
+- `extension/` — WXT + TypeScript。`entrypoints/background.ts`（service worker、状態機械）、`entrypoints/offscreen/`（tabCapture のストリームと録音の正本）、`entrypoints/sidepanel/`（同じページをポップアップ `?mode=popup` とサイドパネルで使う）、`entrypoints/detector.ts`（Start 時に動画のある frame へ `chrome.scripting.executeScript` で注入する検知スクリプト。`src/probe.ts` の `probeVideos` は `func` として文字列注入されるので外部参照禁止）、`src/`（config / state / messages / format / probe / opfs）
 - `server/` — Node 22 + TypeScript、ランタイム依存なし。Phase 7 で ffmpeg と whisperkit-cli を呼ぶ
 - `fixtures/` — video.js 風プレイヤーページと合成スライド動画（Phase 3〜6 の確認用）
 - `scripts/smoke-extension.mjs` — headless Chromium に拡張を読み込む統合テスト
@@ -32,4 +32,6 @@ pnpm fixtures:make && pnpm fixtures:serve  # http://127.0.0.1:8787/player.html
 - 拡張の状態の正本は `chrome.storage.session` と offscreen document。service worker はいつ止まってもよい前提で書く
 - service worker の状態更新は `serialized()` を通す（並行イベントで書き戻しが競合するため）
 - 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。「破棄」は OPFS の分だけ消す
-- コミットは英語、ドキュメントと UI 文言は日本語
+- コミットは英語、ドキュメントと UI 文言は日本語。コードコメントも日本語（Phase 2 以前の英語コメントは触ったときに直す）
+- コード変更後は `pnpm lint`（oxlint）と `pnpm typecheck` を通す
+- `scripts/smoke-extension.mjs` は fixture サーバーを自前で立てる（`fixtures/slides.webm` がなければ生成する）

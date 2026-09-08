@@ -3,10 +3,23 @@
 // tabCapture itself cannot run headless; that is verified manually (docs/CHECKS.md).
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
 const ext = path.resolve('extension/dist/chrome-mv3');
+
+// Phase 3 以降は fixture ページ（video.js 風 DOM + 合成スライド動画）を使う。
+// 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
+const FIXTURE_PORT = 8791;
+if (!existsSync('fixtures/slides.webm')) {
+  console.log('generating fixtures/slides.webm…');
+  const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', '--slides', '3', '--seconds', '2', '--width', '640', '--height', '360'], { stdio: 'inherit' });
+  assert.equal(made.status, 0, 'fixture generation failed');
+}
+const fixtureServer = spawn(process.execPath, ['fixtures/serve.mjs', String(FIXTURE_PORT)], { stdio: 'ignore' });
+await new Promise((r) => setTimeout(r, 500));
 const context = await chromium.launchPersistentContext('', {
   channel: 'chromium',
   headless: true,
@@ -115,12 +128,22 @@ try {
     null,
     { timeout: 20_000 },
   );
-  // Playwright routes downloads to its own artifacts directory under random
-  // names, so match the audio file by size rather than by the requested path.
+  // Playwright はダウンロードを横取りして自前の一時ディレクトリにランダム名で
+  // 保存する。その過程で chrome.downloads 上の状態が complete → in_progress →
+  // complete と揺れることがあるので、全件 complete になるまで待ってから見る。
+  // 音声ファイルは要求したパスではなくサイズで突き合わせる。
+  await popup.waitForFunction(
+    async () => {
+      const items = await chrome.downloads.search({});
+      return items.length === 3 && items.every((d) => d.state === 'complete');
+    },
+    null,
+    { timeout: 20_000 },
+  );
   const downloads = await popup.evaluate(() => chrome.downloads.search({}));
-  const summary = JSON.stringify(downloads.map((d) => [d.filename, d.state, d.fileSize]));
+  const stateAfter = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
+  const summary = `${JSON.stringify(downloads.map((d) => [d.id, d.filename, d.state, d.fileSize]))}\nstate: ${JSON.stringify(stateAfter.state)}`;
   assert.equal(downloads.length, 3, `downloads: ${summary}`);
-  assert.ok(downloads.every((d) => d.state === 'complete'), `downloads: ${summary}`);
   const audioDownload = downloads.find((d) => d.fileSize === rec.stopped.audioBytes);
   assert.ok(audioDownload, `no download of ${rec.stopped.audioBytes} bytes: ${summary}`);
   const afterExport = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
@@ -139,8 +162,82 @@ try {
   );
   assert.equal(offscreenLeft, 0);
 
+  // --- Phase 3: <video> の probe と検知スクリプト。拡張は 127.0.0.1 への
+  // host permission を持つので、activeTab なしでも scripting API が使える。
+  const lecture = await context.newPage();
+  lecture.on('pageerror', (e) => errors.push(String(e)));
+  await lecture.goto(`http://127.0.0.1:${FIXTURE_PORT}/player.html`);
+  await lecture.click('#play');
+  await lecture.waitForFunction(() => {
+    const v = document.querySelector('video');
+    return !!v && v.readyState >= 3 && !v.paused;
+  });
+  const expectedSize = await lecture.evaluate(() => {
+    const v = document.querySelector('video');
+    return [v.videoWidth, v.videoHeight];
+  });
+  const lectureTabId = await popup.evaluate(
+    async (url) => (await chrome.tabs.query({ url }))[0]?.id,
+    `http://127.0.0.1:${FIXTURE_PORT}/*`,
+  );
+  assert.ok(lectureTabId, 'fixture tab id');
+
+  const probed = await popup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ target: 'sw', type: 'PROBE', tabId }),
+    lectureTabId,
+  );
+  assert.equal(probed.ok, true, JSON.stringify(probed));
+  const chosen = probed.probe.chosen;
+  assert.ok(chosen, `no candidate: ${JSON.stringify(probed.probe)}`);
+  assert.equal(chosen.player, 'video.js');
+  assert.equal(chosen.selector, '#fixturePlayer_html5_api');
+  assert.deepEqual([chosen.videoWidth, chosen.videoHeight], expectedSize);
+  assert.equal(chosen.taintFree, true, 'same-origin video must not taint the canvas');
+  assert.equal(chosen.drm, false);
+  assert.equal(chosen.playing, true);
+  assert.equal(chosen.frameId, 0);
+  assert.equal(probed.probe.frames, 1);
+  assert.deepEqual(probed.probe.crossOriginIframes, []);
+  console.log(`probe: ${chosen.player} ${chosen.videoWidth}x${chosen.videoHeight} via ${chosen.selector}`);
+
+  // 検知スクリプトを注入し、frame 宛のメッセージで直接動かす
+  const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
+  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index }) => {
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
+    return chrome.tabs.sendMessage(
+      tabId,
+      { target: 'content', type: 'DETECT_START', sessionId: 'smoke', selector, index, recorderStartEpochMs: Date.now() },
+      { frameId },
+    );
+  }, target);
+  assert.equal(detect.ok, true, JSON.stringify(detect));
+  assert.equal(detect.status.playing, true);
+  assert.equal(detect.status.visible, true);
+  assert.equal(detect.status.playbackRate, 1);
+  assert.equal(detect.status.taintFree, true);
+
+  await lecture.click('#pause');
+  await lecture.waitForTimeout(300);
+  // 二重注入しても壊れないこと: もう一度注入 → DETECT_START → DETECT_STOP
+  const again = await popup.evaluate(async ({ tabId, frameId, selector, index }) => {
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
+    const started = await chrome.tabs.sendMessage(
+      tabId,
+      { target: 'content', type: 'DETECT_START', sessionId: 'smoke2', selector, index, recorderStartEpochMs: Date.now() },
+      { frameId },
+    );
+    const stopped = await chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId });
+    return { started, stopped };
+  }, target);
+  assert.equal(again.started.ok, true, JSON.stringify(again.started));
+  assert.equal(again.started.status.paused, true);
+  assert.equal(again.stopped.ok, true);
+  console.log(`detector: ${detect.status.player} playing→paused ok`);
+  await lecture.close();
+
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');
 } finally {
   await context.close();
+  fixtureServer.kill();
 }
