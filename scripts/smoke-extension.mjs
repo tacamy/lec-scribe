@@ -430,7 +430,7 @@ try {
   const outDir = outDirs.find((d) => d.startsWith(frameSession));
   assert.ok(outDir, `server output for ${frameSession}: ${outDirs}`);
   const produced = readdirSync(path.join(serverOut, outDir), { recursive: true }).map(String).sort();
-  for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'pipeline.json']) {
+  for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'pipeline.json']) {
     assert.ok(produced.includes(f), `missing ${f} in ${produced}`);
   }
   assert.ok(produced.some((f) => f.endsWith('slide_001.png')), `slides uploaded: ${produced}`);
@@ -439,6 +439,9 @@ try {
   const pipelineStatus = JSON.parse(readFileSync(path.join(serverOut, outDir, 'pipeline.json'), 'utf8'));
   assert.equal(pipelineStatus.stage, 'done');
   assert.equal(pipelineStatus.result.hasTimeline, true);
+  assert.equal(pipelineStatus.result.slides, 4);
+  const lectureMd = readFileSync(path.join(serverOut, outDir, 'lecture.md'), 'utf8');
+  assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](slides/slide_001.png)'), lectureMd.slice(0, 300));
   // 拡張側の status.json も done になり、一覧に「文字起こし済」が出る
   await popup.reload();
   await popup.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.textContent.includes(id) && li.textContent.includes('文字起こし済')), '2099-01-01 00:00:01', { timeout: 10_000 });

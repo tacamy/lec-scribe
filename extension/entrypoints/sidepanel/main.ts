@@ -115,7 +115,7 @@ function render(state: SessionState) {
   } else if (state.processing) {
     footer.textContent = 'サーバーで処理中です。このパネルを閉じても処理は続きます。';
   } else if (state.state === 'COMPLETED' && state.lastSession?.outputDir) {
-    footer.textContent = `文字起こしが終わりました: ${state.lastSession.outputDir}`;
+    footer.textContent = `文字起こしが終わりました: ${shortPath(state.lastSession.outputDir)}`;
   } else if (state.state === 'COMPLETED') {
     footer.textContent = serverConfigured
       ? '「送信」でサーバーへ送って文字起こしできます。「エクスポート」は ~/Downloads/LecScribe/ に保存します。'
@@ -141,8 +141,13 @@ function describeServer(state: SessionState): string {
     const elapsed = formatElapsed(Date.now() - p.startedAt);
     return `${STAGE_TEXT[p.stage]}${p.percent !== undefined ? ` ${p.percent}%` : ''} · ${elapsed}`;
   }
-  if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${state.lastSession.outputDir}`;
+  if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${shortPath(state.lastSession.outputDir)}`;
   return serverConfigured ? '待機中' : '未設定';
+}
+
+/** /Users/<name>/… を ~/… にして短く見せる */
+function shortPath(p: string): string {
+  return p.replace(/^\/Users\/[^/]+\//, '~/');
 }
 
 function describeVideo(state: SessionState): string {

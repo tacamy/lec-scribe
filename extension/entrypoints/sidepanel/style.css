@@ -67,8 +67,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .sessionMain { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; min-width: 0; }
 .sessionMain > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sessionMeta { color: var(--muted); flex: none; }
-.sessionBtns { display: flex; gap: 6px; }
+.sessionBtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sessionBtns button { padding: 4px 10px; font-size: 12px; font-weight: 500; background: transparent; border-color: var(--border); color: var(--fg); }
 .sessionBtns button.primary { background: var(--accent); border-color: transparent; color: #fff; }
-.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.tag { display: inline-flex; align-items: center; font-size: 11px; line-height: 1; padding: 5px 7px; border-radius: 4px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .tag.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }

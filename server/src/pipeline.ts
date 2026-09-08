@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
+import { assignSlides, buildLectureMarkdown, isSlideList, type MergedSegment } from './merge.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
@@ -14,7 +15,7 @@ export type PipelineStatus = {
   updatedAt: string;
   error?: string;
   /** 完了時の要約 */
-  result?: { segments: number; durationSec: number; hasTimeline: boolean };
+  result?: { segments: number; durationSec: number; hasTimeline: boolean; slides: number };
   /** 各段階にかかった秒 */
   timings?: Partial<Record<'converting' | 'transcribing' | 'merging', number>>;
 };
@@ -117,11 +118,19 @@ export class Pipeline {
       const result = await step('merging', async () => {
         const timeline = await readJson(path.join(dir, 'timeline.json'));
         const events = isTimeline(timeline) ? timeline : null;
-        const mapped = segments.map((s) => ({
-          ...s,
-          videoStart: events ? toVideoTime(events, s.start) : s.start,
-          videoEnd: events ? toVideoTime(events, s.end) : s.end,
-        }));
+        const slidesJson = await readJson(path.join(dir, 'slides.json'));
+        const slides = isSlideList(slidesJson) ? slidesJson : [];
+        const session = (await readJson(path.join(dir, 'session.json'))) as
+          | { title?: string; url?: string; startedAt?: string }
+          | undefined;
+        const mapped: MergedSegment[] = assignSlides(
+          segments.map((s) => ({
+            ...s,
+            videoStart: events ? toVideoTime(events, s.start) : s.start,
+            videoEnd: events ? toVideoTime(events, s.end) : s.end,
+          })),
+          slides,
+        );
         const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
         await writeFile(
           path.join(dir, 'transcript.json'),
@@ -140,11 +149,17 @@ export class Pipeline {
         await writeFile(path.join(dir, 'transcript.srt'), toSrt(forSubtitles));
         await writeFile(path.join(dir, 'transcript.vtt'), toVtt(forSubtitles));
         await writeFile(path.join(dir, 'transcript.txt'), toTxt(forSubtitles));
+        // 講義ノート（SPEC §13.4）: スライドごとに画像とその間の発話
+        await writeFile(
+          path.join(dir, 'lecture.md'),
+          buildLectureMarkdown({ title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides }),
+        );
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         return {
           segments: mapped.length,
           durationSec: Math.round(mapped[mapped.length - 1]!.end),
           hasTimeline: events !== null,
+          slides: slides.length,
         };
       });
 

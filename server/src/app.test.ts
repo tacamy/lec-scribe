@@ -115,9 +115,13 @@ describe('local server', () => {
     expect(status.result).toMatchObject({ segments: 2, hasTimeline: true });
 
     const files = (await readdir(outputDir, { recursive: true })).sort();
-    for (const f of ['audio.webm', 'audio.wav', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'slides/slide_001.png', 'timeline.json', 'session.json', 'pipeline.json']) {
+    for (const f of ['audio.webm', 'audio.wav', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'slides/slide_001.png', 'timeline.json', 'session.json', 'pipeline.json']) {
       expect(files).toContain(f);
     }
+    const lecture = await readFile(path.join(outputDir, 'lecture.md'), 'utf8');
+    expect(lecture).toContain('# テスト 講義/1');
+    expect(lecture).toContain('![slide_001](slides/slide_001.png)');
+    expect(lecture).toContain('次の区間');
     const transcript = JSON.parse(await readFile(path.join(outputDir, 'transcript.json'), 'utf8')) as {
       segments: Array<{ start: number; videoStart: number; text: string }>;
     };
