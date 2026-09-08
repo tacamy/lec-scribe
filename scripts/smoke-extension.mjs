@@ -191,8 +191,9 @@ try {
   assert.equal(afterExport.state.error, undefined);
   console.log(`exported ${downloads.length} files, audio ${audioDownload.fileSize} bytes`);
 
+  const stateBeforeDiscard = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const discarded = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), rec.sessionId);
-  assert.equal(discarded.ok, true, JSON.stringify(discarded));
+  assert.equal(discarded.ok, true, `${JSON.stringify(discarded)}\nstate before discard: ${JSON.stringify(stateBeforeDiscard)}`);
   await popup.reload();
   await popup.waitForSelector('#startBtn');
   await popup.waitForTimeout(300);
@@ -442,11 +443,19 @@ try {
   assert.equal(pipelineStatus.result.slides, 4);
   const lectureMd = readFileSync(path.join(serverOut, outDir, 'lecture.md'), 'utf8');
   assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](slides/slide_001.png)'), lectureMd.slice(0, 300));
-  // 拡張側の status.json も done になり、一覧に「文字起こし済」が出る
+  // 拡張側の status.json も done になり、一覧に「フォルダを開く」と「やり直す」が出る
   await popup.reload();
-  await popup.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.textContent.includes(id) && li.textContent.includes('文字起こし済')), '2099-01-01 00:00:01', { timeout: 10_000 });
+  await popup.waitForFunction(
+    (id) =>
+      [...document.querySelectorAll('#sessionList li')].some(
+        (li) => li.textContent.includes(id) && li.textContent.includes('フォルダを開く') && li.textContent.includes('やり直す'),
+      ),
+    '2099-01-01 00:00:01',
+    { timeout: 10_000 },
+  );
+  const beforeDiscard = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const discardedFrames = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
-  assert.equal(discardedFrames.ok, true, JSON.stringify(discardedFrames));
+  assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);
   console.log(`server: transcribed via ${outDir} (${produced.length} files)`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 

@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import path from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import type { ServerConfig } from './config.ts';
-import { resolveBin } from './exec.ts';
+import { resolveBin, run } from './exec.ts';
 import { slugify } from './format.ts';
 import { Pipeline, readPipelineStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
@@ -161,6 +161,25 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
       await writeFile(path.join(dir, 'pipeline.json'), JSON.stringify(queued, null, 2));
       void pipeline.enqueue(dir);
       sendJson(res, 202, { ok: true, ...queued });
+      return;
+    }
+
+    // POST /sessions/:id/open { target?: 'folder' | 'lecture' } — 出力を Finder / 既定のアプリで開く
+    if (req.method === 'POST' && parts[2] === 'open' && parts.length === 3) {
+      const body = ((await readJsonBody(req)) ?? {}) as { target?: string };
+      const target = body.target === 'lecture' ? path.join(dir, 'lecture.md') : dir;
+      try {
+        await stat(target);
+      } catch {
+        sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${path.basename(target)} がまだありません。` } });
+        return;
+      }
+      const r = await run(config.openBin, [target]).catch((e: unknown) => ({ code: -1, stdout: '', stderr: String(e) }));
+      if (r.code !== 0) {
+        sendJson(res, 500, { ok: false, error: { code: 'OPEN_FAILED', message: `開けませんでした: ${r.stderr.trim() || r.code}` } });
+        return;
+      }
+      sendJson(res, 200, { ok: true, opened: target });
       return;
     }
 

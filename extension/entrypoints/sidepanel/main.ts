@@ -32,6 +32,8 @@ const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
 const snapBtn = $<HTMLButtonElement>('snapBtn');
+const snapHint = $('snapHint');
+const openBtn = $<HTMLButtonElement>('openBtn');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
@@ -72,10 +74,30 @@ let current: SessionState = INITIAL_STATE;
 let statsTimer: number | undefined;
 /** サーバーのトークンが設定されているか（送信ボタンの表示に使う） */
 let serverConfigured = false;
+let serverTarget = { port: 47321, token: '' };
 
 async function refreshConfig() {
   const config = await loadConfig();
+  serverTarget = config.server;
   serverConfigured = config.server.token.length > 0;
+}
+
+/** サーバーに頼んで出力フォルダ（または lecture.md）を Finder / 既定のアプリで開く */
+async function openOutput(sessionId: string, target: 'folder' | 'lecture', fallbackPath?: string) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${serverTarget.port}/sessions/${sessionId}/open`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${serverTarget.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => undefined)) as { error?: { message?: string } } | undefined;
+      throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+    }
+  } catch (e) {
+    const reason = e instanceof TypeError ? 'サーバーが起動していないため開けません' : (e as Error).message;
+    showMessage(`${reason}${fallbackPath ? `\n${shortPath(fallbackPath)}` : ''}`);
+  }
 }
 
 function render(state: SessionState) {
@@ -91,6 +113,8 @@ function render(state: SessionState) {
   startBtn.disabled = !!state.exporting;
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
+  snapHint.hidden = snapBtn.hidden;
+  openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
 
   if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
@@ -102,7 +126,7 @@ function render(state: SessionState) {
     const last = state.lastSession;
     audioValue.textContent =
       state.state === 'COMPLETED' && last
-        ? `録音完了 ${formatElapsed(last.durationMs)} / ${formatBytes(last.audioBytes)}${last.exported ? '（エクスポート済み）' : ''}`
+        ? `録音完了 ${formatElapsed(last.durationMs)} / ${formatBytes(last.audioBytes)}${last.exported ? '（Downloads に書き出し済み）' : ''}`
         : '—';
   }
 
@@ -118,8 +142,8 @@ function render(state: SessionState) {
     footer.textContent = `文字起こしが終わりました: ${shortPath(state.lastSession.outputDir)}`;
   } else if (state.state === 'COMPLETED') {
     footer.textContent = serverConfigured
-      ? '「送信」でサーバーへ送って文字起こしできます。「エクスポート」は ~/Downloads/LecScribe/ に保存します。'
-      : 'エクスポートすると ~/Downloads/LecScribe/<セッション>/ に保存されます。文字起こしするには設定でサーバーのトークンを登録してください。';
+      ? '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。'
+      : '「Downloads に書き出す」で ~/Downloads/LecScribe/<セッション>/ に保存されます。文字起こしするには設定でサーバーのトークンを登録してください。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
   } else if (isPopup) {
@@ -273,15 +297,23 @@ function sessionItem(session: StoredSession): HTMLLIElement {
 
   const btns = document.createElement('div');
   btns.className = 'sessionBtns';
+  const done = session.status?.stage === 'done';
+  const openFolderBtn = document.createElement('button');
+  openFolderBtn.type = 'button';
+  openFolderBtn.className = 'primary';
+  openFolderBtn.textContent = 'フォルダを開く';
+  openFolderBtn.title = session.status?.outputDir ?? '';
+  openFolderBtn.addEventListener('click', () => void openOutput(session.sessionId, 'folder', session.status?.outputDir));
   const uploadBtn = document.createElement('button');
   uploadBtn.type = 'button';
-  uploadBtn.className = 'primary';
-  uploadBtn.textContent = session.status?.stage === 'done' ? '再送' : '送信';
-  uploadBtn.title = 'ローカルサーバーへ送って文字起こしする';
+  uploadBtn.className = done ? '' : 'primary';
+  uploadBtn.textContent = done ? 'やり直す' : '文字起こしする';
+  uploadBtn.title = done ? '同じフォルダに文字起こしをやり直す' : 'ローカルサーバーへ送って文字起こしする（~/LecScribe に出力）';
   const exportBtn = document.createElement('button');
   exportBtn.type = 'button';
   exportBtn.className = serverConfigured ? '' : 'primary';
-  exportBtn.textContent = 'エクスポート';
+  exportBtn.textContent = 'Downloads に書き出す';
+  exportBtn.title = 'サーバーを使わずに録音とスライドの生データを ~/Downloads/LecScribe に保存する';
   const discardBtn = document.createElement('button');
   discardBtn.type = 'button';
   discardBtn.textContent = '破棄';
@@ -295,21 +327,19 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     if (
       confirm(
         `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
-          'エクスポート済みのファイル（~/Downloads/LecScribe）はそのまま残ります。よろしいですか？',
+          '文字起こしの出力（~/LecScribe）や Downloads に書き出したファイルはそのまま残ります。よろしいですか？',
       )
     ) {
       void act(() => sendToBackground.discard(session.sessionId));
     }
   });
-  if (serverConfigured) btns.append(uploadBtn);
-  btns.append(exportBtn, discardBtn);
-  if (session.status?.stage === 'done') {
-    const tag = document.createElement('span');
-    tag.className = 'tag ok';
-    tag.textContent = '文字起こし済';
-    tag.title = session.status.outputDir ?? '';
-    btns.append(tag);
-  } else if (session.status?.stage === 'capturing') {
+  // サーバーを使う運用では生データもサーバー側に置かれるので、Downloads への書き出しは
+  // サーバー未設定のときだけの回収手段として出す（SPEC D-07）
+  if (serverConfigured && done) btns.append(openFolderBtn, uploadBtn);
+  else if (serverConfigured) btns.append(uploadBtn);
+  else btns.append(exportBtn);
+  btns.append(discardBtn);
+  if (session.status?.stage === 'capturing') {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = '中断';
@@ -357,17 +387,32 @@ stopBtn.addEventListener('click', () => {
   void act(() => sendToBackground.stop());
 });
 
+openBtn.addEventListener('click', () => {
+  const last = current.lastSession;
+  if (last?.outputDir) void openOutput(last.sessionId, 'folder', last.outputDir);
+});
+
+// 手動保存の結果はボタン自体の表示で返す（メッセージ欄だとレイアウトが動いて読みにくい）
+const SNAP_LABEL = snapBtn.textContent;
+let snapRestoreTimer: number | undefined;
+
 snapBtn.addEventListener('click', async () => {
   snapBtn.disabled = true;
-  message.hidden = true;
+  window.clearTimeout(snapRestoreTimer);
   try {
     const { slide } = await sendToBackground.captureFrame();
-    showMessage(`${slide.filename} を保存しました（${slide.width}×${slide.height}、${formatBytes(slide.bytes)}）`, 'info');
+    snapBtn.textContent = `✓ ${slide.filename} を保存しました`;
+    snapBtn.classList.add('done');
   } catch (e) {
     const info = toErrorInfo(e);
-    showMessage(`${info.message} (${info.code})`);
+    snapBtn.textContent = `保存できませんでした: ${info.message}`;
+    snapBtn.classList.add('failed');
   } finally {
     snapBtn.disabled = false;
+    snapRestoreTimer = window.setTimeout(() => {
+      snapBtn.textContent = SNAP_LABEL;
+      snapBtn.classList.remove('done', 'failed');
+    }, 2500);
   }
 });
 

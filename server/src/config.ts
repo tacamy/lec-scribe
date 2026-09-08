@@ -13,6 +13,8 @@ export type ServerConfig = {
   tokenFile: string;
   whisperkitBin: string;
   ffmpegBin: string;
+  /** 出力フォルダを Finder で開くコマンド（macOS の open） */
+  openBin: string;
   /** 処理後に audio.wav を残すか */
   keepWav: boolean;
 };
@@ -32,6 +34,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     tokenFile: expandHome(pick('token-file', 'LEC_SCRIBE_TOKEN_FILE', path.join(home, '.lec-scribe', 'token'))),
     whisperkitBin: pick('whisperkit', 'LEC_SCRIBE_WHISPERKIT', 'whisperkit-cli'),
     ffmpegBin: pick('ffmpeg', 'LEC_SCRIBE_FFMPEG', 'ffmpeg'),
+    openBin: pick('open', 'LEC_SCRIBE_OPEN', 'open'),
     keepWav: args['keep-wav'] === 'true' || env['LEC_SCRIBE_KEEP_WAV'] === '1',
   };
 }

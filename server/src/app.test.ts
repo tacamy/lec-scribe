@@ -36,6 +36,8 @@ beforeAll(async () => {
     'whisperkit-cli',
     'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0,"end":5.5,"text":"<|ja|> 最初の区間 "},{"start":5.5,"end":12,"text":"次の区間"}]}\' > "$dir/audio.json"; echo transcribed',
   );
+  // open スタブ: 開こうとしたパスを記録する
+  const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
   config = {
     host: '127.0.0.1',
     port: 0,
@@ -45,6 +47,7 @@ beforeAll(async () => {
     tokenFile: path.join(tmp, 'token'),
     whisperkitBin: whisperkit,
     ffmpegBin: ffmpeg,
+    openBin: open,
     keepWav: true,
   };
   const { server } = createApp(config, TOKEN);
@@ -129,6 +132,18 @@ describe('local server', () => {
     expect(transcript.segments[1]).toMatchObject({ start: 5.5, videoStart: 103.5, text: '次の区間' });
     const srt = await readFile(path.join(outputDir, 'transcript.srt'), 'utf8');
     expect(srt).toContain('00:01:43,500 --> 00:01:50,000\n次の区間');
+
+    // 出力フォルダと lecture.md を開く
+    const openedDir = await fetch(`${base}/sessions/${sessionId}/open`, { method: 'POST', headers, body: '{}' });
+    expect(openedDir.status).toBe(200);
+    expect(await readFile(path.join(tmp, 'opened.txt'), 'utf8')).toBe(outputDir);
+    const openedMd = await fetch(`${base}/sessions/${sessionId}/open`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'lecture' }),
+    });
+    expect(openedMd.status).toBe(200);
+    expect(await readFile(path.join(tmp, 'opened.txt'), 'utf8')).toBe(path.join(outputDir, 'lecture.md'));
   });
 
   it('refuses finalize before the audio arrived', async () => {
