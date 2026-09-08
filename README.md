@@ -21,7 +21,6 @@
 |---|---|
 | [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.3（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
 | [docs/CHECKS.md](docs/CHECKS.md) | Phase ごとの手動確認手順と記録 |
-| [docs/spec-v0.1-original.md](docs/spec-v0.1-original.md) | 原案 v0.1 |
 
 ## 使い方（開発中）
 
