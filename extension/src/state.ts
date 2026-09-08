@@ -74,6 +74,8 @@ export type SessionState = {
   exporting?: ExportProgress;
   /** サーバー送信〜文字起こしの進行状況 */
   processing?: ProcessingProgress;
+  /** 別のセッションを処理中に Stop した録音。処理が終わり次第、順に送る */
+  pendingUploads?: string[];
 };
 
 export const INITIAL_STATE: SessionState = { state: 'IDLE', warnings: [] };

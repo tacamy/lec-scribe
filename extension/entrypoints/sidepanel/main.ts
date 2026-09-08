@@ -136,7 +136,9 @@ function render(state: SessionState) {
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
 
   if (state.state === 'CAPTURING') {
-    footer.textContent = '音声を録音中です。スピーカーや AirPods から聞こえ、二重になっていないか確認してください。';
+    footer.textContent = state.processing
+      ? '録音中です。前のセッションの文字起こしは裏で続いています。'
+      : '録音中です。スライドの切り替えは自動で保存されます。';
   } else if (state.processing) {
     footer.textContent = 'サーバーで処理中です。このパネルを閉じても処理は続きます。';
   } else if (state.state === 'COMPLETED' && state.lastSession?.outputDir) {
@@ -162,10 +164,12 @@ function render(state: SessionState) {
 
 function describeServer(state: SessionState): string {
   const p = state.processing;
+  const pending = state.pendingUploads?.length ? ` · 送信待ち ${state.pendingUploads.length} 件` : '';
   if (p) {
     const elapsed = formatElapsed(Date.now() - p.startedAt);
-    return `${STAGE_TEXT[p.stage]}${p.percent !== undefined ? ` ${p.percent}%` : ''} · ${elapsed}`;
+    return `${STAGE_TEXT[p.stage]}${p.percent !== undefined ? ` ${p.percent}%` : ''} · ${elapsed}${pending}`;
   }
+  if (pending) return `待機中${pending}`;
   if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${shortPath(state.lastSession.outputDir)}`;
   return serverConfigured ? '待機中' : '未設定';
 }
