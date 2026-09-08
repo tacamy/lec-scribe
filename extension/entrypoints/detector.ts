@@ -33,9 +33,12 @@ type Session = {
   taintFree: boolean | null;
   heartbeat: number;
   frameCallback: number | null;
-  onEvent: () => void;
+  onEvent: (event: Event) => void;
   onVisibility: () => void;
 };
+
+/** 再生が（再）開始されるイベント。ここから「フレームが来ない時間」を測り直す */
+const RESTART_EVENTS = new Set(['play', 'playing', 'seeked']);
 
 let session: Session | null = null;
 
@@ -98,7 +101,12 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     taintFree: null,
     heartbeat: 0,
     frameCallback: null,
-    onEvent: () => void report(current),
+    onEvent: (event) => {
+      // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
+      // 再生の再開やシークの時点でフレーム時刻を今にそろえる（SPEC §8.6）。
+      if (RESTART_EVENTS.has(event.type)) current.lastFrameAt = Date.now();
+      void report(current);
+    },
     onVisibility: () => void report(current),
   };
   for (const name of VIDEO_EVENTS) video.addEventListener(name, current.onEvent);
