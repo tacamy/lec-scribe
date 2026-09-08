@@ -139,7 +139,7 @@ brew install whisperkit-cli ffmpeg
 pnpm --filter @lec-scribe/server start      # 表示されるトークンを控える
 ```
 
-初回は `large-v3` モデル（数 GB）のダウンロードに時間がかかる。サーバーはターミナルを開いたままにする。
+初回は `large-v3` モデル（数 GB）のダウンロードに時間がかかる。サーバーはターミナルを開いたままにするか、`pnpm --filter @lec-scribe/server agent:install` で常駐させる（README「サーバーの常駐化」）。常駐後にサーバーのコードを更新したら `agent:restart`。
 
 | # | 操作 | 期待 |
 |---|---|---|

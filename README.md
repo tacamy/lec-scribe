@@ -38,6 +38,19 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起�
 
 ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
 
+### サーバーの常駐化（macOS）
+
+ターミナルで起動しておく代わりに、launchd のユーザーエージェントとして登録するとログイン時に自動起動し、落ちても再起動されます。
+
+```sh
+pnpm --filter @lec-scribe/server agent:install    # 登録して起動。トークンも表示する
+pnpm --filter @lec-scribe/server agent:status     # 状態と /health
+pnpm --filter @lec-scribe/server agent:restart    # サーバーのコードを更新したあとに
+pnpm --filter @lec-scribe/server agent:uninstall  # 解除
+```
+
+ログは `~/Library/Logs/lec-scribe/server.log`。登録時の `node` のパスと `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を plist に書き込むので、Node を入れ替えたときは `agent:install` をやり直してください。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めてから登録します。
+
 ## 構成
 
 ```text

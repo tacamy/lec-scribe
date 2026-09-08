@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node --experimental-strip-types src/index.ts",
+    "agent:install": "node scripts/agent.mjs install",
+    "agent:uninstall": "node scripts/agent.mjs uninstall",
+    "agent:status": "node scripts/agent.mjs status",
+    "agent:restart": "node scripts/agent.mjs restart",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
