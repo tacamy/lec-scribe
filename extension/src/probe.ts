@@ -58,6 +58,8 @@ export type VideoStatus = {
   lastFrameAt: number | null;
   taintFree: boolean | null;
   drm: boolean;
+  /** 変化検知の直近の判定（閾値調整の目安。Phase 5） */
+  detect?: { state: 'watching' | 'stabilizing'; diffPrev: number; diffSaved?: number };
   updatedAt: number;
 };
 

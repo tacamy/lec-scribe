@@ -17,6 +17,9 @@ const opts = parseArgs(process.argv.slice(2));
 const out = path.join(here, 'slides.webm');
 const raw = path.join(here, 'slides.raw.webm');
 
+/** 描画内容を変えたら上げる。スモークテストは古い世代の動画を作り直す */
+export const FIXTURE_VERSION = 2;
+
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
 await page.setContent('<canvas id="c"></canvas>');
@@ -44,20 +47,24 @@ const base64 = await page.evaluate(async ({ slides, seconds, width, height, cloc
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   const stopped = new Promise((r) => (rec.onstop = r));
 
-  const palette = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e', '#17becf', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22'];
+  // 隣り合うスライドは輝度でも十分に違うようにする（検知は 160×90 のグレースケールで比べる）。
+  // 見出しバーは明暗を交互に、左には大きなスライド番号を置く。
   const drawSlide = (i, t) => {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = palette[i % palette.length];
+    ctx.fillStyle = `hsl(${(i * 47) % 360} 70% ${i % 2 ? 30 : 78}%)`;
     ctx.fillRect(0, 0, width, height * 0.14);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = i % 2 ? '#ffffff' : '#222222';
     ctx.font = `bold ${Math.round(height * 0.07)}px sans-serif`;
     ctx.fillText(`Slide ${i + 1} / ${slides}`, width * 0.04, height * 0.1);
+    ctx.fillStyle = i % 3 === 0 ? '#1a1a1a' : i % 3 === 1 ? '#7a7a7a' : '#c8c8c8';
+    ctx.font = `bold ${Math.round(height * 0.5)}px sans-serif`;
+    ctx.fillText(String(i + 1), width * 0.05, height * 0.72);
     ctx.fillStyle = '#222222';
     ctx.font = `${Math.round(height * 0.045)}px sans-serif`;
     for (let line = 0; line < 5; line++) {
       const y = height * (0.28 + line * 0.11);
-      ctx.fillText(`• 項目 ${line + 1}: スライド ${i + 1} の本文テキスト（${'あいうえお'.repeat(1 + ((i + line) % 3))}）`, width * 0.06, y);
+      ctx.fillText(`• 項目 ${line + 1}: スライド ${i + 1} の本文テキスト（${'あいうえお'.repeat(1 + ((i + line) % 3))}）`, width * 0.36, y);
     }
     // Wipe: a small box whose contents move every frame.
     const bw = width * 0.18;
@@ -121,6 +128,7 @@ if (ffmpeg.status === 0) {
   await rename(raw, out);
   console.log(`wrote ${path.relative(process.cwd(), out)} (ffmpeg not found: file has no duration/cues, seeking may be limited)`);
 }
+await writeFile(`${out}.version`, `${FIXTURE_VERSION}\n`);
 
 function parseArgs(argv) {
   const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false };

@@ -76,6 +76,7 @@ export type ToContent =
       index: number;
       recorderStartEpochMs: number;
       slide: Config['slide'];
+      detect: Config['detect'];
     }
   | { target: 'content'; type: 'DETECT_STOP' }
   | { target: 'content'; type: 'CAPTURE_FRAME'; reason: SlideReason };
@@ -188,6 +189,7 @@ export const sendToContent = {
       index: number;
       recorderStartEpochMs: number;
       slide: Config['slide'];
+      detect: Config['detect'];
     },
   ) => sendToFrame<DetectStartResult>(tabId, frameId, { target: 'content', type: 'DETECT_START', ...params }),
   detectStop: (tabId: number, frameId: number) =>

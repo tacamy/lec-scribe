@@ -1,5 +1,6 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import type { Config } from '../src/config';
+import { ChangeDetector, toGrayscale, type Verdict } from '../src/detect';
 import { LecError } from '../src/errors';
 import {
   hasTarget,
@@ -41,6 +42,12 @@ type Session = {
   selector: string;
   recorderStartEpochMs: number;
   slide: Config['slide'];
+  detect: Config['detect'];
+  detector: ChangeDetector;
+  /** 比較用の縮小フレームを描く canvas */
+  smallCtx: CanvasRenderingContext2D;
+  sampleTimer: number;
+  lastVerdict: Verdict | null;
   lastFrameAt: number | null;
   taintFree: boolean | null;
   heartbeat: number;
@@ -111,12 +118,23 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   const video = findVideo(msg.selector, msg.index);
   if (!video) throw new LecError('NO_VIDEO', '動画要素が見つかりません。');
 
+  const small = document.createElement('canvas');
+  small.width = msg.detect.detectWidth;
+  small.height = msg.detect.detectHeight;
+  const smallCtx = small.getContext('2d', { willReadFrequently: true });
+  if (!smallCtx) throw new LecError('CAPTURE_FAILED', 'canvas を作成できません。');
+
   const current: Session = {
     sessionId: msg.sessionId,
     video,
     selector: msg.selector,
     recorderStartEpochMs: msg.recorderStartEpochMs,
     slide: msg.slide,
+    detect: msg.detect,
+    detector: new ChangeDetector(msg.detect),
+    smallCtx,
+    sampleTimer: 0,
+    lastVerdict: null,
     lastFrameAt: null,
     taintFree: null,
     heartbeat: 0,
@@ -127,6 +145,8 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
       // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
       // 再生の再開やシークの時点でフレーム時刻を今にそろえる（SPEC §8.6）。
       if (RESTART_EVENTS.has(event.type)) current.lastFrameAt = Date.now();
+      // 停止した瞬間の画面は確実に静止しているので、安定待ち中なら即判定する
+      if (event.type === 'pause' || event.type === 'ended') flushDetection(current);
       void report(current);
     },
     onVisibility: () => void report(current),
@@ -134,6 +154,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   for (const name of VIDEO_EVENTS) video.addEventListener(name, current.onEvent);
   document.addEventListener('visibilitychange', current.onVisibility);
   current.heartbeat = window.setInterval(() => void report(current), HEARTBEAT_MS);
+  current.sampleTimer = window.setInterval(() => sampleOnce(current), msg.detect.sampleIntervalMs);
 
   // 描画されたフレームの時刻を追う。非表示タブでは止まるので、
   // 「再生中なのにフレームが来ない」= TAB_HIDDEN の判定に使う（SPEC §8.6）。
@@ -163,6 +184,7 @@ function stopDetection(): object {
   current.video.removeEventListener('loadeddata', current.onInitial);
   document.removeEventListener('visibilitychange', current.onVisibility);
   window.clearInterval(current.heartbeat);
+  window.clearInterval(current.sampleTimer);
   if (current.frameCallback !== null && typeof current.video.cancelVideoFrameCallback === 'function') {
     current.video.cancelVideoFrameCallback(current.frameCallback);
   }
@@ -205,8 +227,42 @@ function snapshot(current: Session): VideoStatus {
     lastFrameAt: current.lastFrameAt,
     taintFree: current.taintFree,
     drm: video.mediaKeys !== null && video.mediaKeys !== undefined,
+    detect: current.lastVerdict
+      ? { state: current.lastVerdict.state, diffPrev: current.lastVerdict.diffPrev, diffSaved: current.lastVerdict.diffSaved }
+      : undefined,
     updatedAt: Date.now(),
   };
+}
+
+/** 比較用の縮小グレースケール画像を取る */
+function grayFrame(current: Session): Uint8Array {
+  const { detectWidth: w, detectHeight: h } = current.detect;
+  current.smallCtx.drawImage(current.video, 0, 0, w, h);
+  return toGrayscale(current.smallCtx.getImageData(0, 0, w, h).data, w * h);
+}
+
+function canSample(current: Session): boolean {
+  const { video } = current;
+  if (session !== current || current.grabbing) return false;
+  if (video.readyState < 2 || video.videoWidth === 0) return false;
+  if (current.taintFree === null) current.taintFree = checkTaint(video);
+  return current.taintFree === true;
+}
+
+/** sampleIntervalMs ごとの変化検知（SPEC §9.2）。一時停止中は何もしない */
+function sampleOnce(current: Session): void {
+  if (!canSample(current) || current.video.paused || current.video.ended) return;
+  const verdict = current.detector.sample(grayFrame(current), Date.now());
+  current.lastVerdict = verdict;
+  if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
+}
+
+/** 一時停止・終了の瞬間に安定待ちを打ち切る */
+function flushDetection(current: Session): void {
+  if (!canSample(current)) return;
+  const verdict = current.detector.flush(grayFrame(current), Date.now());
+  current.lastVerdict = verdict;
+  if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
 }
 
 /**
@@ -263,6 +319,8 @@ async function grabFrame(current: Session, reason: SlideReason): Promise<Capture
       reason,
       bytes: saved.bytes,
     };
+    // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
+    current.detector.markSaved(grayFrame(current), Date.now());
     return { slide: meta };
   } finally {
     current.grabbing = false;

@@ -18,6 +18,28 @@ export type Config = {
     /** 保存画像の幅の上限。0 なら動画のネイティブ解像度のまま */
     maxSlideWidth: number;
   };
+  /** 画面変化の検知パラメータ（SPEC §9.1） */
+  detect: {
+    /** サンプリング間隔 */
+    sampleIntervalMs: number;
+    /** 比較用の縮小サイズ */
+    detectWidth: number;
+    detectHeight: number;
+    /** 画素差（0〜255）がこの値以上なら「変化画素」 */
+    pixelDiffThreshold: number;
+    /** 変化画素率がこれ以上なら「変化候補」 */
+    changeThreshold: number;
+    /** 直前サンプルとの差がこれ未満なら「安定」 */
+    stableThreshold: number;
+    /** 連続してこの回数安定したら確定 */
+    stableSamples: number;
+    /** 安定待ちの上限。超えたら現フレームで確定 */
+    maxStabilizeMs: number;
+    /** 最後に保存した画像との差がこれ未満なら保存しない */
+    dedupeThreshold: number;
+    /** 保存間隔の下限 */
+    minShotIntervalMs: number;
+  };
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -30,6 +52,20 @@ export const DEFAULT_CONFIG: Config = {
     imageFormat: 'png',
     jpegQuality: 0.9,
     maxSlideWidth: 0,
+  },
+  // 閾値は fixture の実測から決めた（SPEC §9.3）:
+  // 本文テキストだけが変わるスライドで約 3.2%、講師ワイプの動きで 0.4〜0.9%。
+  detect: {
+    sampleIntervalMs: 500,
+    detectWidth: 160,
+    detectHeight: 90,
+    pixelDiffThreshold: 24,
+    changeThreshold: 0.02,
+    stableThreshold: 0.015,
+    stableSamples: 2,
+    maxStabilizeMs: 3000,
+    dedupeThreshold: 0.015,
+    minShotIntervalMs: 2000,
   },
 };
 

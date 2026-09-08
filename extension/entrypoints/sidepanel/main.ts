@@ -105,7 +105,9 @@ function render(state: SessionState) {
 function describeVideo(state: SessionState): string {
   const video = state.video;
   if (state.frameSource !== 'direct' || !video) return '動画なし（音声のみ）';
-  return `${formatVideo(video)} · ${video.playbackRate}x · ${videoPhase(video)} · ${formatElapsed(video.currentTime * 1000)}`;
+  const parts = [formatVideo(video), `${video.playbackRate}x`, videoPhase(video), formatElapsed(video.currentTime * 1000)];
+  if (video.detect) parts.push(`変化 ${(video.detect.diffPrev * 100).toFixed(1)}%`);
+  return parts.join(' · ');
 }
 
 function formatVideo(video: Pick<VideoStatus, 'player' | 'videoWidth' | 'videoHeight'>): string {

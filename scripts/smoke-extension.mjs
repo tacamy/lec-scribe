@@ -4,7 +4,7 @@
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
@@ -13,7 +13,9 @@ const ext = path.resolve('extension/dist/chrome-mv3');
 // Phase 3 以降は fixture ページ（video.js 風 DOM + 合成スライド動画）を使う。
 // 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
 const FIXTURE_PORT = 8791;
-if (!existsSync('fixtures/slides.webm')) {
+const FIXTURE_VERSION = 2; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
+const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
+if (!existsSync('fixtures/slides.webm') || fixtureVersion !== String(FIXTURE_VERSION)) {
   console.log('generating fixtures/slides.webm…');
   const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', '--slides', '3', '--seconds', '2', '--width', '640', '--height', '360'], { stdio: 'inherit' });
   assert.equal(made.status, 0, 'fixture generation failed');
@@ -236,52 +238,75 @@ try {
     );
   }, { sessionId: frameSession, slide: slideConfig });
 
+  // 検知は動画の先頭から見たいので、ページを読み直して再生し直す
+  await lecture.reload();
+  await lecture.click('#play');
+  await lecture.waitForFunction(() => {
+    const v = document.querySelector('video');
+    return !!v && v.readyState >= 3 && !v.paused && v.currentTime < 1.5;
+  });
+
   // 検知スクリプトを注入し、frame 宛のメッセージで直接動かす
+  const detectConfig = {
+    sampleIntervalMs: 500,
+    detectWidth: 160,
+    detectHeight: 90,
+    pixelDiffThreshold: 24,
+    changeThreshold: 0.02,
+    stableThreshold: 0.015,
+    stableSamples: 2,
+    maxStabilizeMs: 3000,
+    dedupeThreshold: 0.015,
+    minShotIntervalMs: 1000,
+  };
   const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
-  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide }) => {
+  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide, detect }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     return chrome.tabs.sendMessage(
       tabId,
-      { target: 'content', type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs: Date.now(), slide },
+      { target: 'content', type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs: Date.now(), slide, detect },
       { frameId },
     );
-  }, { ...target, sessionId: frameSession, slide: slideConfig });
+  }, { ...target, sessionId: frameSession, slide: slideConfig, detect: detectConfig });
   assert.equal(detect.ok, true, JSON.stringify(detect));
   assert.equal(detect.status.playing, true);
   assert.equal(detect.status.visible, true);
   assert.equal(detect.status.playbackRate, 1);
   assert.equal(detect.status.taintFree, true);
 
-  // 最初の 1 枚が自動で保存される
+  // 最初の 1 枚が自動で保存され、以降はスライドの切り替わり（2 秒ごと）を検知して保存される。
+  // ワイプ（動く円）だけでは保存されないこと = 3 枚ちょうど
   await off2.waitForFunction(() => globalThis.__lecscribe.stats().slideCount >= 1, null, { timeout: 10_000 });
+  await lecture.waitForFunction(() => document.querySelector('video').ended, null, { timeout: 30_000 });
+  await lecture.waitForTimeout(1000);
+  const autoCount = await off2.evaluate(() => globalThis.__lecscribe.stats().slideCount);
+  assert.equal(autoCount, 3, `expected initial + 2 slide changes, got ${autoCount}`);
 
-  await lecture.click('#pause');
-  await lecture.waitForTimeout(300);
-  // 手動保存（パネルの「スクショを保存」相当）
+  // 手動保存（パネルの「スクショを保存」相当）。終了後の静止画でも撮れる
   const manual = await popup.evaluate(
     ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'CAPTURE_FRAME', reason: 'manual' }, { frameId }),
     target,
   );
   assert.equal(manual.ok, true, JSON.stringify(manual));
-  assert.equal(manual.slide.seq, 2);
-  assert.equal(manual.slide.filename, 'slide_002.png');
+  assert.equal(manual.slide.seq, 4);
+  assert.equal(manual.slide.filename, 'slide_004.png');
   assert.deepEqual([manual.slide.width, manual.slide.height], expectedSize);
   assert.ok(manual.slide.videoTime > 0, `videoTime ${manual.slide.videoTime}`);
   assert.ok(manual.slide.t >= 0);
 
   // 二重注入しても壊れないこと: もう一度注入 → DETECT_START → DETECT_STOP
-  const again = await popup.evaluate(async ({ tabId, frameId, selector, index, slide }) => {
+  const again = await popup.evaluate(async ({ tabId, frameId, selector, index, slide, detect }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     const started = await chrome.tabs.sendMessage(
       tabId,
-      { target: 'content', type: 'DETECT_START', sessionId: 'smoke2', selector, index, recorderStartEpochMs: Date.now(), slide },
+      { target: 'content', type: 'DETECT_START', sessionId: 'smoke2', selector, index, recorderStartEpochMs: Date.now(), slide, detect },
       { frameId },
     );
     const stopped = await chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId });
     return { started, stopped };
-  }, { ...target, slide: slideConfig });
+  }, { ...target, slide: slideConfig, detect: detectConfig });
   assert.equal(again.started.ok, true, JSON.stringify(again.started));
-  assert.equal(again.started.status.paused, true);
+  assert.equal(again.started.status.ended, true);
   assert.equal(again.stopped.ok, true);
   console.log(`detector: ${detect.status.player} playing→paused ok`);
   await lecture.close();
@@ -302,15 +327,18 @@ try {
     return { stopped, names: files.map((f) => f.filename), head, slides };
   }, frameSession);
   await off2.close();
-  for (const rel of ['slides/slide_001.png', 'slides/slide_002.png', 'slides.json', 'audio.webm']) {
+  for (const rel of ['slides/slide_001.png', 'slides/slide_004.png', 'slides.json', 'audio.webm']) {
     assert.ok(frames.names.includes(`LecScribe/${frameSession}/${rel}`), `missing ${rel}: ${frames.names}`);
   }
   assert.ok(frames.head, 'slide_001.png readable');
   assert.deepEqual(frames.head.slice(0, 8), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'PNG signature');
   const be32 = (b, i) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
   assert.deepEqual([be32(frames.head, 16), be32(frames.head, 20)], expectedSize, 'PNG IHDR size = video size');
-  assert.equal(frames.slides.length, 2);
-  assert.deepEqual(frames.slides.map((s) => s.reason), ['initial', 'manual']);
+  assert.equal(frames.slides.length, 4);
+  assert.deepEqual(frames.slides.map((s) => s.reason), ['initial', 'change', 'change', 'manual']);
+  // 切り替わりの時刻: スライド 2 は 2 秒、3 は 4 秒に出るので、その少し後に保存されている
+  assert.ok(frames.slides[1].videoTime > 2 && frames.slides[1].videoTime < 4, `slide 2 at ${frames.slides[1].videoTime}`);
+  assert.ok(frames.slides[2].videoTime > 4, `slide 3 at ${frames.slides[2].videoTime}`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);

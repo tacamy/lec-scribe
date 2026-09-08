@@ -204,6 +204,7 @@ async function startDetection(
       index: chosen.index,
       recorderStartEpochMs,
       slide: config.slide,
+      detect: config.detect,
     });
     return { frameSource: 'direct', frameId: chosen.frameId, video: status, warnings: videoWarnings(status) };
   } catch (e) {
