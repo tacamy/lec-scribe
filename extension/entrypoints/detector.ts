@@ -14,7 +14,7 @@ import {
 } from '../src/messages';
 import type { SlideMeta } from '../src/opfs/session-store';
 import type { VideoStatus } from '../src/probe';
-import { videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
+import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
 
 /**
  * 検知用 content script（SPEC §6.2, §8）。
@@ -50,6 +50,7 @@ type Session = {
   sampleTimer: number;
   tickTimer: number;
   lastVerdict: Verdict | null;
+  lastTimeline: TimelineEvent | undefined;
   lastFrameAt: number | null;
   taintFree: boolean | null;
   heartbeat: number;
@@ -140,6 +141,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     sampleTimer: 0,
     tickTimer: 0,
     lastVerdict: null,
+    lastTimeline: undefined,
     lastFrameAt: null,
     taintFree: null,
     heartbeat: 0,
@@ -217,7 +219,10 @@ function timelineEvent(current: Session, type: TimelineEventType): TimelineEvent
 }
 
 function recordTimeline(current: Session, type: TimelineEventType): void {
-  void sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, type)).catch(() => undefined);
+  const event = timelineEvent(current, type);
+  if (isDuplicateEvent(current.lastTimeline, event)) return;
+  current.lastTimeline = event;
+  void sendToOffscreen.timelineEvent(current.sessionId, event).catch(() => undefined);
 }
 
 /** canvas に描けるか（tainted でないか）を一度だけ判定する */

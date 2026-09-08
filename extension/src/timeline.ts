@@ -48,6 +48,21 @@ export function toVideoTime(events: readonly TimelineEvent[], t: number): number
   return base.state === 'playing' ? base.videoTime + (t - base.t) * base.rate : base.videoTime;
 }
 
+/**
+ * 直前と実質同じイベントか。Brightcove は 1 回のシークで同じ位置の `seeked` を
+ * 数回発火するので、位置・状態・速度・種類が同じで 2 秒以内なら記録しない。
+ */
+export function isDuplicateEvent(prev: TimelineEvent | undefined, next: TimelineEvent): boolean {
+  if (!prev) return false;
+  return (
+    prev.type === next.type &&
+    prev.state === next.state &&
+    prev.rate === next.rate &&
+    Math.abs(prev.videoTime - next.videoTime) < 0.005 &&
+    next.t - prev.t < 2
+  );
+}
+
 /** 動画の再生状態を <video> の属性から決める */
 export function videoState(video: {
   paused: boolean;
