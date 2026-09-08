@@ -18,7 +18,10 @@ export default defineConfig({
       'activeTab', // temporary access to the tab where Start was pressed
       'storage', // config (local) and live state (session)
       'downloads', // export of recorded sessions (fallback path, SPEC D-07)
+      'sidePanel', // the UI lives in the side panel so it stays open while the page is used
     ],
+    // No popup: clicking the icon toggles the side panel (see background.ts).
+    action: { default_title: 'LecScribe' },
     minimum_chrome_version: '116',
   },
 });

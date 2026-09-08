@@ -1,5 +1,5 @@
 // Loads the built extension into headless Chromium and checks that the
-// service worker starts, the popup renders, and the message protocol works.
+// service worker starts, the side panel renders, and the message protocol works.
 // tabCapture itself cannot run headless; that is verified manually (docs/CHECKS.md).
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
@@ -27,7 +27,7 @@ try {
   const errors = [];
   popup.on('pageerror', (e) => errors.push(String(e)));
   popup.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await popup.waitForSelector('#startBtn');
   await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent === 'Ready');
   assert.equal(await popup.getAttribute('#dot', 'data-state'), 'IDLE');

@@ -32,14 +32,14 @@ pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
 pnpm --filter @lec-scribe/server start   # ローカルサーバー（Phase 0: /health のみ）
 ```
 
-Chrome への読み込み方と Phase 1 の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
+UI はサイドパネル（ツールバーのアイコンで開閉）。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
 
 ## 構成
 
 ```text
 lec-scribe/
 ├── extension/   Chrome 拡張（WXT + TypeScript）
-│   ├── entrypoints/  background.ts / popup/ / offscreen/
+│   ├── entrypoints/  background.ts / sidepanel/ / offscreen/
 │   └── src/          config, state, messages, format, opfs/（純粋関数は Vitest）
 ├── server/      Mac ローカルサーバー（Node.js 22 + TypeScript、依存なし）
 ├── fixtures/    動作確認用のローカルプレイヤーページと合成スライド動画

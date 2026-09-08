@@ -83,7 +83,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 │   │ スライド PNG / slides.json / timeline.json も OPFS へ             │   │
 │   │ Stop 後: 127.0.0.1 のサーバーへアップロード、進捗を取得            │   │
 │   └───────────────────────────────────────────────────────────────┘   │
-│   ┌─ service worker ─┐  ┌─ popup ────────┐  ┌─ options ───────┐        │
+│   ┌─ service worker ─┐  ┌─ パネル ────────┐  ┌─ options ───────┐        │
 │   │ 状態機械 / 配線   │  │ Start / Stop   │  │ token, 閾値 等   │        │
 │   └──────────────────┘  └────────────────┘  └─────────────────┘        │
 └──────────────────────────────┬────────────────────────────────────────┘
@@ -141,7 +141,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 ### D-05 再生速度は 1.0x を推奨し、それ以外は警告する
 
-- 1.5x などで録音した音声は Whisper の精度が落ちる。MVP では popup に警告を出すにとどめる。
+- 1.5x などで録音した音声は Whisper の精度が落ちる。MVP では パネル に警告を出すにとどめる。
 - 将来: timeline の `rate` を使い、サーバー側で ffmpeg `atempo` により 1.0x に正規化する。
 - ユーザー判断（Q-04）: 視聴は 1.0x で行う。2x では時間圧縮された音声になり誤認識が目立つ。録音後に伸長し直す案も二重の時間伸縮で劣化するため採用しない。
 
@@ -166,7 +166,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - 実サイトでは `document.querySelector('video')` で `<video id="…_html5_api" class="vjs-tech">` が取得できることを確認済み（Q-01）。Brightcove の in-page embed で、iframe ではない。
 - MVP は `activeTab + chrome.scripting.executeScript({ allFrames: true })` のみ。`optional_host_permissions` は宣言しない。
-- 将来 cross-origin iframe 内の動画に対応する場合: `activeTab` は cross-origin iframe への注入を許可しない ✅ ため、popup がその `src` のオリジンに対して `chrome.permissions.request({ origins })` を行い（`optional_host_permissions`、ユーザー操作中に限る）、再注入する。
+- 将来 cross-origin iframe 内の動画に対応する場合: `activeTab` は cross-origin iframe への注入を許可しない ✅ ため、パネル がその `src` のオリジンに対して `chrome.permissions.request({ origins })` を行い（`optional_host_permissions`、ユーザー操作中に限る）、再注入する。
 
 ### D-10 localhost 認証は「サーバー生成トークン + Origin 検査」（原案の向きを反転）
 
@@ -181,10 +181,11 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - テスト: Vitest（変化検知、タイムライン写像、SRT / VTT 生成などの純粋関数）。E2E: Playwright + ローカル fixture ページ（Phase 3〜6）。tabCapture を伴う Phase 1・2・7・8 は Mac で手動確認する（[CHECKS.md](./CHECKS.md)）。
 - ユーザー確認済み（Q-07）。
 
-### D-12 UI は popup。状態は offscreen document と `chrome.storage.session` に持つ
+### D-12 UI は Side Panel。状態は offscreen document と `chrome.storage.session` に持つ
 
-- popup はフォーカスを失うと閉じるため、状態の正本にしない。service worker も 30 秒で停止しうる。
-- 将来的に Side Panel（常時表示、直近スライドのサムネイル表示）への移行を検討する。
+- 当初は パネル だったが、パネル はページをクリックした瞬間に閉じるため、録音中に動画を操作しながら状態を見られない。Phase 2 の実機確認を受けて Side Panel（`chrome.sidePanel`、Chrome 114+）に変更した（2026-09-08）。
+- ツールバーのアイコンでパネルを開閉する（`setPanelBehavior({ openPanelOnActionClick: true })`）。このクリックが `activeTab` の付与を兼ねるため、Start は講義タブでパネルを開いてから押す。
+- パネルもフォーカスを失うことはないが正本にはしない。service worker も 30 秒で停止しうるため、状態は `chrome.storage.session`、録音は offscreen document が持つ。
 
 ### D-13 `lecture.md` を MVP（Phase 8）に含める
 
@@ -214,7 +215,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
     "downloads"     // エクスポート（フォールバック）
   ],
   "host_permissions": ["http://127.0.0.1/*"],
-  "action": { "default_popup": "popup.html" },
+  "action": { "default_パネル": "パネル.html" },
   "background": { "service_worker": "background.js", "type": "module" },
   "options_ui": { "page": "options.html", "open_in_tab": true }
 }
@@ -228,7 +229,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 | コンテキスト | 責務 | 寿命・注意 |
 |---|---|---|
-| popup | Start / Stop、状態表示、権限要求 UI、再送 / エクスポート / 破棄 | 閉じると消える。`storage.session` の変更を購読して描画する |
+| side panel | Start / Stop、状態表示、セッション一覧、再送 / エクスポート / 破棄 | ページ操作で閉じない。`storage.session` の変更を購読して描画する |
 | service worker | 状態機械、streamId 取得、content script 注入、offscreen 作成、メッセージ配線、タブの閉鎖・遷移監視 | 30 秒で停止しうる。状態は `storage.session` に置き、起動時に復元する |
 | offscreen document | `getUserMedia`、AudioContext パススルー、MediaRecorder、OPFS 書き込み、サーバーへのアップロードと進捗取得 | 録音の正本。使える拡張 API は `chrome.runtime` のみ |
 | content script | `<video>` 検出と probe、フレーム取得と変化検知、タイムライン記録、非表示検知 | ページ遷移で消える。動画のある frame にだけ注入する |
@@ -236,7 +237,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 ### 6.3 Start シーケンス
 
-1. popup: 現在のタブを取得し、service worker に `START { tabId }` を送る
+1. パネル: 現在のタブを取得し、service worker に `START { tabId }` を送る
 2. service worker: 進行中セッションがあれば拒否する（同時 1 セッション）
 3. service worker: `chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probe })` を実行。戻り値は frame ごとの `{ frameId, result }` で、各 frame の `<video>` 候補（§6.6 `VideoCandidate`）と cross-origin `<iframe>` の `src` 一覧が得られる
 4. 候補が皆無なら `NO_VIDEO` エラー（cross-origin iframe 内の動画は MVP 非対応、D-09）
@@ -246,18 +247,18 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 8. offscreen: `getUserMedia` → AudioContext パススルー → OPFS にセッションディレクトリ作成 → `MediaRecorder.start(timeslice)` → `recorderStartEpochMs = Date.now()` を返す
 9. service worker → content script: `DETECT_START { sessionId, config, recorderStartEpochMs }`
 10. content script: timeline に `start` を記録し、初回スライドを保存し、サンプリングを開始する
-11. service worker: 状態を `CAPTURING` にして `storage.session` を更新 → popup が反映する
+11. service worker: 状態を `CAPTURING` にして `storage.session` を更新 → パネル が反映する
 
 6〜9 の途中で失敗した場合は offscreen を閉じ、状態を `ERROR` にする。
 
 ### 6.4 Stop シーケンス
 
-1. popup → service worker: `STOP`
+1. パネル → service worker: `STOP`
 2. service worker → content script: `DETECT_STOP`（timeline に `stop` を記録し、サンプリングを停止）
 3. service worker → offscreen: `CAPTURE_STOP`。`MediaRecorder.stop()` → 最終チャンクを書き込み → トラック停止 → `status.json` を `captured` に
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
-6. 失敗時: `ERROR`。データは OPFS に残り、popup から「再送」「エクスポート」「破棄」を選べる
+6. 失敗時: `ERROR`。データは OPFS に残り、パネル から「再送」「エクスポート」「破棄」を選べる
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。
 
@@ -291,10 +292,10 @@ type SessionState = {
 
 ### 6.6 メッセージ定義（抜粋）
 
-すべて `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` の JSON。offscreen document と service worker は同じ `onMessage` を受けるため、`target: 'sw' | 'offscreen' | 'content' | 'popup'` で宛先を区別する。content script 宛は `chrome.tabs.sendMessage(tabId, msg, { frameId })` で frame を指定する。
+すべて `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` の JSON。offscreen document と service worker は同じ `onMessage` を受けるため、`target: 'sw' | 'offscreen' | 'content' | 'パネル'` で宛先を区別する。content script 宛は `chrome.tabs.sendMessage(tabId, msg, { frameId })` で frame を指定する。
 
 ```ts
-// popup → sw
+// パネル → sw
 { type: 'START', tabId } | { type: 'STOP' } | { type: 'RETRY_UPLOAD' } | { type: 'EXPORT' } | { type: 'DISCARD' }
 
 // sw → content
@@ -384,7 +385,7 @@ await ctx.resume();
 
 1. `document.querySelectorAll('video')` のうち `readyState >= 2` のもの。再生中を優先し、同点なら面積最大
 2. `.vjs-tech`
-3. 候補が複数ある場合は最大面積。将来は popup で選択できるようにする
+3. 候補が複数ある場合は最大面積。将来は パネル で選択できるようにする
 
 `<video>` の差し替え（プレイリスト遷移など）に備え、`MutationObserver` で消失を検知して再検出する。
 
@@ -526,8 +527,8 @@ sessions/<sessionId>/
 ### 11.3 破棄・保持
 
 - 「破棄」でセッションディレクトリを削除する。
-- サーバー処理が `done` になった後も既定では OPFS に残し、popup の「破棄」で削除する（`storage.autoDeleteAfterDone` で自動削除可）。
-- 過去セッションの一覧と操作は popup の「履歴」で行う（MVP では直近 1 件のみでも可）。
+- サーバー処理が `done` になった後も既定では OPFS に残し、パネル の「破棄」で削除する（`storage.autoDeleteAfterDone` で自動削除可）。
+- 過去セッションの一覧と操作は パネル の「履歴」で行う（MVP では直近 1 件のみでも可）。
 
 ---
 
@@ -672,7 +673,7 @@ audio.webm
 
 ## 15. UI
 
-### 15.1 popup
+### 15.1 サイドパネル
 
 ```text
 ┌──────────────────────────────────┐
@@ -784,7 +785,7 @@ audio.webm
 
 ### Phase 8: 統合
 
-- timeline による時刻変換、スライド対応付け、TXT / SRT / VTT / `lecture.md`、popup の完了表示
+- timeline による時刻変換、スライド対応付け、TXT / SRT / VTT / `lecture.md`、パネル の完了表示
 - 完了条件: 実講義 1 本で `lecture.md` が生成され、スライドと本文の対応が目視で妥当
 
 ### 将来

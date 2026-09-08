@@ -12,9 +12,12 @@ pnpm build            # extension/dist/chrome-mv3 が生成される
 1. Chrome で `chrome://extensions` を開き、右上の「デベロッパーモード」を ON
 2. 「パッケージ化されていない拡張機能を読み込む」→ `extension/dist/chrome-mv3` を選択
 3. ツールバーの拡張アイコンから LecScribe をピン留め
-4. コードを変更したら `pnpm build` → `chrome://extensions` の更新ボタン（↻）
+4. アイコンをクリックすると右側にサイドパネルが開く。ページを操作しても閉じず、もう一度アイコンをクリックすると閉じる
+5. コードを変更したら `pnpm build` → `chrome://extensions` の更新ボタン（↻）
 
-エラーは `chrome://extensions` の LecScribe カード内「エラー」と、service worker の DevTools（カード内の「Service Worker」リンク）、popup の DevTools（popup を右クリック →「検証」）で確認する。
+`Start` は講義タブを表示した状態でアイコンをクリックしてパネルを開いてから押す（このクリックがタブへのアクセス許可を兼ねる）。別のタブでパネルを開いたまま講義タブへ移った場合は、アイコンを 2 回クリックして開き直す。
+
+エラーは `chrome://extensions` の LecScribe カード内「エラー」と、service worker の DevTools（カード内の「Service Worker」リンク）、パネルの DevTools（パネル内を右クリック →「検証」）で確認する。
 
 ## Phase 1: tabCapture + AirPods パススルー
 
@@ -24,12 +27,12 @@ pnpm build            # extension/dist/chrome-mv3 が生成される
 
 | # | 操作 | 期待 |
 |---|---|---|
-| 1 | 拡張アイコン → popup | 状態が `● Ready`、`Start` ボタンが表示される |
+| 1 | 講義タブでツールバーの LecScribe アイコンをクリック | 右側にパネルが開き、状態が `● Ready`、`Start` ボタンが表示される |
 | 2 | `Start` | 状態が `● Capturing`、経過時間が進む。`Audio` 行が「録音中」になり、レベルメーターが音声に合わせて動く（「無音」表示にならない） |
 | 3 | 聞く | AirPods から講義音声がそのまま聞こえる。エコー / リバーブのような二重再生になっていない。音量が変わっていない |
 | 4 | タブを見る | タブに「共有中」のインジケータ（録画アイコン）が出る |
-| 5 | popup を閉じて開き直す | `● Capturing` のまま、経過時間が継続している |
-| 6 | 動画を一時停止 → 再開 | メーターが止まり、再開で動く |
+| 5 | アイコンを 2 回クリックしてパネルを閉じ、開き直す | `● Capturing` のまま、経過時間が継続している |
+| 6 | 動画を一時停止 → 再開 | 約 1 秒後に「無音」と表示されメーターが 0 になる。再開で動く。経過時間は止まらない（録音を止めない仕様、SPEC §7.3） |
 | 7 | `Stop` | 状態が `● Ready` に戻り、フッターに「前回: HH:MM:SS キャプチャ（user）」。動画の音は引き続き AirPods から聞こえる |
 | 8 | もう一度 `Start` → `Stop` | 2 回目も同じ挙動 |
 
@@ -38,20 +41,12 @@ pnpm build            # extension/dist/chrome-mv3 が生成される
 | # | 操作 | 期待 |
 |---|---|---|
 | A | `chrome://extensions` など Chrome 内部ページで `Start` | 赤いメッセージ「このページはキャプチャできません…」、状態 `● Error`。`Start` で再試行できる |
-| B | キャプチャ中に講義タブを閉じる | popup を開くと `● Ready`、前回の理由が `tab closed` |
-| C | キャプチャ中に `chrome://extensions` で拡張を更新（↻） | popup を開くと `● Ready`、前回の理由が `extension restarted` |
-
-メーターを見ながら一時停止したい場合:
-
-popup はページをクリックすると閉じるため、動画の操作とメーターの観察は同時にできない。popup をタブとして開けば並べて観察できる。
-
-1. `chrome://extensions` の LecScribe カードに表示される ID をコピーする
-2. 別ウィンドウで `chrome-extension://<ID>/popup.html` を開き、講義ウィンドウと並べる
-3. 講義を一時停止すると約 1 秒後に「無音」と表示されてメーターが 0 になり、再開すると動く。経過時間は一時停止中も進む（録音は止めない仕様。SPEC §7.3）
+| B | キャプチャ中に講義タブを閉じる | パネルが `● Ready` に戻り、前回の理由が `tab closed` |
+| C | キャプチャ中に `chrome://extensions` で拡張を更新（↻） | パネルを開き直すと `● Done`、前回の理由が `extension restarted`。セッションは「中断」として残る |
 
 二重に聞こえる場合（パススルー不要な環境）:
 
-popup を右クリック →「検証」→ Console で次を実行してから `Start` し直す。
+パネル内を右クリック →「検証」→ Console で次を実行してから `Start` し直す。
 
 ```js
 chrome.storage.local.set({ config: { audio: { passthrough: false } } });
@@ -65,11 +60,11 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 
 | # | 操作 | 期待 |
 |---|---|---|
-| 1 | 講義ページで `Start` → 2〜3 分待つ | popup の Audio 行が「録音中 1.2 MB」のように増える（64 kbps なので 1 分あたり約 480 KB） |
+| 1 | 講義ページで `Start` → 2〜3 分待つ | パネルの Audio 行が「録音中 1.2 MB」のように増える（64 kbps なので 1 分あたり約 480 KB） |
 | 2 | `Stop` | 状態が `● Done`、Audio 行が「録音完了 00:03:00 / 1.4 MB」。下に「保存済みセッション」が出る |
 | 3 | セッションの「エクスポート」 | 状態が `Exporting…` になり数秒で戻る。`~/Downloads/LecScribe/<日時>/` に `audio.webm`、`session.json`、`status.json` ができる |
 | 4 | `audio.webm` を Chrome の新しいタブにドラッグ＆ドロップして再生 | 講義音声が聞こえる。長さが録音時間と一致する（`ffprobe audio.webm` でも確認できる） |
-| 5 | もう一度 `Start` → 30 秒待つ → `chrome://extensions` で拡張を更新（↻） | popup を開くと `● Ready`。リストに「中断」タグ付きのセッションがあり、エクスポートすると 20〜30 秒分の `audio.webm` が得られる |
+| 5 | もう一度 `Start` → 30 秒待つ → `chrome://extensions` で拡張を更新（↻） | パネルを開き直すとリストに「中断」タグ付きのセッションがあり、エクスポートすると 20〜30 秒分の `audio.webm` が得られる |
 | 6 | セッションの「破棄」 | 確認ダイアログのあとリストから消える |
 
 `session.json` には開始時刻（`startedAt`）と設定、`status.json` には終了時刻・バイト数・録音時間が入る。これらは Phase 8 の時刻合わせに使う。
@@ -82,5 +77,5 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 
 | 日付 | Phase | 環境 | 結果 | メモ |
 |---|---|---|---|---|
-| 2026-09-08 | 1 | MacBook Pro M3 Max、内蔵スピーカー | OK | パススルー動作、二重再生なし、Stop 後も再生継続。手順 6（一時停止時のメーター）は popup がページ操作で閉じるため観察できず。上記「メーターを見ながら一時停止したい場合」の手順を追加 |
+| 2026-09-08 | 1 | MacBook Pro M3 Max、内蔵スピーカー | OK | パススルー動作、二重再生なし、Stop 後も再生継続。手順 6（一時停止時のメーター）は popup がページ操作で閉じるため観察できず → UI をサイドパネルに変更 |
 | | 2 | | 未実施 | |

@@ -35,6 +35,11 @@ export default defineBackground(() => {
     if (delta.state) void serialized(() => onDownloadSettled());
   });
 
+  // A popup closes as soon as the page is clicked; the side panel stays open
+  // next to the lecture. Clicking the icon toggles it and also grants
+  // activeTab for that tab, which getMediaStreamId needs.
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+
   void serialized(reconcile);
 });
 
@@ -106,7 +111,11 @@ async function start(tabId: number): Promise<SessionState> {
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     } catch (e) {
-      throw new LecError('CAPTURE_FAILED', `タブのキャプチャを開始できません: ${toErrorInfo(e).message}`);
+      const reason = toErrorInfo(e).message;
+      const hint = /invoked/i.test(reason)
+        ? ' 講義タブを表示した状態でツールバーの LecScribe アイコンをクリックしてパネルを開き直してから、もう一度 Start してください。'
+        : '';
+      throw new LecError('CAPTURE_FAILED', `タブのキャプチャを開始できません: ${reason}${hint}`);
     }
     const config = await loadConfig();
     const result = await sendToOffscreen.captureStart(streamId, config, meta);

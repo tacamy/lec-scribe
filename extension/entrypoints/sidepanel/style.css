@@ -20,12 +20,12 @@
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  width: 300px;
+  min-width: 260px;
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans", sans-serif;
   color: var(--fg);
   background: var(--bg);
 }
-.popup { padding: 14px 16px 12px; display: grid; gap: 12px; }
+.panel { padding: 14px 16px 12px; display: grid; gap: 12px; max-width: 480px; }
 .header { display: flex; align-items: baseline; justify-content: space-between; }
 h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .phase { font-size: 11px; color: var(--muted); }
