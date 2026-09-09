@@ -122,6 +122,43 @@ describe('ChangeDetector', () => {
   });
 });
 
+describe('見た目が同じ場面（映像中心の画面）', () => {
+  const W = 160, H = 90;
+  /** ざらざらした映像。seed を変えると細かい模様は変わるが、全体の明るさは同じ */
+  const noise = (seed: number, shade = 128) => {
+    const f = new Uint8ClampedArray(PIXELS * 4);
+    let x = seed;
+    for (let p = 0; p < PIXELS; p++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      const v = shade + ((x >> 16) % 60) - 30;
+      f[p * 4] = v;
+      f[p * 4 + 1] = v;
+      f[p * 4 + 2] = v;
+      f[p * 4 + 3] = 255;
+    }
+    return f;
+  };
+
+  it('被写体が動いただけの場面は、細かく見れば大きく違っても撮らない', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(noise(1), 0);
+    // 画面全体が動く映像なので、静止部分はほとんどない
+    for (let i = 0; i < 8; i++) detector.sample(noise(i + 2), 1000 + i * 500);
+    const verdict = detector.flush(noise(20), 9000);
+    expect(verdict.save).toBe(false);
+  });
+
+  it('場面が変われば撮る', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(noise(1, 60), 0);
+    for (let i = 0; i < 8; i++) detector.sample(noise(i + 2, 60), 1000 + i * 500);
+    // 明るさがまるごと変わる = 別の場面
+    detector.sample(noise(30, 220), 5000);
+    const verdict = detector.flush(noise(31, 220), 5500);
+    expect(verdict.save).toBe(true);
+  });
+});
+
 describe('変化の広がり', () => {
   const W = 160, H = 90;
   /** 画面の一部（cols×rows のマス目）だけを黒くしたフレーム */

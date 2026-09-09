@@ -65,6 +65,11 @@ const MOTION_MIN_SAMPLES = 4;
 const MOTION_MIN_STILL = 0.1;
 /** 直近の様子を重く見るため、サンプル数がこれを超えたら回数を半分にする */
 const MOTION_WINDOW = 200;
+/** 「見た目が同じ」かを見るときの粗さ（32×18 に均す） */
+const COARSE_X = 32;
+const COARSE_Y = 18;
+/** 静止部分がこの割合を超えるなら、スライド中心の画面とみなして「見た目が同じ」の判定は使わない */
+const COARSE_MAX_STILL = 0.5;
 /** 変化がどれだけ広い範囲に散っているかを見るための分割数（4×4） */
 const GRID = 4;
 /** 切り替えとみなすのに必要な「変化したマス目」の数。人が動いただけなら 1〜3 マスに収まる */
@@ -77,6 +82,8 @@ export class ChangeDetector {
   private motionSamples = 0;
   /** 直前の比較で、変化がいくつのマス目に及んだか（切り替えの判定に使う） */
   private changedCells = 0;
+  /** 直前の比較での静止部分の割合（スライド中心の画面か、映像中心かの目安） */
+  private stillFraction = 1;
   private lastSaved: Frame | null = null;
   private state: Verdict['state'] = 'watching';
   private stabilizeStart = 0;
@@ -142,6 +149,7 @@ export class ChangeDetector {
     }
     this.changedCells = hitCells;
     const pixels = n / 4;
+    this.stillFraction = stillTotal / pixels;
     if (!usable || stillTotal < pixels * MOTION_MIN_STILL) return changed / pixels;
     return stillTotal === 0 ? 0 : stillChanged / stillTotal;
   }
@@ -218,8 +226,47 @@ export class ChangeDetector {
     // スライドが変わるたびに数え直すと、その直後だけ判定がゆるくなってしまう
   }
 
+  /** 32×18 に均して比べる。細かい動き（被写体が少し動いた）は均されて消え、場面の違いだけが残る */
+  private coarseDiff(a: Frame, b: Frame): number {
+    const w = Math.max(1, this.cfg.detectWidth);
+    const h = Math.max(1, this.cfg.detectHeight);
+    const cells = COARSE_X * COARSE_Y;
+    const sumA = new Float64Array(cells * 3);
+    const sumB = new Float64Array(cells * 3);
+    const total = new Uint32Array(cells);
+    const n = Math.min(a.length, b.length, w * h * 4);
+    for (let i = 0; i + 3 < n; i += 4) {
+      const p = i / 4;
+      const cell = Math.min(COARSE_Y - 1, Math.floor((Math.floor(p / w) * COARSE_Y) / h)) * COARSE_X + Math.min(COARSE_X - 1, Math.floor(((p % w) * COARSE_X) / w));
+      total[cell]!++;
+      for (let c = 0; c < 3; c++) {
+        sumA[cell * 3 + c]! += a[i + c]!;
+        sumB[cell * 3 + c]! += b[i + c]!;
+      }
+    }
+    let differs = 0;
+    let counted = 0;
+    for (let cell = 0; cell < cells; cell++) {
+      const t = total[cell]!;
+      if (t === 0) continue;
+      counted++;
+      for (let c = 0; c < 3; c++) {
+        if (Math.abs(sumA[cell * 3 + c]! - sumB[cell * 3 + c]!) / t >= this.cfg.pixelDiffThreshold) {
+          differs++;
+          break;
+        }
+      }
+    }
+    return counted === 0 ? 0 : differs / counted;
+  }
+
   private decide(frame: Frame, now: number, diffPrev: number): Verdict {
     const diffSaved = this.lastSaved ? diffRatio(frame, this.lastSaved, this.cfg.pixelDiffThreshold) : 1;
+    // 映像中心の画面では、被写体が動いただけの「見た目が同じ」場面を続けて撮らない
+    if (this.lastSaved && this.stillFraction < COARSE_MAX_STILL && this.coarseDiff(frame, this.lastSaved) < this.cfg.lookAlikeThreshold) {
+      this.state = 'watching';
+      return { save: false, state: this.state, diffPrev, diffSaved };
+    }
     if (diffSaved < this.cfg.dedupeThreshold) {
       // 最後に保存した画像と同じ（元に戻った、ちらつき）
       this.state = 'watching';

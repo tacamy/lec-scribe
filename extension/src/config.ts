@@ -51,6 +51,11 @@ export type Config = {
     maxStabilizeMs: number;
     /** 最後に保存した画像との差がこれ未満なら保存しない */
     dedupeThreshold: number;
+    /**
+     * 粗く見て（32×18 に均して）これ未満しか違わなければ「見た目が同じ」として保存しない。
+     * 被写体が動いただけの映像を連続で撮らないため。画面の大半が動いているときだけ効く
+     */
+    lookAlikeThreshold: number;
     /** 保存間隔の下限 */
     minShotIntervalMs: number;
     /** 再生中にタイムラインへ定期的に記録する間隔（SPEC §10.1） */
@@ -89,6 +94,7 @@ export const DEFAULT_CONFIG: Config = {
     stableSamples: 2,
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
+    lookAlikeThreshold: 0.12,
     minShotIntervalMs: 2000,
     tickIntervalMs: 10_000,
   },
