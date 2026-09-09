@@ -35,7 +35,14 @@ h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .phase { font-size: 11px; color: var(--muted); }
 button.link { padding: 2px 6px; border: 0; background: transparent; color: var(--accent); font-weight: 500; font-size: 12px; }
 .status { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.status .dots { margin-left: -8px; }
 .elapsed { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+/* 処理中の「…」を 1 文字ずつ増やす。動きを減らす設定なら固定の「…」 */
+.dots::after { content: '…'; display: inline-block; width: 1.2em; text-align: left; }
+@media (prefers-reduced-motion: no-preference) {
+  .dots::after { animation: dots 1.6s steps(1, end) infinite; }
+}
+@keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot[data-state="CAPTURING"] { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
 .dot[data-state="STARTING"], .dot[data-state="STOPPING"] { background: var(--warn); }

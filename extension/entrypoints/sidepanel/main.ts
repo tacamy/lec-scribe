@@ -21,6 +21,7 @@ if (isPopup) document.body.classList.add('popup');
 const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
+const dots = $('dots');
 const audioValue = $('audioValue');
 // 録音していないときは中身のない行（Audio / Video / Slides / Tab）を出さない。Server 行だけ常に出す
 const detailRows = [$('audioRow'), $('meter'), $('videoRow'), $('slidesRow'), $('tabRow')];
@@ -39,16 +40,18 @@ const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
 
+// 末尾の「…」は CSS のアニメーション（.dots）で 1 文字ずつ増やす
 const STATE_LABEL: Record<SessionState['state'], string> = {
   IDLE: 'Ready',
-  STARTING: 'Starting…',
+  STARTING: 'Starting',
   CAPTURING: 'Capturing',
-  STOPPING: 'Stopping…',
-  UPLOADING: 'Uploading…',
-  PROCESSING: 'Transcribing…',
+  STOPPING: 'Stopping',
+  UPLOADING: 'Uploading',
+  PROCESSING: 'Transcribing',
   COMPLETED: 'Done',
   ERROR: 'Error',
 };
+const BUSY_STATES: ReadonlySet<SessionState['state']> = new Set(['STARTING', 'STOPPING', 'UPLOADING', 'PROCESSING']);
 
 const STAGE_TEXT: Record<ProcessingProgress['stage'], string> = {
   uploading: '送信中',
@@ -65,7 +68,7 @@ const WARNING_TEXT: Record<WarningCode, string> = {
   PLAYBACK_RATE: '再生速度が 1.0x ではありません。文字起こしの精度が落ちるので 1.0x を推奨します。',
   TAB_HIDDEN: 'タブが非表示です。表示に戻るまでスライド検知は止まります（録音は継続）。',
   NAVIGATED: '動画ページから移動しました。録音は続いていますが、スライド検知は止まっています。',
-  NO_VIDEO: '動画が見つかりません。音声のみ録音します。',
+  NO_VIDEO: 'このページには動画が見つかりません。音声のみ録音します。',
   CROSS_ORIGIN_IFRAME: '別ドメインの iframe 内の動画は現在未対応です。',
   DRM: 'DRM 保護された動画のため、スライド画像は取得できません。',
   TAINTED: 'この動画からはスライド画像を取得できません（cross-origin）。音声のみ録音します。',
@@ -106,7 +109,8 @@ function render(state: SessionState) {
   current = state;
   const active = isActive(state);
   dot.dataset.state = state.state;
-  stateLabel.textContent = state.exporting ? 'Exporting…' : STATE_LABEL[state.state];
+  stateLabel.textContent = state.exporting ? 'Exporting' : STATE_LABEL[state.state];
+  dots.hidden = !(state.exporting || BUSY_STATES.has(state.state));
   tabValue.textContent = state.title ?? '—';
   tabValue.title = state.title ?? '';
 

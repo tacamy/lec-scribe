@@ -81,7 +81,7 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 | 4 | 再生速度を 1.5x にする | 警告「再生速度が 1.0x ではありません…」が出る。1.0x に戻すと消える |
 | 5 | 別のタブに切り替える | 警告は出ず、Video 行の時刻が進み続ける（Chrome はキャプチャ中のタブを表示扱いのままにして描画も続けるため。Phase 4 で背景中もフレームが撮れるか確認する）。Chrome のウィンドウを最小化した場合の挙動も記録する |
 | 6 | 講義タブ内で別のページへ移動する | 警告「動画ページから移動しました…」。録音は続く（Audio の MB が増える） |
-| 7 | 動画のないページ（例: ニュースサイト）で `Start` | Video 行「動画なし（音声のみ）」と警告「動画が見つかりません…」。録音は動く |
+| 7 | 動画のないページ（例: ニュースサイト）で `Start` | Video 行「動画なし（音声のみ）」と警告「このページには動画が見つかりません…」。録音は動く |
 | 8 | `Stop` | 通常どおり `● Done` |
 
 任意: 講義ページの DevTools Console で `document.querySelector('video').mediaKeys` が `null` なら DRM なし（警告 DRM は出ない）。`taintFree` の判定結果はサイドパネルでは見えないが、警告「この動画からはスライド画像を取得できません」が出なければ canvas に描ける（Phase 4 の前提）。
@@ -144,7 +144,7 @@ pnpm --filter @lec-scribe/server start      # 表示されるトークンを控�
 | # | 操作 | 期待 |
 |---|---|---|
 | 1 | サイドパネルの「設定」→ トークンを貼り付け → 保存 → 接続テスト | 「サーバー v0.1.0 に接続できました / トークン: OK / whisperkit-cli: あり / ffmpeg: あり」 |
-| 2 | 講義を 2〜3 分録音して `Stop` | 状態が `Uploading…` → `Transcribing…` と進み、Server 行に「送信中 xx%」→「文字起こし中 · 経過時間」 |
+| 2 | 講義を 2〜3 分録音して `Stop` | 状態が `Uploading` → `Transcribing` と進み（末尾の点が 1 文字ずつ増える）、Server 行に「送信中 xx%」→「文字起こし中 · 経過時間」 |
 | 3 | 待つ | 状態が `● Done`、Server 行が「完了 · /Users/…/LecScribe/…」。サーバーのターミナルにも進捗が出る |
 | 4 | 出力フォルダを開く | 見えるのは `notes.md` と `slides/` だけ。Finder で Cmd+Shift+. を押すと `.lecscribe/` が見え、中に `audio.webm`、`transcript.json` / `.srt` / `.vtt` / `.txt`、`lecture.md`、`slides.json`、`timeline.json`、`session.json`、`pipeline.json` |
 | 5 | `.lecscribe/transcript.srt` を開く | 日本語の文字起こしが動画時刻で並んでいる（一時停止・シークがあっても動画の位置に合う） |
