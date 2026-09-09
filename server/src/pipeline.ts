@@ -140,10 +140,16 @@ export class Pipeline {
     return true;
   }
 
-  /** 窓の重複や決まり文句だけの区間（Whisper の幻覚）を落とし、落としたものをログに残す */
-  private cleanSegments(segments: Segment[]): Segment[] {
-    const { kept, dropped } = dropWindowArtifacts(segments);
-    for (const d of dropped) this.log(`dropped artifact segment ${d.start.toFixed(1)}-${d.end.toFixed(1)}: ${d.text.slice(0, 40)}`);
+  /**
+   * report JSON を読んで区間にし、窓の重複や決まり文句だけの区間（Whisper の幻覚）を落とす。
+   * 落としたものはログに残す。全部落ちたときは「区間がない」と区別できる文言で失敗させる
+   */
+  private async readSegments(report: string): Promise<Segment[]> {
+    const all = normalizeReport(JSON.parse(await readFile(report, 'utf8')));
+    if (all.length === 0) throw new Error(`no segments in ${report}`);
+    const { kept, dropped } = dropWindowArtifacts(all);
+    for (const d of dropped) this.log(`dropped artifact segment (${d.reason}) ${d.start.toFixed(1)}-${d.end.toFixed(1)}: ${d.text.slice(0, 40)}`);
+    if (kept.length === 0) throw new Error(`all ${all.length} segments in ${report} were dropped as Whisper artifacts`);
     return kept;
   }
 
@@ -155,7 +161,7 @@ export class Pipeline {
     reportDir: string,
     step: <T>(stage: PipelineStatus['stage'], work: () => Promise<T>) => Promise<T>,
     signal: AbortSignal,
-  ): Promise<ReturnType<typeof normalizeReport>> {
+  ): Promise<Segment[]> {
       await step('converting', async () => {
         this.log(`ffmpeg: ${audioWebm} → wav 16kHz mono`);
         const r = await run(this.config.ffmpegBin, [
@@ -187,9 +193,7 @@ export class Pipeline {
         }
         const report = await findReport(reportDir);
         if (!report) throw new Error(`whisperkit-cli produced no JSON report in ${reportDir}`);
-        const parsed = this.cleanSegments(normalizeReport(JSON.parse(await readFile(report, 'utf8'))));
-        if (parsed.length === 0) throw new Error(`no segments in ${report}`);
-        return parsed;
+        return this.readSegments(report);
       });
   }
 
@@ -234,14 +238,13 @@ export class Pipeline {
           : null;
       status.transcript = undefined;
 
-      const segments = previousReport
-        ? await (async () => {
-            this.log(`transcript を再利用: ${previousReport}`);
-            const parsed = this.cleanSegments(normalizeReport(JSON.parse(await readFile(previousReport, 'utf8'))));
-            if (parsed.length === 0) throw new Error(`no segments in ${previousReport}`);
-            return parsed;
-          })()
-        : await this.transcribe(dir, audioWebm, audioWav, reportDir, step, signal);
+      let segments: Segment[];
+      if (previousReport) {
+        this.log(`transcript を再利用: ${previousReport}`);
+        segments = await this.readSegments(previousReport);
+      } else {
+        segments = await this.transcribe(dir, audioWebm, audioWav, reportDir, step, signal);
+      }
       status.transcript = { model: this.config.model, audioBytes, ...(previousReport ? { reused: true } : {}) };
 
       const result = await step('merging', async () => {

@@ -397,9 +397,15 @@ async function finalizePrevious(current: Session): Promise<void> {
   }
 }
 
-// ---- ページ上のフィードバック（SPEC §15.3）: 保存した瞬間にサムネイルと一言を動画の右下に出す
+// ---- ページ上のフィードバック（SPEC §15.3）: 保存した瞬間にサムネイルを動画の右下に出す
 
 const TOAST_MS = 2500;
+/** サムネイルの表示サイズと枠の余白。右下に置く座標の計算にも使うので定数にしておく */
+const TOAST_THUMB_W = 112;
+const TOAST_THUMB_H = 63;
+const TOAST_PAD = 3;
+/** 動画の右下からの余白 */
+const TOAST_MARGIN = 8;
 
 function thumbnailOf(source: CanvasImageSource): string {
   const c = document.createElement('canvas');
@@ -420,10 +426,10 @@ function showToast(current: Session, thumbnail: string): void {
       <style>
         :host { all: initial; position: fixed; z-index: 2147483647; pointer-events: none; }
         /* サムネイルだけ。文字も色分けも出さない（動画の領域を取るため） */
-        .box { padding: 3px; border-radius: 8px; background: rgba(0, 0, 0, 0.4);
+        .box { padding: ${TOAST_PAD}px; border-radius: 8px; background: rgba(0, 0, 0, 0.4);
                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
         .box.show { opacity: 1; transform: translateY(0); }
-        img { display: block; width: 112px; height: 63px; object-fit: cover; border-radius: 5px; background: #000; }
+        img { display: block; width: ${TOAST_THUMB_W}px; height: ${TOAST_THUMB_H}px; object-fit: cover; border-radius: 5px; background: #000; }
       </style>
       <div class="box"><img alt="" /></div>`;
     current.toastHost = host;
@@ -431,8 +437,10 @@ function showToast(current: Session, thumbnail: string): void {
   const host = current.toastHost;
   if (host.parentElement !== parent) parent.appendChild(host);
   const rect = current.video.getBoundingClientRect();
-  host.style.left = `${Math.max(8, Math.round(rect.right - 8 - 118))}px`;
-  host.style.top = `${Math.max(8, Math.round(rect.bottom - 8 - 69))}px`;
+  const boxW = TOAST_THUMB_W + TOAST_PAD * 2;
+  const boxH = TOAST_THUMB_H + TOAST_PAD * 2;
+  host.style.left = `${Math.max(TOAST_MARGIN, Math.round(rect.right - TOAST_MARGIN - boxW))}px`;
+  host.style.top = `${Math.max(TOAST_MARGIN, Math.round(rect.bottom - TOAST_MARGIN - boxH))}px`;
   const root = host.shadowRoot!;
   (root.querySelector('img') as HTMLImageElement).src = thumbnail;
   const box = root.querySelector('.box') as HTMLElement;
@@ -480,7 +488,7 @@ function flushDetection(current: Session): void {
  * （SPEC §8.3）。プレイヤー UI やカーソルは映らず、解像度は動画のネイティブ値。
  */
 async function grabFrame(current: Session, reason: SlideReason): Promise<CaptureFrameResult> {
-  const { video, slide } = current;
+  const { video } = current;
   if (video.readyState < 2 || video.videoWidth === 0) throw new LecError('NO_VIDEO', '動画がまだ読み込まれていません。');
   if (current.taintFree === null) current.taintFree = checkTaint(video);
   if (current.taintFree === false) {

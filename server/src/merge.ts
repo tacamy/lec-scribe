@@ -182,9 +182,10 @@ export function buildNotesMarkdown(input: {
     }
     first = false;
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
-    const p = input.polished.get(section.id);
-    if (p) {
-      if (p.text) lines.push(p.text, '');
+    // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない
+    const polished = input.polished.get(section.id)?.text;
+    if (polished) {
+      lines.push(polished, '');
     } else if (section.texts.length > 0) {
       lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(section.texts), '');
     }

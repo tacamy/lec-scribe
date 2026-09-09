@@ -79,12 +79,52 @@ describe('dropWindowArtifacts', () => {
     expect(kept.map((s) => s.start)).toEqual([55.6, 61.3, 68.3, 77.4, 300, 400]);
   });
 
+  it('drops the same overlapping windows by the overlap rule alone (no known phrase)', () => {
+    // 決まり文句でない幻覚（窓いっぱいに広がるだけ）も、重なりだけで落ちる
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 55.6, end: 59.6, text: 'この羽を外してみると、' },
+      { start: 59.6, end: 89.58, text: '窓いっぱいに広がった実在しない区間です' },
+      { start: 61.3, end: 66.8, text: 'ここに見えているのがねじればねの頭になります' },
+      { start: 68.3, end: 75.8, text: 'このように体の中にねじればねの本体が寄生しています' },
+      { start: 300, end: 330, text: '長いけれど他と重ならない本物の発話なので残る' },
+    ]);
+    expect(dropped.map((s) => [s.start, s.reason])).toEqual([[59.6, 'overlap']]);
+    expect(kept.map((s) => s.start)).toEqual([55.6, 61.3, 68.3, 300]);
+  });
+
+  it('keeps the real long segment that a hallucinated window overlaps', () => {
+    // 幻覚の窓（長いほう）だけを落とし、巻き込まれた本物の長い区間は残す
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 60, end: 90, text: '窓いっぱいに広がった実在しない区間です' },
+      { start: 62, end: 88, text: '本物の長い説明がここに入ります。26 秒あるので窓いっぱいの判定に引っかかる' },
+    ]);
+    expect(dropped.map((s) => s.start)).toEqual([60]);
+    expect(kept.map((s) => s.start)).toEqual([62]);
+  });
+
   it('drops a long stock phrase even without overlap', () => {
     const { kept, dropped } = dropWindowArtifacts([
       { start: 0, end: 4, text: 'こんにちは' },
       { start: 10, end: 40, text: 'ご視聴ありがとうございました。' },
     ]);
-    expect(dropped).toHaveLength(1);
+    expect(dropped.map((s) => s.reason)).toEqual(['phrase']);
+    expect(kept).toHaveLength(1);
+  });
+
+  it('drops a repeated stock phrase (Whisper のループ)', () => {
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 0, end: 4, text: 'こんにちは' },
+      { start: 10, end: 40, text: 'ご視聴ありがとうございました。ご視聴ありがとうございました。ご視聴ありがとうございました。' },
+    ]);
+    expect(dropped.map((s) => s.reason)).toEqual(['phrase']);
+    expect(kept.map((s) => s.start)).toEqual([0]);
+  });
+
+  it('keeps a long segment that merely contains a stock phrase', () => {
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 0, end: 30, text: '本日の講義はここまでです。ご視聴ありがとうございました。次回は色について話します。' },
+    ]);
+    expect(dropped).toHaveLength(0);
     expect(kept).toHaveLength(1);
   });
 });
