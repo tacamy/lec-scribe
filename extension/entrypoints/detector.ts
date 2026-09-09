@@ -50,6 +50,8 @@ type Session = {
   sampleTimer: number;
   tickTimer: number;
   lastVerdict: Verdict | null;
+  /** 直近の判定履歴（診断用。DETECT_STOP の応答で返す） */
+  verdicts: VerdictLog[];
   lastTimeline: TimelineEvent | undefined;
   lastFrameAt: number | null;
   taintFree: boolean | null;
@@ -141,6 +143,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     sampleTimer: 0,
     tickTimer: 0,
     lastVerdict: null,
+    verdicts: [],
     lastTimeline: undefined,
     lastFrameAt: null,
     taintFree: null,
@@ -204,7 +207,7 @@ async function stopDetection(): Promise<object> {
   }
   // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
   await sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, 'stop')).catch(() => undefined);
-  return {};
+  return { verdicts: current.verdicts };
 }
 
 function timelineEvent(current: Session, type: TimelineEventType): TimelineEvent {
@@ -288,7 +291,23 @@ function sampleOnce(current: Session): void {
   if (!canSample(current) || current.video.paused || current.video.ended) return;
   const verdict = current.detector.sample(grayFrame(current), Date.now());
   current.lastVerdict = verdict;
+  logVerdict(current, 'sample', verdict);
   if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
+}
+
+type VerdictLog = { kind: 'sample' | 'flush'; t: number; videoTime: number; state: Verdict['state']; save: boolean; diffPrev: number; diffSaved?: number };
+const VERDICT_LOG_MAX = 120;
+function logVerdict(current: Session, kind: VerdictLog['kind'], v: Verdict): void {
+  current.verdicts.push({
+    kind,
+    t: Math.round((Date.now() - current.recorderStartEpochMs)) / 1000,
+    videoTime: Math.round(current.video.currentTime * 1000) / 1000,
+    state: v.state,
+    save: v.save,
+    diffPrev: Math.round(v.diffPrev * 10000) / 10000,
+    ...(v.diffSaved !== undefined ? { diffSaved: Math.round(v.diffSaved * 10000) / 10000 } : {}),
+  });
+  if (current.verdicts.length > VERDICT_LOG_MAX) current.verdicts.splice(0, current.verdicts.length - VERDICT_LOG_MAX);
 }
 
 /** 一時停止・終了の瞬間に安定待ちを打ち切る */
@@ -296,6 +315,7 @@ function flushDetection(current: Session): void {
   if (!canSample(current)) return;
   const verdict = current.detector.flush(grayFrame(current), Date.now());
   current.lastVerdict = verdict;
+  logVerdict(current, 'flush', verdict);
   if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
 }
 

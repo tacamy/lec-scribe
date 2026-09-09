@@ -317,7 +317,13 @@ try {
       globalThis.__lecscribe.revoke(files.map((f) => f.url));
       return out;
     }, frameSession);
-    assert.fail(`expected initial + 2 slide changes, got ${autoCount}\nvideo: ${JSON.stringify(videoInfo)}\nslides: ${JSON.stringify(saved.slides)}\ntimeline: ${JSON.stringify(saved.timeline)}`);
+    const stopReply = await popup.evaluate(
+      ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId }),
+      target,
+    );
+    assert.fail(
+      `expected initial + 2 slide changes, got ${autoCount}\nvideo: ${JSON.stringify(videoInfo)}\nslides: ${JSON.stringify(saved.slides)}\ntimeline: ${JSON.stringify(saved.timeline)}\nverdicts: ${JSON.stringify(stopReply?.verdicts ?? stopReply)}`,
+    );
   }
 
   // 手動保存（パネルの「スクショを保存」相当）。終了後の静止画でも撮れる
