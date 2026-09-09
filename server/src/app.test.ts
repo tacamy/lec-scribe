@@ -165,7 +165,7 @@ describe('local server', () => {
     // ノート（codex スタブ）
     expect(status.result).toMatchObject({ notes: true });
     const notes = await readFile(path.join(outputDir, 'notes.md'), 'utf8');
-    expect(notes).toContain('# テスト 動画/1（ノート）');
+    expect(notes).toContain('# テスト 動画/1\n');
     expect(notes).toContain('![slide_001](slides/slide_001.png)');
     expect(notes).toContain('## 全体の要点\n\n- 全体の要点 1\n- 全体の要点 2');
     expect(notes).toContain('## 話題 A\n\n**要点**\n\n- 話題 A の要点');

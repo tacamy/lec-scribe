@@ -140,7 +140,8 @@ export function buildLectureMarkdown(input: {
   for (const [i, section] of sections.entries()) {
     if (i > 0) lines.push('---', '');
     if (section.slide) lines.push(`![${section.id}](${imagePrefix}${section.slide.filename})`, '');
-    lines.push(section.texts.length > 0 ? toParagraph(section.texts) : '（このスライドの間の発話はありません）', '');
+    // 発話がなければ画像だけを置く（「発話はありません」の注記は出さない。画面が細かく変わる動画で邪魔になるため）
+    if (section.texts.length > 0) lines.push(toParagraph(section.texts), '');
   }
   if (sections.length === 0) lines.push('（文字起こしがありません）', '');
   return lines.join('\n');
@@ -159,7 +160,7 @@ export function buildNotesMarkdown(input: {
   polished: ReadonlyMap<string, { text: string }>;
   outline?: Outline;
 }): string {
-  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}（ノート）`, ''];
+  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}`, ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
@@ -181,13 +182,12 @@ export function buildNotesMarkdown(input: {
     }
     first = false;
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
-    const p = input.polished.get(section.id);
-    if (p) {
-      lines.push(p.text || '（このスライドの間の発話はありません）', '');
+    // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない
+    const polished = input.polished.get(section.id)?.text;
+    if (polished) {
+      lines.push(polished, '');
     } else if (section.texts.length > 0) {
       lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(section.texts), '');
-    } else {
-      lines.push('（このスライドの間の発話はありません）', '');
     }
   }
   return lines.join('\n');
