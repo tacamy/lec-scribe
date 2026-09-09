@@ -111,25 +111,39 @@ ${Object.entries(settingsEnv())
 /**
  * plist に書く設定（LEC_SCRIBE_* と OPENAI_API_KEY）。今の環境変数が優先で、
  * 無ければ既に登録されている plist の値を引き継ぐ。install.sh を後から流し直しても
- * enable-notes.sh で入れた LEC_SCRIBE_LLM が消えないようにするため
+ * enable-notes.sh で入れた LEC_SCRIBE_LLM が消えないようにするため。
+ * 空文字で渡した変数は「消す」指定（引き継ぎをやめる。例: バックエンドを切り替えるときの
+ * LEC_SCRIBE_LLM_MODEL=、API キーを外すときの OPENAI_API_KEY=）
  */
 function settingsEnv() {
   const merged = {};
   if (existsSync(plistPath)) {
     const xml = readFileSync(plistPath, 'utf8');
-    const dict = xml.split('<key>EnvironmentVariables</key>')[1] ?? '';
-    for (const m of dict.matchAll(/<key>([^<]+)<\/key><string>([^<]*)<\/string>/g)) {
-      if (isSetting(m[1])) merged[m[1]] = unescapeXml(m[2]);
+    if (xml.includes('<?xml')) {
+      const dict = xml.split('<key>EnvironmentVariables</key>')[1] ?? '';
+      // plutil や Xcode で開くと <key> と <string> の間に改行が入るので、空白を挟んでも読めるようにする
+      for (const m of dict.matchAll(/<key>([^<]+)<\/key>\s*<string>([^<]*)<\/string>/g)) {
+        if (isSetting(m[1])) merged[m[1]] = unescapeXml(m[2]);
+      }
+    } else {
+      // バイナリ plist などで読めないと、黙って設定が消えたように見えるので知らせる
+      console.warn(`既存の plist を読めませんでした（XML ではありません）: ${plistPath}。LEC_SCRIBE_* の設定は引き継がれません。`);
     }
   }
   for (const [k, v] of Object.entries(process.env)) {
-    if (isSetting(k) && v !== undefined) merged[k] = v;
+    if (!isSetting(k) || v === undefined) continue;
+    if (v === '') delete merged[k];
+    else merged[k] = v;
   }
   return merged;
 }
 
 const isSetting = (key) => (key.startsWith('LEC_SCRIBE_') && key !== 'LEC_SCRIBE_PORT') || key === 'OPENAI_API_KEY';
 const unescapeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+
+/** /health の llm を人が読む 1 行にする（install / restart / status で同じ文言を出す） */
+const notesLine = (h) =>
+  `ノート作成: ${h?.llm && h.llm !== 'none' ? h.llm : `なし（notes.md は文字起こしそのまま。bash "${repoRoot}/enable-notes.sh" で有効にできます）`}`;
 
 async function health() {
   try {
@@ -181,7 +195,7 @@ async function waitAndReport() {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
-      console.log(`ノート作成: ${h.llm && h.llm !== 'none' ? h.llm : 'なし（notes.md は文字起こしそのまま。bash "' + repoRoot + '/enable-notes.sh" で有効にできます）'}`);
+      console.log(notesLine(h));
       console.log('Chrome の LecScribe アイコンを押して「このMacと接続」→ Mac のダイアログで「許可」してください。');
       if (existsSync(tokenPath)) console.log(`（トークンで繋ぐ場合: ${readFileSync(tokenPath, 'utf8').trim()}）`);
       return;
@@ -208,6 +222,7 @@ async function status() {
   console.log(`launchd: ${isLoaded() ? '読み込み済み' : '未読み込み'}`);
   const h = await health();
   console.log(h ? `サーバー: v${h.version} が http://127.0.0.1:${port} で応答（model: ${h.model}）` : `サーバー: http://127.0.0.1:${port} は応答なし`);
+  if (h) console.log(notesLine(h));
   if (existsSync(logPath)) console.log(`ログ: ${logPath}`);
 }
 

@@ -1,3 +1,4 @@
+import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, saveConfig, type Config } from '../../src/config';
 import { sendToBackground } from '../../src/messages';
 
@@ -10,9 +11,12 @@ const pairStatus = $('pairStatus');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
 const notesCmd = $('notesCmd');
-/** ノート作成を有効にする 1 行（install.sh が置く場所） */
-const NOTES_COMMAND = 'bash ~/LecScribe-app/enable-notes.sh';
+/** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
+const APP_DIR = '~/LecScribe-app';
+const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
+const UPDATE_COMMAND = `bash ${APP_DIR}/update.sh`;
 notesCmd.textContent = NOTES_COMMAND;
+bindCopyButton($<HTMLButtonElement>('copyNotesCmd'), NOTES_COMMAND);
 
 let config: Config = await loadConfig();
 port.value = String(config.server.port);
@@ -42,34 +46,44 @@ function readForm(): Config {
 type Health = { version?: string; whisperkit?: boolean; ffmpeg?: boolean; authorized?: boolean; paired?: boolean; model?: string; outDir?: string; llm?: string };
 
 async function health(server: Config['server']): Promise<Health> {
-  const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers: authHeaders(server) });
+  // 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう打ち切る
+  const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers: authHeaders(server), signal: AbortSignal.timeout(3000) });
   return (await res.json()) as Health;
 }
 
 const LLM_LABEL: Record<string, string> = { codex: 'Codex CLI', openai: 'OpenAI API', ollama: 'Ollama' };
 
-function renderNotes(llm: string | undefined) {
+/** 遅れて届いた古い /health の結果で、新しい表示を上書きしないための世代番号 */
+let notesGeneration = 0;
+
+/**
+ * ノート作成の状態を出す。llm を返さないサーバー（この機能より前の版）と、
+ * そもそも繋がらない場合は「分からない」扱いにして、有効化の案内は出さない
+ * （古いサーバーには enable-notes.sh がまだ無く、実行しても失敗するため）
+ */
+function renderNotes(llm: string | undefined, reachable = true) {
   const enabled = !!llm && llm !== 'none';
-  notesStatus.textContent = llm === undefined ? 'サーバーに接続できないため分かりません' : enabled ? `有効（${LLM_LABEL[llm] ?? llm}）` : '無効（notes.md は文字起こしそのまま）';
+  const unknown = !reachable || llm === undefined;
+  notesStatus.textContent = !reachable
+    ? 'サーバーに接続できないため分かりません'
+    : llm === undefined
+      ? `サーバーが古いため分かりません。ターミナルで ${UPDATE_COMMAND} を実行して更新してください`
+      : enabled
+        ? `有効（${LLM_LABEL[llm] ?? llm}）`
+        : '無効（notes.md は文字起こしそのまま）';
   notesStatus.className = `result${enabled ? ' ok' : ''}`;
-  notesHint.hidden = enabled;
+  notesHint.hidden = enabled || unknown;
 }
 
-$('copyNotesCmd').addEventListener('click', async () => {
-  const button = $<HTMLButtonElement>('copyNotesCmd');
-  try {
-    await navigator.clipboard.writeText(NOTES_COMMAND);
-    button.textContent = 'コピーしました';
-  } catch {
-    button.textContent = '選択してコピーしてください';
-  }
-  window.setTimeout(() => (button.textContent = 'コピー'), 2000);
-});
-
 // 開いた時点のサーバーの状態を出す（接続テストを押さなくても分かるように）
+const initialCheck = ++notesGeneration;
 void health(config.server)
-  .then((body) => renderNotes(body.llm))
-  .catch(() => renderNotes(undefined));
+  .then((body) => {
+    if (initialCheck === notesGeneration) renderNotes(body.llm);
+  })
+  .catch(() => {
+    if (initialCheck === notesGeneration) renderNotes(undefined, false);
+  });
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
 $('pair').addEventListener('click', async () => {
@@ -103,6 +117,7 @@ $('test').addEventListener('click', async () => {
     lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);
+    notesGeneration++; // 進行中の初回チェックの結果で上書きされないようにする
     renderNotes(body.llm);
     // サーバー側の承認状態を設定にも反映する（trusted.json を消したときなど）
     if (body.paired !== undefined && body.paired !== config.server.paired) {
