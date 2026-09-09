@@ -56,7 +56,9 @@ export function diffRatio(a: Frame, b: Frame, threshold: number, counts?: Uint8A
 }
 
 /** この割合以上のサンプルで変わった画素は「動き続けている」（講師のワイプや動画の中身）とみなす */
-const MOTION_RATIO = 0.5;
+const MOTION_RATIO = 0.25;
+/** ただし最低この回数は変わっていること（開始直後に 1 回変わっただけの画素を外さないため） */
+const MOTION_MIN_HITS = 3;
 /** 動きの判定に使う最低サンプル数。これに満たない間は全画素で比べる */
 const MOTION_MIN_SAMPLES = 4;
 /** 静止部分がこの割合を切ったら（画面全体が動画）マスクは使わず全画素で比べる */
@@ -109,7 +111,7 @@ export class ChangeDetector {
       const differs =
         dr >= threshold || -dr >= threshold || dg >= threshold || -dg >= threshold || db >= threshold || -db >= threshold;
       // マスクの判定は回数を足す前の状態で行う（今回の変化がそのまま自分をマスクしないように）
-      const moving = usable && motion![p]! >= samples * MOTION_RATIO;
+      const moving = usable && motion![p]! >= MOTION_MIN_HITS && motion![p]! >= samples * MOTION_RATIO;
       if (differs) {
         changed++;
         if (counts && counts[p]! < 255) counts[p]!++;

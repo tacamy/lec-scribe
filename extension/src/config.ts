@@ -118,11 +118,16 @@ export function authHeaders(server: { token: string }): Record<string, string> {
   return server.token ? { authorization: `Bearer ${server.token}` } : {};
 }
 
+/**
+ * 保存するのは設定画面で編集できる項目（server）だけにする（2026-09-09）。
+ * 以前は Config 全体を保存していたため、一度でも設定を保存すると、その時点の検知パラメータが
+ * 固定され、拡張を更新しても新しい既定値が効かなかった（閾値を変えても届かなかった）
+ */
 export async function loadConfig(): Promise<Config> {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  return mergeConfig(DEFAULT_CONFIG, stored[STORAGE_KEY]);
+  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] as { server?: unknown } | undefined;
+  return mergeConfig(DEFAULT_CONFIG, stored ? { server: stored.server } : undefined);
 }
 
 export async function saveConfig(config: Config): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: config });
+  await chrome.storage.local.set({ [STORAGE_KEY]: { server: config.server } });
 }
