@@ -4,7 +4,7 @@ import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, migrateLayout, workPath } from './layout.ts';
-import { createBackend, polish } from './llm.ts';
+import { createBackend, outline, polish } from './llm.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment } from './merge.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
@@ -228,6 +228,11 @@ export class Pipeline {
           const { results: polished, errors } = await polish(inputs, backend, llmSettings, this.log);
           if (signal.aborted) throw new Error('cancelled');
           if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
+          // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
+          const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
+          const { outline: topics, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+          if (signal.aborted) throw new Error('cancelled');
+          if (outlineError) errors.push(outlineError);
           await writeFile(
             path.join(dir, NOTES_FILE),
             buildNotesMarkdown({
@@ -237,6 +242,7 @@ export class Pipeline {
               backendName: backend.name,
               sections: result.sections,
               polished,
+              outline: topics,
             }),
           );
           return errors.length > 0 ? { notes: true, notesError: errors.join(' / ') } : { notes: true };

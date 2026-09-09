@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -53,5 +53,32 @@ describe('buildLectureMarkdown', () => {
     expect(md).toContain('# 講義ノート');
     expect(md).toContain('\n\nテキストだけ。');
     expect(buildLectureMarkdown({ segments: [], slides: [] })).toContain('（文字起こしがありません）');
+  });
+});
+
+describe('buildNotesMarkdown', () => {
+  const slides = [
+    { filename: 'slide_001.png', seq: 1, videoTime: 10, t: 10, reason: 'initial' as const },
+    { filename: 'slide_002.png', seq: 2, videoTime: 60, t: 60, reason: 'change' as const },
+  ];
+  const sections = groupSections([seg(12, '一枚目の話。'), seg(70, '二枚目の話。')], slides);
+  const polished = new Map([['slide_001', { text: '一枚目の本文。' }]]);
+
+  it('puts the overview first and headings at topic starts, with a rule between slides inside a topic', () => {
+    const md = buildNotesMarkdown({
+      title: '色',
+      backendName: 'fake',
+      sections,
+      polished,
+      outline: { overview: ['全体 1'], topics: [{ heading: '導入', summary: ['導入の要点'], startId: 'slide_001' }] },
+    });
+    expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n**要点**\n\n- 導入の要点\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
+    expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
+  });
+
+  it('works without an outline', () => {
+    const md = buildNotesMarkdown({ backendName: 'fake', sections, polished });
+    expect(md).not.toContain('## ');
+    expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n---\n\n![slide_002]');
   });
 });

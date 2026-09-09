@@ -38,10 +38,14 @@ beforeAll(async () => {
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
-  // codex スタブ: --output-last-message のファイルに、プロンプト中の id をそのまま返す JSON を書く
+  // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
+  // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
     'codex',
-    'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; ids=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | sed \'s/id="//; s/"//\'); body=""; for id in $ids; do body="$body{\\"id\\":\\"$id\\",\\"summary\\":[\\"$id の要点\\"],\\"text\\":\\"$id の整えた本文。\\"},"; done; printf \'{"sections":[%s]}\' "${body%,}" > "$out"',
+    'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
+      + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
+      + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s"}]}\' "$first" > "$out"; exit 0; fi; '
+      + 'ids=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | sed \'s/id="//; s/"//\'); body=""; for id in $ids; do body="$body{\\"id\\":\\"$id\\",\\"text\\":\\"$id の整えた本文。\\"},"; done; printf \'{"sections":[%s]}\' "${body%,}" > "$out"',
   );
   config = {
     host: '127.0.0.1',
@@ -157,8 +161,10 @@ describe('local server', () => {
     const notes = await readFile(path.join(outputDir, 'notes.md'), 'utf8');
     expect(notes).toContain('# テスト 講義/1（ノート）');
     expect(notes).toContain('![slide_001](slides/slide_001.png)');
-    expect(notes).toContain('- slide_001 の要点');
+    expect(notes).toContain('## 全体の要点\n\n- 全体の要点 1\n- 全体の要点 2');
+    expect(notes).toContain('## 話題 A\n\n**要点**\n\n- 話題 A の要点');
     expect(notes).toContain('slide_001 の整えた本文。');
+    expect(notes).not.toContain('slide_001 の要点');
     const transcript = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'transcript.json'), 'utf8')) as {
       segments: Array<{ start: number; videoStart: number; text: string }>;
     };

@@ -45,7 +45,7 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起�
 
 ### 話し言葉を整えて要点を付ける（任意）
 
-文字起こしは話し言葉のままです。サーバー起動時に `--llm` を指定すると、フィラーを除いて書き言葉に整え、節ごとの要点を付けた `notes.md` も作ります。
+文字起こしは話し言葉のままです。サーバー起動時に `--llm` を指定すると、フィラーを除いて書き言葉に整え、冒頭に講義全体の要点、本文には話題ごとの見出しと要点を付けた `notes.md` を作ります（見出しはスライドの切り替わりではなく内容から決めます）。
 
 ```sh
 pnpm --filter @lec-scribe/server start -- --llm codex            # Codex CLI（ChatGPT の定額枠、要 codex login）

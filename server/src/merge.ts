@@ -1,3 +1,4 @@
+import type { Outline } from './llm.ts';
 import { formatTimestamp, type Segment } from './format.ts';
 
 /**
@@ -146,7 +147,9 @@ export function buildLectureMarkdown(input: {
 }
 
 /**
- * notes.md: LLM で整えた本文と要点。整えられなかった節は文字起こしのまま載せる（SPEC §13.5）
+ * notes.md: 冒頭に講義全体の要点、本文は LLM が決めた話題ごとに見出しと要点を付けて、
+ * その中にスライド画像と整えた本文を順に並べる（SPEC §13.5）。
+ * outline がなければ見出しなしで画像と本文だけ。整えられなかった節は文字起こしのまま載せる。
  */
 export function buildNotesMarkdown(input: {
   title?: string;
@@ -154,20 +157,33 @@ export function buildNotesMarkdown(input: {
   url?: string;
   backendName: string;
   sections: readonly Section[];
-  polished: ReadonlyMap<string, { summary: string[]; text: string }>;
+  polished: ReadonlyMap<string, { text: string }>;
+  outline?: Outline;
 }): string {
   const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}（ノート）`, ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
-  lines.push(`- 話し言葉を読みやすく整え、要点を付けたもの（${input.backendName}）。文字起こしそのままの版は lecture.md`, '');
+  lines.push(`- 話し言葉を読みやすく整え、話題ごとに要点を付けたもの（${input.backendName}）。文字起こしそのままの版は .lecscribe/lecture.md`, '');
 
-  for (const [i, section] of input.sections.entries()) {
-    if (i > 0) lines.push('---', '');
+  const overview = input.outline?.overview ?? [];
+  if (overview.length > 0) lines.push('## 全体の要点', '', ...overview.map((s) => `- ${s}`), '');
+
+  // 話題の開始 id → 話題。最初の話題は先頭の節から始まる
+  const topicAt = new Map((input.outline?.topics ?? []).map((t) => [t.startId, t]));
+  let first = true;
+  for (const section of input.sections) {
+    const topic = topicAt.get(section.id);
+    if (topic) {
+      lines.push(`## ${topic.heading}`, '');
+      if (topic.summary.length > 0) lines.push('**要点**', '', ...topic.summary.map((s) => `- ${s}`), '');
+    } else if (!first) {
+      lines.push('---', '');
+    }
+    first = false;
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     const p = input.polished.get(section.id);
     if (p) {
-      if (p.summary.length > 0) lines.push('**要点**', '', ...p.summary.map((s) => `- ${s}`), '');
       lines.push(p.text || '（このスライドの間の発話はありません）', '');
     } else if (section.texts.length > 0) {
       lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(section.texts), '');
