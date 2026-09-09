@@ -254,7 +254,7 @@ export class Pipeline {
         await writeFile(workPath(dir, 'transcript.srt'), toSrt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.vtt'), toVtt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.txt'), toTxt(forSubtitles));
-        // 講義ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
+        // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
         const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides };
         await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
         // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする

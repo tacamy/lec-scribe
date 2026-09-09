@@ -50,7 +50,7 @@ describe('buildLectureMarkdown', () => {
 
   it('works without slides and without text', () => {
     const md = buildLectureMarkdown({ segments: [seg(0, 'テキストだけ。')], slides: [] });
-    expect(md).toContain('# 講義ノート');
+    expect(md).toContain('# ノート');
     expect(md).toContain('\n\nテキストだけ。');
     expect(buildLectureMarkdown({ segments: [], slides: [] })).toContain('（文字起こしがありません）');
   });

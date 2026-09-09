@@ -211,7 +211,7 @@ function render(state: SessionState) {
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
   } else if (isPopup) {
-    footer.textContent = '講義ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
+    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
   } else {
     footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
   }
@@ -496,7 +496,7 @@ pairBtn.addEventListener('click', () => {
       pairBtn.textContent = 'このMacと接続';
     }
   }).then(() => {
-    if (serverConfigured) showMessage('接続しました。講義ページで Start を押すと録音が始まり、Stop で文字起こしに送られます。', 'info');
+    if (serverConfigured) showMessage('接続しました。動画ページで Start を押すと録音が始まり、Stop で文字起こしに送られます。', 'info');
   });
 });
 

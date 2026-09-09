@@ -128,7 +128,7 @@ export function buildLectureMarkdown(input: {
   const imagePrefix = input.imagePrefix ?? 'slides/';
   const sections = groupSections(input.segments, input.slides, leadSec);
 
-  const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}`, ''];
+  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}`, ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
@@ -147,7 +147,7 @@ export function buildLectureMarkdown(input: {
 }
 
 /**
- * notes.md: 冒頭に講義全体の要点、本文は LLM が決めた話題ごとに見出しと要点を付けて、
+ * notes.md: 冒頭に動画全体の要点、本文は LLM が決めた話題ごとに見出しと要点を付けて、
  * その中にスライド画像と整えた本文を順に並べる（SPEC §13.5）。
  * outline がなければ見出しなしで画像と本文だけ。整えられなかった節は文字起こしのまま載せる。
  */
@@ -159,7 +159,7 @@ export function buildNotesMarkdown(input: {
   polished: ReadonlyMap<string, { text: string }>;
   outline?: Outline;
 }): string {
-  const lines: string[] = [`# ${input.title?.trim() || '講義ノート'}（ノート）`, ''];
+  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}（ノート）`, ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);

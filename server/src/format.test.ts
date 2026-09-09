@@ -35,7 +35,7 @@ describe('subtitle writers', () => {
 
 describe('slugify', () => {
   it('keeps Japanese, replaces separators and trims', () => {
-    expect(slugify('LMS サンプル大学 - 12章｜グラフィックデザイン')).toBe('LMS_サンプル大学_12章｜グラフィックデザイン');
+    expect(slugify('LMS サンプル講座 - 12章｜グラフィックデザイン')).toBe('LMS_サンプル講座_12章｜グラフィックデザイン');
     expect(slugify('a/b\\c:d*e?f"g<h>i|j')).toBe('a_b_c_d_e_f_g_h_i_j');
     expect(slugify(undefined)).toBe('');
     expect(slugify('x'.repeat(100)).length).toBe(60);

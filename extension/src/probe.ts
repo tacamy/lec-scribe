@@ -1,5 +1,5 @@
 /**
- * 講義ページ内の <video> を探して情報を返す probe（SPEC §8.1, §8.2）。
+ * 動画ページ内の <video> を探して情報を返す probe（SPEC §8.1, §8.2）。
  *
  * `probeVideos` は chrome.scripting.executeScript の `func` として各 frame で
  * 実行される。関数を文字列化して注入する仕組みなので、この関数の中から

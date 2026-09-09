@@ -11,7 +11,7 @@ export default defineConfig({
   manifest: {
     name: 'LecScribe',
     description:
-      'Record lecture audio locally and capture slide changes from the video you are watching. Nothing leaves your Mac.',
+      'Record the audio of a slide video embedded in the page and capture the slides as they change. Nothing leaves your Mac.',
     permissions: [
       'tabCapture', // getMediaStreamId
       'offscreen', // offscreen document that owns the MediaStream
@@ -22,7 +22,7 @@ export default defineConfig({
       'scripting', // probe と検知用 content script を Start したタブにだけ注入する
     ],
     // ローカルサーバー（Phase 7）向け。fixture ページ（127.0.0.1:8787）への
-    // 注入テストにも使う。大学サイトへの常時アクセスは要求しない（activeTab のみ）。
+    // 注入テストにも使う。動画サイトへの常時アクセスは要求しない（activeTab のみ）。
     host_permissions: ['http://127.0.0.1/*'],
     // The same page serves as the action popup and as the side panel. The
     // icon click that opens the popup is what grants activeTab for the tab,

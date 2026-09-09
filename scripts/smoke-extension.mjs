@@ -99,7 +99,7 @@ try {
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
   await popup.setViewportSize({ width: 320, height: 700 });
   const overflow = await popup.evaluate(() => {
-    const long = 'サンプル大学 - 12章｜グラフィックデザインの歴史と現在 '.repeat(4) + 'https://example.invalid/'.repeat(6);
+    const long = 'サンプル講座 - 12章｜グラフィックデザインの歴史と現在 '.repeat(4) + 'https://example.invalid/'.repeat(6);
     // 待機中は隠れている行も、録音中と同じ見た目で測る
     for (const row of document.querySelectorAll('.rows [hidden]')) row.hidden = false;
     document.getElementById('tabValue').textContent = long;
@@ -300,7 +300,24 @@ try {
   await lecture.waitForFunction(() => document.querySelector('video').ended, null, { timeout: 30_000 });
   await lecture.waitForTimeout(1000);
   const autoCount = await off2.evaluate(() => globalThis.__lecscribe.stats().slideCount);
-  assert.equal(autoCount, 3, `expected initial + 2 slide changes, got ${autoCount}`);
+  if (autoCount !== 3) {
+    // CI（Linux の headless）で再現する失敗の診断用: 動画の長さと保存したスライド、タイムラインを出す
+    const videoInfo = await lecture.evaluate(() => {
+      const v = document.querySelector('video');
+      return { duration: v.duration, currentTime: v.currentTime, ended: v.ended, readyState: v.readyState, size: [v.videoWidth, v.videoHeight] };
+    });
+    const saved = await off2.evaluate(async (sessionId) => {
+      const { files } = await globalThis.__lecscribe.export(sessionId);
+      const read = async (suffix) => {
+        const f = files.find((x) => x.filename.endsWith(suffix));
+        return f ? JSON.parse(await (await fetch(f.url)).text()) : null;
+      };
+      const out = { slides: await read('slides.json'), timeline: await read('timeline.json') };
+      globalThis.__lecscribe.revoke(files.map((f) => f.url));
+      return out;
+    }, frameSession);
+    assert.fail(`expected initial + 2 slide changes, got ${autoCount}\nvideo: ${JSON.stringify(videoInfo)}\nslides: ${JSON.stringify(saved.slides)}\ntimeline: ${JSON.stringify(saved.timeline)}`);
+  }
 
   // 手動保存（パネルの「スクショを保存」相当）。終了後の静止画でも撮れる
   const manual = await popup.evaluate(

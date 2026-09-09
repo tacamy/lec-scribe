@@ -119,7 +119,7 @@ async function start(tabId: number): Promise<SessionState> {
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
   if (!tab) throw new LecError('NO_TAB', '対象のタブが見つかりません。');
   if (tab.url && UNSUPPORTED_URL.test(tab.url)) {
-    throw new LecError('UNSUPPORTED_PAGE', 'このページはキャプチャできません。講義ページを開いてから Start してください。');
+    throw new LecError('UNSUPPORTED_PAGE', 'このページはキャプチャできません。動画ページを開いてから Start してください。');
   }
 
   const meta: SessionMeta = {
@@ -153,7 +153,7 @@ async function start(tabId: number): Promise<SessionState> {
     } catch (e) {
       const reason = toErrorInfo(e).message;
       const hint = /invoked/i.test(reason)
-        ? ' 講義タブを表示した状態でツールバーの LecScribe アイコンをクリックしてパネルを開き直してから、もう一度 Start してください。'
+        ? ' 動画のタブを表示した状態でツールバーの LecScribe アイコンをクリックしてパネルを開き直してから、もう一度 Start してください。'
         : '';
       throw new LecError('CAPTURE_FAILED', `タブのキャプチャを開始できません: ${reason}${hint}`);
     }

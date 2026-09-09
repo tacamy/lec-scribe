@@ -105,11 +105,11 @@ describe('local server', () => {
     const created = await fetch(`${base}/sessions`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId, title: 'テスト 講義/1', startedAt: '2026-09-08T01:30:05.000Z' }),
+      body: JSON.stringify({ sessionId, title: 'テスト 動画/1', startedAt: '2026-09-08T01:30:05.000Z' }),
     });
     expect(created.status).toBe(201);
     const { outputDir } = (await created.json()) as { outputDir: string };
-    expect(path.basename(outputDir)).toBe('20260908-103005-ab12_テスト_講義_1');
+    expect(path.basename(outputDir)).toBe('20260908-103005-ab12_テスト_動画_1');
 
     const put = (name: string, body: string | Uint8Array) =>
       fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
@@ -158,13 +158,13 @@ describe('local server', () => {
       expect(files).toContain(f);
     }
     const lecture = await readFile(path.join(outputDir, '.lecscribe', 'lecture.md'), 'utf8');
-    expect(lecture).toContain('# テスト 講義/1');
+    expect(lecture).toContain('# テスト 動画/1');
     expect(lecture).toContain('![slide_001](../slides/slide_001.png)');
     expect(lecture).toContain('次の区間');
     // ノート（codex スタブ）
     expect(status.result).toMatchObject({ notes: true });
     const notes = await readFile(path.join(outputDir, 'notes.md'), 'utf8');
-    expect(notes).toContain('# テスト 講義/1（ノート）');
+    expect(notes).toContain('# テスト 動画/1（ノート）');
     expect(notes).toContain('![slide_001](slides/slide_001.png)');
     expect(notes).toContain('## 全体の要点\n\n- 全体の要点 1\n- 全体の要点 2');
     expect(notes).toContain('## 話題 A\n\n**要点**\n\n- 話題 A の要点');
