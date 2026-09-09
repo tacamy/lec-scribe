@@ -39,8 +39,15 @@
    Homebrew と ffmpeg / whisperkit-cli を入れ、サーバーを `~/LecScribe-app/` に置いてログイン時に自動起動するよう登録します。途中で Mac のパスワードを聞かれることがあります。
 3. もう一度アイコンを押して「このMacと接続」→ Mac に出る確認画面で「許可」。
 4. 動画ページで動画を再生し、アイコン → Start。見終わったら Stop すると文字起こしが始まり、`~/LecScribe/` にノートができます（初回はモデルのダウンロードで数分余計にかかります）。
+5. ノートを整える（任意）。このままだと `notes.md` は文字起こしそのままです。話し言葉を整えて要点と見出しを付けるには、ターミナルで次を実行します。
 
-更新は `bash ~/LecScribe-app/update.sh`。ノートを話し言葉から整えたい場合は下の「話し言葉を整えて要点を付ける」を参照。
+   ```sh
+   bash ~/LecScribe-app/enable-notes.sh
+   ```
+
+   Codex CLI を入れて ChatGPT アカウントでログインします（定額枠で動くので API キーは不要）。ローカルの Ollama を使うなら末尾に `ollama`、無効に戻すなら `none` を付けます。拡張の設定画面の「ノート作成」でも今の状態とこのコマンドを確認できます。
+
+更新は `bash ~/LecScribe-app/update.sh`。
 
 ## 使い方（開発中）
 
@@ -66,11 +73,13 @@ pnpm --filter @lec-scribe/server start   # ローカルサーバー。拡張の�
 
 出来上がった `notes.md` は普通の Markdown なので、不要なスライドの行を消すなど自由に編集できます（ただし「やり直す」を押すと作り直され、編集は消えます）。
 
+導入スクリプトで入れた場合は `bash ~/LecScribe-app/enable-notes.sh` で設定できます。開発中に手で切り替えるときは:
+
 ```sh
 pnpm --filter @lec-scribe/server start -- --llm codex            # Codex CLI（ChatGPT の定額枠、要 codex login）
 pnpm --filter @lec-scribe/server start -- --llm openai            # OpenAI API（環境変数 OPENAI_API_KEY）
 pnpm --filter @lec-scribe/server start -- --llm ollama --llm-model qwen2.5:32b   # ローカル LLM
-LEC_SCRIBE_LLM=codex pnpm --filter @lec-scribe/server agent:install             # 常駐サーバーに渡す場合
+LEC_SCRIBE_LLM=codex pnpm --filter @lec-scribe/server agent:install             # 常駐サーバーに渡す場合（既存の設定は引き継がれます）
 ```
 
 `codex` と `openai` では文字起こしのテキストが外部に送られます（音声・画像は送りません）。

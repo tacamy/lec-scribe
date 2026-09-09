@@ -1,3 +1,4 @@
+import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
@@ -122,15 +123,7 @@ async function checkServerPresence() {
   }
 }
 
-copyCmdBtn.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(INSTALL_COMMAND);
-    copyCmdBtn.textContent = 'コピーしました';
-  } catch {
-    copyCmdBtn.textContent = '選択してコピーしてください';
-  }
-  window.setTimeout(() => (copyCmdBtn.textContent = 'コピー'), 2000);
-});
+bindCopyButton(copyCmdBtn, INSTALL_COMMAND);
 
 /** サーバーに頼んで出力フォルダ（または lecture.md）を Finder / 既定のアプリで開く */
 async function openOutput(sessionId: string, target: 'folder' | 'lecture', fallbackPath?: string) {

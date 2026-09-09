@@ -69,5 +69,9 @@ node "$APP_DIR/server/scripts/agent.mjs" install
 say "✓ LecScribe サーバーの準備ができました"
 cat <<MSG
   Chrome のツールバーの LecScribe アイコンを押して「このMacと接続」→ Mac の画面で「許可」を押してください。
-  更新するときは:  bash "$APP_DIR/update.sh"
+
+  ノート（任意）: いまは文字起こしをそのまま置きます。話し言葉を整えて要点を付けるには:
+    bash "$APP_DIR/enable-notes.sh"
+  更新するときは:
+    bash "$APP_DIR/update.sh"
 MSG
