@@ -178,39 +178,10 @@ try {
   );
   console.log(`recorded ${rec.stopped.audioBytes} bytes in ${rec.stopped.durationMs} ms`);
 
-  // The popup lists the session from OPFS and can export it through the
-  // worker + chrome.downloads, then discard it.
+  // The popup lists the session from OPFS; discard it.
+  // （Downloads への書き出しは UI から外したので smoke でも通さない。chrome.downloads 絡みの揺れで不安定だった）
   await popup.reload();
   await popup.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.title || li.textContent.includes(id)), '2099-01-01 00:00:00');
-  const exported = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'EXPORT', sessionId: id }), rec.sessionId);
-  assert.equal(exported.ok, true, JSON.stringify(exported));
-  assert.equal(exported.state.exporting.downloadIds.length, 3);
-  await popup.waitForFunction(
-    async () => !(await chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' })).state.exporting,
-    null,
-    { timeout: 20_000 },
-  );
-  // Playwright はダウンロードを横取りして自前の一時ディレクトリにランダム名で
-  // 保存する。その過程で chrome.downloads 上の状態が complete → in_progress →
-  // complete と揺れることがあるので、全件 complete になるまで待ってから見る。
-  // 音声ファイルは要求したパスではなくサイズで突き合わせる。
-  await popup.waitForFunction(
-    async () => {
-      const items = await chrome.downloads.search({});
-      return items.length === 3 && items.every((d) => d.state === 'complete');
-    },
-    null,
-    { timeout: 20_000 },
-  );
-  const downloads = await popup.evaluate(() => chrome.downloads.search({}));
-  const stateAfter = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
-  const summary = `${JSON.stringify(downloads.map((d) => [d.id, d.filename, d.state, d.fileSize]))}\nstate: ${JSON.stringify(stateAfter.state)}`;
-  assert.equal(downloads.length, 3, `downloads: ${summary}`);
-  const audioDownload = downloads.find((d) => d.fileSize === rec.stopped.audioBytes);
-  assert.ok(audioDownload, `no download of ${rec.stopped.audioBytes} bytes: ${summary}`);
-  const afterExport = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
-  assert.equal(afterExport.state.error, undefined);
-  console.log(`exported ${downloads.length} files, audio ${audioDownload.fileSize} bytes`);
 
   const stateBeforeDiscard = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const discarded = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), rec.sessionId);

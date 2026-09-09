@@ -6,7 +6,7 @@
 
 改訂履歴:
 
-- v0.5（2026-09-09）: 出力フォルダを `notes.md` + `slides/` だけに整理し、作業ファイルを `.lecscribe/` へ（§14）。`lecture.md` / `notes.md` の節見出しを廃止（§13.4）。文字起こし中・送信待ちのセッションを「破棄」で中止・削除できるように（§11.3、`POST /sessions/:id/cancel`）。文字起こし中も次の録音を始められ、Stop 後は送信待ちに並ぶ（§6.5）。パネルのボタン名を「フォルダを開く / やり直す / 文字起こしする / Downloads に書き出す / 破棄」に（§15.1）。
+- v0.5（2026-09-09）: 出力フォルダを `notes.md` + `slides/` だけに整理し、作業ファイルを `.lecscribe/` へ（§14）。`lecture.md` / `notes.md` の節見出しを廃止（§13.4）。文字起こし中・送信待ちのセッションを「破棄」で中止・削除できるように（§11.3、`POST /sessions/:id/cancel`）。文字起こし中も次の録音を始められ、Stop 後は送信待ちに並ぶ（§6.5）。パネルのボタン名を「フォルダを開く / やり直す / 文字起こしする / 破棄」に（§15.1。「Downloads に書き出す」は後に UI から削除）。
 - v0.4（2026-09-09）: Phase 7〜9 の実装で確定した事項を反映。`whisperkit-cli` 1.1.0 のフラグと report の形（§13.1）、モデル比較（`large-v3` を既定に維持）、スライド割り当ての 1.5 秒補正（§13.4）、LLM による `notes.md`（§13.5、`codex exec` / OpenAI API / Ollama）、launchd 常駐（README）。UI は「アイコンのポップアップで Start → サイドパネルで監視」（D-12）。
 - v0.3（2026-09-08）: 未決事項への回答を反映。前面タブ前提にしてバックグラウンド対策を MVP から外し、MVP の tabCapture を音声のみに簡素化。crop 経路と iframe 権限フローは将来項目へ。再生速度 1.0x、既定モデル `large-v3`、サーバーは Node.js + TypeScript、出力先 `~/LecScribe` を確定。実サイトの `<video>` が同一ページ内の MSE（`blob:`）再生であることを確認。
 - v0.2（2026-09-08）: 原案 v0.1 を技術検証して改訂。
@@ -236,7 +236,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 | コンテキスト | 責務 | 寿命・注意 |
 |---|---|---|
-| side panel | Stop、状態表示、セッション一覧（フォルダを開く / やり直す / 文字起こしする / Downloads に書き出す / 破棄）。Start はアイコンのポップアップ（同じページを `?mode=popup` で開く） | ページ操作で閉じない。`storage.session` の変更を購読して描画する |
+| side panel | Stop、状態表示、セッション一覧（フォルダを開く / やり直す / 文字起こしする / 破棄）。Start はアイコンのポップアップ（同じページを `?mode=popup` で開く） | ページ操作で閉じない。`storage.session` の変更を購読して描画する |
 | service worker | 状態機械、streamId 取得、content script 注入、offscreen 作成、メッセージ配線、タブの閉鎖・遷移監視 | 30 秒で停止しうる。状態は `storage.session` に置き、起動時に復元する |
 | offscreen document | `getUserMedia`、AudioContext パススルー、MediaRecorder、OPFS 書き込み、サーバーへのアップロードと進捗取得 | 録音の正本。使える拡張 API は `chrome.runtime` のみ |
 | content script | `<video>` 検出と probe、フレーム取得と変化検知、タイムライン記録、非表示検知 | ページ遷移で消える。動画のある frame にだけ注入する |
@@ -265,7 +265,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 3. service worker → offscreen: `CAPTURE_STOP`。`MediaRecorder.stop()` → 最終チャンクを書き込み → トラック停止 → `status.json` を `captured` に
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
-6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「Downloads に書き出す」「破棄」を選べる
+6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「破棄」を選べる
 7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションを「破棄」すると `POST /sessions/:id/cancel { delete: true }` で中止・削除し、次の送信待ちを始める
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。
@@ -276,7 +276,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 IDLE → STARTING → CAPTURING → STOPPING → UPLOADING → PROCESSING → COMPLETED
                                               │            │
                                               └────────────┴──→ ERROR ─(文字起こしする)→ UPLOADING
-                                                     │                └─(Downloads に書き出す / 破棄)→ IDLE
+                                                     │                └─(破棄)→ IDLE
                                                      └─(破棄: サーバーに cancel + delete)→ COMPLETED / IDLE
 ```
 
@@ -543,6 +543,8 @@ sessions/<sessionId>/
 
 ### 11.2 エクスポート
 
+（2026-09-09）「Downloads に書き出す」は UI から外した。サーバーで処理する運用では音声も `~/LecScribe/<セッション>/.lecscribe/` に残るため。`EXPORT` メッセージと offscreen 側の実装は残しており、開発時の回収手段として使える。
+
 `chrome.downloads.download()` で `~/Downloads/LecScribe/<sessionId>/` 配下に各ファイルを保存する（`saveAs: false`）。サーバーが使えないときの回収手段であり、Phase 2 / 6 の動作確認にも使う。
 
 ### 11.3 破棄・保持
@@ -751,11 +753,11 @@ audio.webm
 └──────────────────────────────────┘
 ```
 
-サーバー未接続（トークンなし）で何も動いていないときは、ポップアップ / サイドパネルに「このMacと接続」と説明だけを出し、Start や状態表示は出さない（2026-09-09。接続しないと文字起こしできないため。録音だけして Downloads に書き出す使い方は接続後の設定画面でトークンを消せばできるが、主経路ではない）。
+サーバー未接続（トークンなし）で何も動いていないときは、ポップアップ / サイドパネルに「このMacと接続」と説明だけを出し、Start や状態表示は出さない（2026-09-09。接続しないと文字起こしできないため。未接続では一覧も出さない）。
 
 状態別の主ボタン: IDLE = Start（ポップアップ）、CAPTURING = Stop + 「今の画面を手動で保存」、UPLOADING / PROCESSING = Server 行に段階、COMPLETED = 「出力フォルダを開く」。
 
-セッション一覧（録音中も表示）の各行: 処理済みなら「フォルダを開く」「やり直す」、未処理なら「文字起こしする」、サーバー未設定なら「Downloads に書き出す」、常に「破棄」。処理中・送信待ちの行には「処理中」「送信待ち」のタグが付き、「破棄」を押すと確認のうえ処理を中止してサーバー側のフォルダも消す（§11.3）。
+セッション一覧（録音中も表示）の各行: 処理済みなら「フォルダを開く」「やり直す」、未処理なら「文字起こしする」、常に「破棄」。処理中・送信待ちの行には「処理中」「送信待ち」のタグが付き、「破棄」を押すと確認のうえ処理を中止してサーバー側のフォルダも消す（§11.3）。
 
 ### 15.2 options
 

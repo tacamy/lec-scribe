@@ -43,7 +43,7 @@ const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
 // 未接続のときに隠す通常 UI
-const mainSections = [$('status'), $('rows'), $('actions'), footer];
+const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSection];
 
 // 末尾の「…」は CSS のアニメーション（.dots）で 1 文字ずつ増やす
 const STATE_LABEL: Record<SessionState['state'], string> = {
@@ -166,9 +166,7 @@ function render(state: SessionState) {
   } else if (state.state === 'COMPLETED' && state.lastSession?.outputDir) {
     footer.textContent = `文字起こしが終わりました: ${shortPath(state.lastSession.outputDir)}`;
   } else if (state.state === 'COMPLETED') {
-    footer.textContent = serverConfigured
-      ? '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。'
-      : '「Downloads に書き出す」で ~/Downloads/LecScribe/<セッション>/ に保存されます。文字起こしするには設定でサーバーのトークンを登録してください。';
+    footer.textContent = '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
   } else if (isPopup) {
@@ -329,7 +327,7 @@ async function renderSessions() {
   } catch {
     // OPFS unavailable; nothing to list.
   }
-  sessionsSection.hidden = sessions.length === 0;
+  sessionsSection.hidden = sessions.length === 0 || !setupSection.hidden;
   sessionList.replaceChildren(...sessions.map(sessionItem));
 }
 
@@ -361,35 +359,25 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   uploadBtn.className = done ? '' : 'primary';
   uploadBtn.textContent = done ? 'やり直す' : '文字起こしする';
   uploadBtn.title = done ? '同じフォルダに文字起こしをやり直す' : 'ローカルサーバーへ送って文字起こしする（~/LecScribe に出力）';
-  const exportBtn = document.createElement('button');
-  exportBtn.type = 'button';
-  exportBtn.className = serverConfigured ? '' : 'primary';
-  exportBtn.textContent = 'Downloads に書き出す';
-  exportBtn.title = 'サーバーを使わずに録音とスライドの生データを ~/Downloads/LecScribe に保存する';
   const discardBtn = document.createElement('button');
   discardBtn.type = 'button';
   discardBtn.textContent = '破棄';
-  const busy = !!current.exporting || !!current.processing;
   const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
   // 処理中でも「文字起こしする / やり直す」は押せる（送信待ちに並ぶ）。処理中・送信待ちの本人だけ押せない
   uploadBtn.disabled = !!current.exporting || inFlight;
-  exportBtn.disabled = busy;
   // 破棄は処理中でも押せる（処理を中止して消す）。エクスポート中だけ待つ
   discardBtn.disabled = !!current.exporting;
   uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
-  exportBtn.addEventListener('click', () => void act(() => sendToBackground.export(session.sessionId)));
   discardBtn.addEventListener('click', () => {
     const text = inFlight
       ? `${formatSessionId(session.sessionId)} の文字起こしを中止して、録音とサーバー側のフォルダを削除します。よろしいですか？`
       : `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
-        '文字起こしの出力（~/LecScribe）や Downloads に書き出したファイルはそのまま残ります。よろしいですか？';
+        '文字起こしの出力（~/LecScribe）はそのまま残ります。よろしいですか？';
     if (confirm(text)) void act(() => sendToBackground.discard(session.sessionId));
   });
-  // サーバーを使う運用では生データもサーバー側に置かれるので、Downloads への書き出しは
-  // サーバー未設定のときだけの回収手段として出す（SPEC D-07）
-  if (serverConfigured && done) btns.append(openFolderBtn, uploadBtn);
-  else if (serverConfigured) btns.append(uploadBtn);
-  else btns.append(exportBtn);
+  // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
+  if (done) btns.append(openFolderBtn, uploadBtn);
+  else btns.append(uploadBtn);
   btns.append(discardBtn);
   if (inFlight) {
     const tag = document.createElement('span');
