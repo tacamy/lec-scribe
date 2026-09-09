@@ -123,7 +123,6 @@ describe('ChangeDetector', () => {
 });
 
 describe('見た目が同じ場面（映像中心の画面）', () => {
-  const W = 160, H = 90;
   /** ざらざらした映像。seed を変えると細かい模様は変わるが、全体の明るさは同じ */
   const noise = (seed: number, shade = 128) => {
     const f = new Uint8ClampedArray(PIXELS * 4);
