@@ -41,16 +41,17 @@ describe('buildLectureMarkdown', () => {
     });
     expect(md.startsWith('# 第12章 色\n')).toBe(true);
     expect(md).toContain('- 元ページ: https://example.test/lecture');
-    expect(md).toContain('## 00:00:05 冒頭（スライドなし）\n\n冒頭です。');
-    expect(md).toContain('## 00:00:10 slide_001\n\n![slide_001](slides/slide_001.png)\n\n一枚目の話。');
-    expect(md).toContain('## 00:01:00 slide_002\n\n![slide_002](slides/slide_002.png)\n\n二枚目の話。');
-    expect(md).toContain('## 00:02:00 slide_003\n\n![slide_003](slides/slide_003.png)\n\n（このスライドの間の発話はありません）');
+    expect(md).toContain('文字起こし: 3 区間\n\n冒頭です。');
+    expect(md).not.toContain('## 00:');
+    expect(md).toContain('---\n\n![slide_001](slides/slide_001.png)\n\n一枚目の話。');
+    expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n二枚目の話。');
+    expect(md).toContain('---\n\n![slide_003](slides/slide_003.png)\n\n（このスライドの間の発話はありません）');
   });
 
   it('works without slides and without text', () => {
     const md = buildLectureMarkdown({ segments: [seg(0, 'テキストだけ。')], slides: [] });
     expect(md).toContain('# 講義ノート');
-    expect(md).toContain('冒頭（スライドなし）');
+    expect(md).toContain('\n\nテキストだけ。');
     expect(buildLectureMarkdown({ segments: [], slides: [] })).toContain('（文字起こしがありません）');
   });
 });

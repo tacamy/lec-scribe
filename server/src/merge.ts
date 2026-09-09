@@ -131,12 +131,13 @@ export function buildLectureMarkdown(input: {
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
-  lines.push(`- スライド: ${input.slides.length} 枚 / 文字起こし: ${input.segments.length} 区間（時刻は動画の再生位置）`);
+  lines.push(`- スライド: ${input.slides.length} 枚 / 文字起こし: ${input.segments.length} 区間`);
   if (input.note) lines.push(`- ${input.note}`);
   lines.push('');
 
-  for (const section of sections) {
-    lines.push(`## ${section.heading}`, '');
+  // 節の見出し（時刻 + ファイル名）は付けない。スライド画像そのものが区切りになる
+  for (const [i, section] of sections.entries()) {
+    if (i > 0) lines.push('---', '');
     if (section.slide) lines.push(`![${section.id}](${imagePrefix}${section.slide.filename})`, '');
     lines.push(section.texts.length > 0 ? toParagraph(section.texts) : '（このスライドの間の発話はありません）', '');
   }
@@ -161,8 +162,8 @@ export function buildNotesMarkdown(input: {
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
   lines.push(`- 話し言葉を読みやすく整え、要点を付けたもの（${input.backendName}）。文字起こしそのままの版は lecture.md`, '');
 
-  for (const section of input.sections) {
-    lines.push(`## ${section.heading}`, '');
+  for (const [i, section] of input.sections.entries()) {
+    if (i > 0) lines.push('---', '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     const p = input.polished.get(section.id);
     if (p) {
