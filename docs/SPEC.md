@@ -190,6 +190,9 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - パネルの Start は許可が残っている場合のみ成功する。失敗時はアイコンから開始するよう案内する。
 - 正本は `chrome.storage.session` と offscreen document。service worker は 30 秒で停止しうる。
 
+
+サイドパネルは録音を始めたタブにだけ出す（2026-09-09）。Start 時に `sidePanel.setOptions({ tabId, enabled: true })` でそのタブ向けに有効化し、全タブ共通のパネルは起動時に `setOptions({ enabled: false })` で無効にしておく。別のタブでは画面を広く使え、録音の様子はアイコンのポップアップ（同じページ）で見られる。
+
 ### D-13 `lecture.md` を MVP（Phase 8）に含める
 
 原案では将来機能だが、統合処理ができていれば追加コストが小さく、最も価値の高い成果物のため。

@@ -57,6 +57,9 @@ export default defineBackground(() => {
   // opens the side panel for monitoring. Reset the persisted behaviour in
   // case an earlier build set it to open the panel directly.
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
+  // サイドパネルは録音を始めたタブにだけ出す（Start 時にそのタブ向けに有効化する）。
+  // 全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
+  void chrome.sidePanel.setOptions({ enabled: false }).catch(() => undefined);
 
   void serialized(reconcile);
 });

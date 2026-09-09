@@ -155,7 +155,6 @@ export function buildNotesMarkdown(input: {
   title?: string;
   startedAt?: string;
   url?: string;
-  backendName: string;
   sections: readonly Section[];
   polished: ReadonlyMap<string, { text: string }>;
   outline?: Outline;
@@ -164,7 +163,7 @@ export function buildNotesMarkdown(input: {
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
-  lines.push(`- 話し言葉を読みやすく整え、話題ごとに要点を付けたもの（${input.backendName}）。文字起こしそのままの版は .lecscribe/lecture.md`, '');
+  lines.push('');
 
   const overview = input.outline?.overview ?? [];
   if (overview.length > 0) lines.push('## 全体の要点', '', ...overview.map((s) => `- ${s}`), '');

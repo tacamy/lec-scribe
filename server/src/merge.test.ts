@@ -67,7 +67,6 @@ describe('buildNotesMarkdown', () => {
   it('puts the overview first and headings at topic starts, with a rule between slides inside a topic', () => {
     const md = buildNotesMarkdown({
       title: '色',
-      backendName: 'fake',
       sections,
       polished,
       outline: { overview: ['全体 1'], topics: [{ heading: '導入', summary: ['導入の要点'], startId: 'slide_001' }] },
@@ -77,7 +76,7 @@ describe('buildNotesMarkdown', () => {
   });
 
   it('works without an outline', () => {
-    const md = buildNotesMarkdown({ backendName: 'fake', sections, polished });
+    const md = buildNotesMarkdown({ sections, polished });
     expect(md).not.toContain('## ');
     expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n---\n\n![slide_002]');
   });

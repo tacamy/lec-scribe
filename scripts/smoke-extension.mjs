@@ -84,6 +84,8 @@ try {
   await popup.setViewportSize({ width: 320, height: 700 });
   const overflow = await popup.evaluate(() => {
     const long = 'airU 京都芸術大学 - 12章｜グラフィックデザインの歴史と現在 '.repeat(4) + 'https://example.invalid/'.repeat(6);
+    // 待機中は隠れている行も、録音中と同じ見た目で測る
+    for (const row of document.querySelectorAll('.rows [hidden]')) row.hidden = false;
     document.getElementById('tabValue').textContent = long;
     document.getElementById('videoValue').textContent = long;
     document.getElementById('footer').textContent = long;

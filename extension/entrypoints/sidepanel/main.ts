@@ -22,6 +22,8 @@ const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
 const audioValue = $('audioValue');
+// 録音していないときは中身のない行（Audio / Video / Slides / Tab）を出さない。Server 行だけ常に出す
+const detailRows = [$('audioRow'), $('meter'), $('videoRow'), $('slidesRow'), $('tabRow')];
 const meterFill = $('meterFill');
 const videoValue = $('videoValue');
 const slidesValue = $('slidesValue');
@@ -107,6 +109,10 @@ function render(state: SessionState) {
   stateLabel.textContent = state.exporting ? 'Exporting…' : STATE_LABEL[state.state];
   tabValue.textContent = state.title ?? '—';
   tabValue.title = state.title ?? '';
+
+  // 録音中だけ状態の行を出す。録音完了直後は Audio 行に長さとサイズを残す
+  const showAudio = active || (state.state === 'COMPLETED' && !!state.lastSession);
+  for (const row of detailRows) row.hidden = !(row.id === 'audioRow' ? showAudio : active);
 
   startBtn.hidden = active;
   stopBtn.hidden = !active;
@@ -393,7 +399,9 @@ startBtn.addEventListener('click', () => {
     // 先に録音開始を投げておけば、ポップアップが消えても service worker 側で処理が続く。
     const started = sendToBackground.start(tab.id);
     started.catch(() => undefined);
-    // クリック直後のユーザー操作が有効なうちにパネルを開く。以後はパネルが共有状態を描く
+    // このタブにだけパネルを出す（全体のパネルは service worker が無効にしている）。
+    // クリック直後のユーザー操作が有効なうちに open を呼びたいので setOptions は待たずに続ける
+    void chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
     await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
     const result = await started;
     window.close();

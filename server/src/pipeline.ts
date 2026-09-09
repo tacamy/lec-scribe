@@ -307,7 +307,6 @@ export class Pipeline {
               title: result.session?.title,
               url: result.session?.url,
               startedAt: result.session?.startedAt,
-              backendName: backend.name,
               sections: result.sections,
               polished,
               outline: topics,
