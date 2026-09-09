@@ -51,6 +51,8 @@ button.link { padding: 2px 6px; border: 0; background: transparent; color: var(-
 @keyframes pulse { 50% { opacity: 0.35; } }
 .rows { display: grid; gap: 6px; }
 .row { display: flex; gap: 10px; min-width: 0; }
+/* .row / .meter の display 指定が hidden 属性（display: none）に勝ってしまうので、隠すときはこちらを優先する */
+.rows [hidden] { display: none; }
 .label { width: 48px; color: var(--muted); flex: none; }
 .value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

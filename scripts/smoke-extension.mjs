@@ -81,6 +81,13 @@ try {
   assert.equal(state.ok, true);
   assert.equal(state.state.state, 'IDLE');
 
+  // 待機中は Audio / Video / Slides / Tab の行が出ない（hidden 属性が CSS に負けていないこと）
+  const idleRows = await popup.evaluate(() =>
+    Object.fromEntries(['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow', 'serverValue'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),
+  );
+  for (const id of ['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow']) assert.equal(idleRows[id], 'none', `${id} visible while idle: ${JSON.stringify(idleRows)}`);
+  assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
+
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
   await popup.setViewportSize({ width: 320, height: 700 });
   const overflow = await popup.evaluate(() => {
