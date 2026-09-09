@@ -194,6 +194,39 @@ describe('local server', () => {
     expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'timeline.json']);
   });
 
+  it('cancels a running pipeline and deletes the session on request', async () => {
+    // 遅い whisperkit スタブで別サーバーを立て、実行中に中止する
+    const slow = await writeStub('whisperkit-slow', 'sleep 30');
+    const { server: slowServer } = createApp({ ...config, whisperkitBin: slow, outDir: path.join(tmp, 'out-slow') }, TOKEN);
+    await new Promise<void>((resolve) => slowServer.listen(0, '127.0.0.1', resolve));
+    const slowBase = `http://127.0.0.1:${(slowServer.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260908-130000-canc';
+      await fetch(`${slowBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'cancel' }) });
+      await fetch(`${slowBase}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${slowBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      // whisperkit（sleep）に入るまで待つ
+      for (let i = 0; i < 50; i++) {
+        const s = (await (await fetch(`${slowBase}/sessions/${sessionId}/status`, { headers })).json()) as { stage: string };
+        if (s.stage === 'transcribing') break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const started = Date.now();
+      const res = await fetch(`${slowBase}/sessions/${sessionId}/cancel`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ delete: true }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, cancelled: true, deleted: true });
+      expect(Date.now() - started).toBeLessThan(5000); // sleep 30 を待たずに止まる
+      const gone = await fetch(`${slowBase}/sessions/${sessionId}/status`, { headers });
+      expect(gone.status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => slowServer.close(() => resolve()));
+    }
+  });
+
   it('refuses finalize before the audio arrived', async () => {
     const sessionId = '20260908-110000-zzzz';
     await fetch(`${base}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) });

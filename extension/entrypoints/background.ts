@@ -436,7 +436,7 @@ const STAGE_RANK: Record<ProcessingProgress['stage'], number> = {
 /** Downloads the session files through chrome.downloads from blob: URLs minted by the offscreen document. */
 async function exportSession(sessionId: string): Promise<SessionState> {
   const current = await readState();
-  if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中はエクスポートできません。');
+  if (isActive(current) && current.sessionId === sessionId) throw new LecError('BUSY', '録音中のセッションは書き出せません。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
 
   await ensureOffscreenDocument();
@@ -490,26 +490,67 @@ async function onDownloadSettled(): Promise<void> {
   await closeOffscreenIfIdle();
 }
 
+/**
+ * セッションを捨てる。文字起こし中・送信待ちなら処理を中止し、サーバー側のフォルダも消す
+ * （まだ成果物になっていないため）。処理済みのセッションはサーバー側の出力を残す。
+ */
 async function discardSession(sessionId: string): Promise<SessionState> {
-  const current = await readState();
-  if (isActive(current)) throw new LecError('BUSY', 'キャプチャ中は削除できません。');
+  let current = await readState();
+  if (isActive(current) && current.sessionId === sessionId) throw new LecError('BUSY', '録音中のセッションは削除できません。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
-  if (current.processing?.sessionId === sessionId) throw new LecError('BUSY', '文字起こし中のセッションは削除できません。');
 
+  const config = await loadConfig();
+  const wasProcessing = current.processing?.sessionId === sessionId;
+  const wasPending = current.pendingUploads?.includes(sessionId) ?? false;
   await ensureOffscreenDocument();
+  if (wasProcessing) {
+    await sendToOffscreen.cancelUpload(sessionId).catch(() => undefined);
+    await cancelOnServer(sessionId, config.server, true);
+    current = { ...current, processing: undefined, error: undefined };
+  } else if (wasPending) {
+    await cancelOnServer(sessionId, config.server, true);
+  }
   try {
     await sendToOffscreen.discard(sessionId);
-  } finally {
-    await closeOffscreenIfIdle();
+  } catch (e) {
+    await writeState(current);
+    throw e;
   }
   const next: SessionState =
     current.lastSession?.sessionId === sessionId
       ? { ...INITIAL_STATE, title: current.title, processing: current.processing, pendingUploads: current.pendingUploads }
       : { ...current, error: undefined };
+  // 処理を中止したら、録音中でなければ「処理中」表示から抜ける（残る処理があれば upload() が state を立て直す）
+  if (wasProcessing && !isActive(current)) next.state = current.lastSession ? 'COMPLETED' : 'IDLE';
   next.pendingUploads = next.pendingUploads?.filter((id) => id !== sessionId);
   if (next.pendingUploads?.length === 0) next.pendingUploads = undefined;
   await writeState(next);
+
+  // 中止で空いたなら、送信待ちの次を進める
+  if (wasProcessing && next.pendingUploads?.length) {
+    const [head, ...rest] = next.pendingUploads;
+    try {
+      return await upload(head!, rest);
+    } catch {
+      return readState();
+    }
+  }
+  await closeOffscreenIfIdle();
   return next;
+}
+
+/** サーバーに処理の中止（と削除）を頼む。繋がらなくても破棄は続ける */
+async function cancelOnServer(sessionId: string, server: { port: number; token: string }, remove: boolean): Promise<void> {
+  if (!server.token) return;
+  try {
+    await fetch(`http://127.0.0.1:${server.port}/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: remove }),
+    });
+  } catch {
+    // サーバーが落ちていれば処理も止まっている
+  }
 }
 
 /** If the worker restarted and the offscreen document is gone, the session cannot continue. */

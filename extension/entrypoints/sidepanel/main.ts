@@ -32,7 +32,6 @@ const message = $('message');
 const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
 const snapBtn = $<HTMLButtonElement>('snapBtn');
-const snapHint = $('snapHint');
 const openBtn = $<HTMLButtonElement>('openBtn');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
@@ -114,7 +113,6 @@ function render(state: SessionState) {
   startBtn.disabled = !!state.exporting;
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
-  snapHint.hidden = snapBtn.hidden;
   openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
 
   if (state.error) {
@@ -158,9 +156,16 @@ function render(state: SessionState) {
   if (state.state === 'CAPTURING') startStatsLoop();
   else stopStatsLoop();
 
-  if (active) sessionsSection.hidden = true;
-  else void renderSessions();
+  // 一覧は録音中も出す（録音中のセッション自身は除く）。動画の状態更新のたびに
+  // 作り直すとボタンがちらつくので、一覧に関係する状態が変わったときだけ描き直す
+  const key = [state.state, state.sessionId, state.processing?.stage, state.exporting ? 'x' : '', state.pendingUploads?.join(','), serverConfigured].join('|');
+  if (key !== sessionsKey) {
+    sessionsKey = key;
+    void renderSessions();
+  }
 }
+
+let sessionsKey = '';
 
 function describeServer(state: SessionState): string {
   const p = state.processing;
@@ -278,7 +283,8 @@ function stopStatsLoop() {
 async function renderSessions() {
   let sessions: StoredSession[] = [];
   try {
-    sessions = (await listSessions()).slice(0, 5);
+    const activeId = isActive(current) ? current.sessionId : undefined;
+    sessions = (await listSessions()).filter((s) => s.sessionId !== activeId).slice(0, 5);
   } catch {
     // OPFS unavailable; nothing to list.
   }
@@ -323,20 +329,19 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   discardBtn.type = 'button';
   discardBtn.textContent = '破棄';
   const busy = !!current.exporting || !!current.processing;
+  const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
   uploadBtn.disabled = busy;
   exportBtn.disabled = busy;
-  discardBtn.disabled = busy;
+  // 破棄は処理中でも押せる（処理を中止して消す）。エクスポート中だけ待つ
+  discardBtn.disabled = !!current.exporting;
   uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
   exportBtn.addEventListener('click', () => void act(() => sendToBackground.export(session.sessionId)));
   discardBtn.addEventListener('click', () => {
-    if (
-      confirm(
-        `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
-          '文字起こしの出力（~/LecScribe）や Downloads に書き出したファイルはそのまま残ります。よろしいですか？',
-      )
-    ) {
-      void act(() => sendToBackground.discard(session.sessionId));
-    }
+    const text = inFlight
+      ? `${formatSessionId(session.sessionId)} の文字起こしを中止して、録音とサーバー側のフォルダを削除します。よろしいですか？`
+      : `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
+        '文字起こしの出力（~/LecScribe）や Downloads に書き出したファイルはそのまま残ります。よろしいですか？';
+    if (confirm(text)) void act(() => sendToBackground.discard(session.sessionId));
   });
   // サーバーを使う運用では生データもサーバー側に置かれるので、Downloads への書き出しは
   // サーバー未設定のときだけの回収手段として出す（SPEC D-07）
@@ -344,7 +349,12 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   else if (serverConfigured) btns.append(uploadBtn);
   else btns.append(exportBtn);
   btns.append(discardBtn);
-  if (session.status?.stage === 'capturing') {
+  if (inFlight) {
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち';
+    btns.append(tag);
+  } else if (session.status?.stage === 'capturing') {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = '中断';
@@ -363,6 +373,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
 async function act(run: () => Promise<{ state: SessionState }>) {
   message.hidden = true;
   try {
+    sessionsKey = ''; // 操作後は一覧を必ず描き直す
     render((await run()).state);
   } catch (e) {
     const info = toErrorInfo(e);
@@ -376,13 +387,15 @@ startBtn.addEventListener('click', () => {
   void act(async () => {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) throw new Error('アクティブなタブがありません。');
-    if (isPopup) {
-      // Must run while the click's user activation is still fresh, so before
-      // the round-trip to the worker. The panel then follows the shared state.
-      await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
-    }
-    const result = await sendToBackground.start(tab.id);
-    if (isPopup) window.close();
+    if (!isPopup) return sendToBackground.start(tab.id);
+    // ポップアップはサイドパネルが開いた瞬間にフォーカスを失って閉じる。
+    // 先に録音開始を投げておけば、ポップアップが消えても service worker 側で処理が続く。
+    const started = sendToBackground.start(tab.id);
+    started.catch(() => undefined);
+    // クリック直後のユーザー操作が有効なうちにパネルを開く。以後はパネルが共有状態を描く
+    await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
+    const result = await started;
+    window.close();
     return result;
   });
 });

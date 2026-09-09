@@ -23,6 +23,8 @@ export type LlmSettings = {
   ollamaUrl: string;
   /** 1 回の呼び出しに入れる本文の文字数の目安（呼び出し回数を抑える） */
   charsPerCall: number;
+  /** 中止用。abort されると実行中の呼び出しを止め、残りのバッチは呼ばない */
+  signal?: AbortSignal;
 };
 
 export type PolishInput = { id: string; heading: string; text: string };
@@ -146,7 +148,7 @@ function codexBackend(settings: LlmSettings): LlmBackend {
         ];
         if (settings.model) args.push('--model', settings.model);
         args.push(prompt);
-        const r = await run(settings.codexBin, args);
+        const r = await run(settings.codexBin, args, { signal: settings.signal });
         if (r.code !== 0) {
           throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
         }
@@ -166,6 +168,7 @@ function openaiBackend(settings: LlmSettings): LlmBackend {
       if (!settings.openaiApiKey) throw new Error('OPENAI_API_KEY が設定されていません');
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
+        signal: settings.signal,
         headers: { authorization: `Bearer ${settings.openaiApiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           model,
@@ -187,6 +190,7 @@ function ollamaBackend(settings: LlmSettings): LlmBackend {
     async complete(prompt) {
       const res = await fetch(`${settings.ollamaUrl.replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
+        signal: settings.signal,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], format: RESPONSE_SCHEMA, stream: false }),
       });
@@ -208,6 +212,10 @@ export async function polish(
   const errors: string[] = [];
   const batches = batchSections(sections, settings.charsPerCall);
   for (const [i, batch] of batches.entries()) {
+    if (settings.signal?.aborted) {
+      errors.push('cancelled');
+      break;
+    }
     const ids = batch.map((s) => s.id);
     log(`${backend.name}: batch ${i + 1}/${batches.length} (${ids.length} sections, ${batch.reduce((n, s) => n + s.text.length, 0)} chars)`);
     try {

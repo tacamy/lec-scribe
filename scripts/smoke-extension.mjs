@@ -4,7 +4,7 @@
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -36,9 +36,12 @@ const stub = (name, body) => {
   return file;
 };
 const ffmpegStub = stub('ffmpeg', 'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; cp "$in" "$out"');
+// slowMarker があるときは 30 秒眠る（処理中の中止を試すため）
+const slowMarker = path.join(serverTmp, 'slow');
 const whisperkitStub = stub(
   'whisperkit-cli',
-  'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0.5,"end":2.0,"text":"スモークテストの文字起こし"},{"start":2.0,"end":4.0,"text":"二つ目の区間"}]}\' > "$dir/audio.json"',
+  `if [ -f "${slowMarker}" ]; then sleep 30; fi; ` +
+    'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0.5,"end":2.0,"text":"スモークテストの文字起こし"},{"start":2.0,"end":4.0,"text":"二つ目の区間"}]}\' > "$dir/audio.json"',
 );
 writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
 const serverOut = path.join(serverTmp, 'out');
@@ -464,6 +467,65 @@ try {
   assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);
   console.log(`server: transcribed via ${outDir} (${produced.length} files)`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
+
+  // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
+  // サーバー側の処理が止まってフォルダが消え、拡張内のセッションも消えること。
+  writeFileSync(slowMarker, '');
+  const off3 = await context.newPage();
+  off3.on('pageerror', (e) => errors.push(String(e)));
+  await off3.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off3.waitForFunction(() => !!globalThis.__lecscribe);
+  const cancelSession = '20990101-000002-smok';
+  await off3.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    const config = { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } };
+    await api.startFromStream(dest.stream, config, { sessionId, title: 'smoke cancel', startedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 900));
+    await api.stop();
+    osc.stop();
+    await ctx.close();
+  }, cancelSession);
+  await off3.close();
+  const cancelUpload = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), cancelSession);
+  assert.equal(cancelUpload.ok, true, JSON.stringify(cancelUpload));
+  const cancelTrace = [];
+  let reachedTranscribing = false;
+  for (let i = 0; i < 100; i++) {
+    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    const key = `${s.state}/${s.processing?.stage ?? '-'}`;
+    if (cancelTrace[cancelTrace.length - 1] !== key) cancelTrace.push(key);
+    if (s.processing?.stage === 'transcribing') {
+      reachedTranscribing = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(reachedTranscribing, `never reached transcribing: ${cancelTrace.join(' → ')}`);
+  const cancelStarted = Date.now();
+  const cancelled = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), cancelSession);
+  const cancelMs = Date.now() - cancelStarted;
+  assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+  assert.ok(cancelMs < 5000, `discard during processing took ${cancelMs} ms (whisperkit stub sleeps 30 s)`);
+  assert.equal(cancelled.state.processing, undefined, JSON.stringify(cancelled.state));
+  assert.notEqual(cancelled.state.state, 'PROCESSING', JSON.stringify(cancelled.state));
+  assert.ok(!readdirSync(serverOut).some((d) => d.startsWith(cancelSession)), `server dir still exists: ${readdirSync(serverOut)}`);
+  // 遅れて届く polling 結果で処理中に戻らないこと
+  await popup.waitForTimeout(2500);
+  const afterCancel = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  assert.equal(afterCancel.processing, undefined, JSON.stringify(afterCancel));
+  await popup.reload();
+  await popup.waitForSelector('#startBtn');
+  await popup.waitForTimeout(300);
+  const listedAfterCancel = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  assert.ok(!listedAfterCancel.some((t) => t.includes('2099-01-01 00:00:02')), `cancelled session still listed: ${listedAfterCancel}`);
+  rmSync(slowMarker, { force: true });
+  console.log(`cancel: discarded while transcribing in ${cancelMs} ms (${cancelTrace.join(' → ')})`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');

@@ -11,7 +11,7 @@ import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
 /** pipeline.json の内容。拡張が GET /sessions/:id/status で読む */
 export type PipelineStatus = {
-  stage: 'uploaded' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'polishing' | 'done' | 'error';
+  stage: 'uploaded' | 'queued' | 'converting' | 'transcribing' | 'merging' | 'polishing' | 'done' | 'error' | 'cancelled';
   outputDir: string;
   startedAt?: string;
   updatedAt: string;
@@ -55,7 +55,8 @@ export async function writeStatus(dir: string, status: PipelineStatus): Promise<
  */
 export class Pipeline {
   private queue: Promise<unknown> = Promise.resolve();
-  private readonly running = new Set<string>();
+  /** 待機中・実行中のセッション。cancel() で中断できる */
+  private readonly jobs = new Map<string, { controller: AbortController; task: Promise<PipelineStatus> }>();
   private readonly config: ServerConfig;
   private readonly log: (message: string) => void;
 
@@ -65,25 +66,46 @@ export class Pipeline {
   }
 
   isRunning(dir: string): boolean {
-    return this.running.has(dir);
+    return this.jobs.has(dir);
   }
 
   /** キューに積んで即座に戻る。結果は pipeline.json に書かれる */
   enqueue(dir: string): Promise<PipelineStatus> {
-    this.running.add(dir);
-    const task = this.queue.then(() => this.process(dir)).finally(() => this.running.delete(dir));
+    const controller = new AbortController();
+    const task = this.queue
+      .then(() => (controller.signal.aborted ? this.writeCancelled(dir) : this.process(dir, controller.signal)))
+      .finally(() => this.jobs.delete(dir));
+    this.jobs.set(dir, { controller, task });
     this.queue = task.catch(() => undefined);
     return task;
   }
 
-  private async process(dir: string): Promise<PipelineStatus> {
+  /** 待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める */
+  async cancel(dir: string): Promise<boolean> {
+    const job = this.jobs.get(dir);
+    if (!job) return false;
+    job.controller.abort();
+    await job.task.catch(() => undefined);
+    return true;
+  }
+
+  private async writeCancelled(dir: string): Promise<PipelineStatus> {
+    this.log(`cancelled: ${dir}`);
+    return writeStatus(dir, { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }).catch(
+      () => ({ stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }) as PipelineStatus,
+    );
+  }
+
+  private async process(dir: string, signal: AbortSignal): Promise<PipelineStatus> {
     const now = () => new Date().toISOString();
     let status: PipelineStatus = { stage: 'converting', outputDir: dir, startedAt: now(), updatedAt: now(), timings: {} };
     await writeStatus(dir, status);
     const step = async <T>(stage: PipelineStatus['stage'], work: () => Promise<T>): Promise<T> => {
+      if (signal.aborted) throw new Error('cancelled');
       status = await writeStatus(dir, { ...status, stage, updatedAt: now() });
       const started = Date.now();
       const result = await work();
+      if (signal.aborted) throw new Error('cancelled');
       status.timings = { ...status.timings, [stage]: Math.round((Date.now() - started) / 100) / 10 };
       return result;
     };
@@ -109,7 +131,7 @@ export class Pipeline {
           '-c:a',
           'pcm_s16le',
           audioWav,
-        ]);
+        ], { signal });
         if (r.code !== 0) throw new Error(`ffmpeg failed (${r.code}): ${r.stderr.trim().split('\n').slice(-5).join(' / ')}`);
       });
 
@@ -119,7 +141,7 @@ export class Pipeline {
         await mkdir(reportDir, { recursive: true });
         const args = whisperkitArgs({ audioPath: audioWav, model: this.config.model, language: this.config.language, reportDir });
         this.log(`${this.config.whisperkitBin} ${args.join(' ')}`);
-        const r = await run(this.config.whisperkitBin, args, { cwd: dir, onLine: (line) => this.log(`  ${line}`) });
+        const r = await run(this.config.whisperkitBin, args, { cwd: dir, signal, onLine: (line) => this.log(`  ${line}`) });
         if (r.code !== 0) {
           throw new Error(`whisperkit-cli failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
         }
@@ -190,30 +212,21 @@ export class Pipeline {
 
       // ノート作成（任意）。失敗しても文字起こしまでは done にする
       let notes: { notes?: boolean; notesError?: string } = {};
-      const backend = createBackend({
+      const llmSettings = {
         kind: this.config.llm,
         model: this.config.llmModel,
         codexBin: this.config.codexBin,
         openaiApiKey: this.config.openaiApiKey,
         ollamaUrl: this.config.ollamaUrl,
         charsPerCall: this.config.llmCharsPerCall,
-      });
+        signal,
+      };
+      const backend = createBackend(llmSettings);
       if (backend) {
         notes = await step('polishing', async () => {
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
-          const { results: polished, errors } = await polish(
-            inputs,
-            backend,
-            {
-              kind: this.config.llm,
-              model: this.config.llmModel,
-              codexBin: this.config.codexBin,
-              openaiApiKey: this.config.openaiApiKey,
-              ollamaUrl: this.config.ollamaUrl,
-              charsPerCall: this.config.llmCharsPerCall,
-            },
-            this.log,
-          );
+          const { results: polished, errors } = await polish(inputs, backend, llmSettings, this.log);
+          if (signal.aborted) throw new Error('cancelled');
           if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
           await writeFile(
             path.join(dir, NOTES_FILE),
@@ -232,6 +245,7 @@ export class Pipeline {
 
       return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });
     } catch (e) {
+      if (signal.aborted) return this.writeCancelled(dir);
       const message = e instanceof Error ? e.message : String(e);
       this.log(`pipeline error: ${message}`);
       return writeStatus(dir, { ...status, stage: 'error', updatedAt: now(), error: message });

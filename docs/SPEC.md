@@ -539,6 +539,7 @@ sessions/<sessionId>/
 ### 11.3 破棄・保持
 
 - 「破棄」で OPFS のセッションディレクトリを削除する。エクスポート済みのファイル（`~/Downloads/LecScribe/`）やサーバーの出力（`~/LecScribe/`）は削除しない。確認ダイアログにその旨を明記する。
+- 例外として、文字起こし中・送信待ちのセッションを「破棄」したときは、サーバーに `POST /sessions/:id/cancel { delete: true }` を送って処理（ffmpeg / whisperkit / codex）を止め、`~/LecScribe/` のフォルダごと削除する（まだ成果物になっていないため。時間と LLM のトークンを無駄にしない）。送信待ちが残っていれば次を始める。
 - サーバー処理が `done` になった後も既定では OPFS に残し、パネル の「破棄」で削除する（`storage.autoDeleteAfterDone` で自動削除可）。
 - 過去セッションの一覧と操作は パネル の「履歴」で行う（MVP では直近 1 件のみでも可）。
 
@@ -573,6 +574,8 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 | PUT | `/sessions/:id/slides.json`, `/sessions/:id/timeline.json` | メタデータ |
 | POST | `/sessions/:id/finalize` | パイプライン開始（非同期、キューは同時 1 件） |
 | GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }` |
+| POST | `/sessions/:id/cancel` | `{ delete?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（拡張の「破棄」が処理中のセッションに対して使う） |
+| POST | `/sessions/:id/open` | `{ target?: 'folder' \| 'lecture' }`。出力フォルダまたは `notes.md` を macOS の `open` で開く |
 
 `stage`: `queued → converting → transcribing → merging → done | error`
 

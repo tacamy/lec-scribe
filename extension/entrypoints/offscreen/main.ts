@@ -155,6 +155,8 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return recordTimelineEvent(msg.sessionId, msg.event);
     case 'UPLOAD':
       return uploadSession(msg.sessionId, msg.server);
+    case 'CANCEL_UPLOAD':
+      return cancelUpload(msg.sessionId);
   }
 }
 
@@ -163,15 +165,17 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
 const POLL_INTERVAL_MS = 2000;
 const HEALTH_TIMEOUT_MS = 3000;
 const polling = new Map<string, number>();
+/** 送信中の fetch を中断するため */
+const uploading = new Map<string, AbortController>();
 
 type ServerApi = (method: string, path: string, body?: BodyInit, contentType?: string) => Promise<Record<string, unknown>>;
 
-function serverApi(server: ServerTarget): ServerApi {
+function serverApi(server: ServerTarget, signal?: AbortSignal): ServerApi {
   const base = `http://127.0.0.1:${server.port}`;
   return async (method, path, body, contentType) => {
     const headers: Record<string, string> = { authorization: `Bearer ${server.token}` };
     if (contentType) headers['content-type'] = contentType;
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, signal };
     if (body !== undefined) init.body = body;
     let res: Response;
     try {
@@ -194,14 +198,24 @@ function serverApi(server: ServerTarget): ServerApi {
 
 async function uploadSession(sessionId: string, server: ServerTarget): Promise<UploadResult> {
   if (capture?.sessionId === sessionId) throw new LecError('BUSY', 'キャプチャ中のセッションは送信できません。');
-  if (polling.has(sessionId)) throw new LecError('BUSY', 'このセッションは処理中です。');
+  if (polling.has(sessionId) || uploading.has(sessionId)) throw new LecError('BUSY', 'このセッションは処理中です。');
   let dir: FileSystemDirectoryHandle;
   try {
     dir = await sessionDir(sessionId);
   } catch {
     throw new LecError('NO_SESSION', `セッション ${sessionId} が見つかりません。`);
   }
-  const api = serverApi(server);
+  const controller = new AbortController();
+  uploading.set(sessionId, controller);
+  try {
+    return await uploadWith(sessionId, dir, server, controller.signal);
+  } finally {
+    uploading.delete(sessionId);
+  }
+}
+
+async function uploadWith(sessionId: string, dir: FileSystemDirectoryHandle, server: ServerTarget, signal: AbortSignal): Promise<UploadResult> {
+  const api = serverApi(server, signal);
 
   // 接続とトークンの確認（/health は認証不要で、トークンの正否だけ返す）
   const health = await withTimeout(api('GET', '/health'), HEALTH_TIMEOUT_MS, server.port);
@@ -244,8 +258,26 @@ async function uploadSession(sessionId: string, server: ServerTarget): Promise<U
   await api('POST', `/sessions/${sessionId}/finalize`);
   await patchStatus(dir, { uploadedAt: new Date().toISOString(), outputDir });
 
-  startPolling(sessionId, dir, api, outputDir, report);
+  // polling は中断用の signal を付けない（中止は cancelUpload で timer を止める）
+  startPolling(sessionId, dir, serverApi(server), outputDir, report);
   return { outputDir };
+}
+
+/** 送信中なら fetch を中断し、polling を止める。サーバー側の中止は service worker が別途頼む */
+function cancelUpload(sessionId: string): { cancelled: boolean } {
+  let cancelled = false;
+  const controller = uploading.get(sessionId);
+  if (controller) {
+    controller.abort();
+    cancelled = true;
+  }
+  const timer = polling.get(sessionId);
+  if (timer !== undefined) {
+    window.clearInterval(timer);
+    polling.delete(sessionId);
+    cancelled = true;
+  }
+  return { cancelled };
 }
 
 function startPolling(

@@ -82,7 +82,9 @@ export type ToOffscreen =
   /** 検知用 content script からの再生イベント（SPEC §10）。offscreen が timeline.json に書く */
   | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent }
   /** OPFS のセッションをサーバーへ送り、finalize まで行う。以後は status を polling して PROCESS_STATUS を送る */
-  | { target: 'offscreen'; type: 'UPLOAD'; sessionId: string; server: ServerTarget };
+  | { target: 'offscreen'; type: 'UPLOAD'; sessionId: string; server: ServerTarget }
+  /** 送信中なら中断し、polling をやめる（サーバー側の中止は service worker が頼む） */
+  | { target: 'offscreen'; type: 'CANCEL_UPLOAD'; sessionId: string };
 
 export type UploadResult = { outputDir: string };
 
@@ -206,6 +208,7 @@ export const sendToOffscreen = {
     send<object>({ target: 'offscreen', type: 'TIMELINE_EVENT', sessionId, event }),
   upload: (sessionId: string, server: ServerTarget) =>
     send<UploadResult>({ target: 'offscreen', type: 'UPLOAD', sessionId, server }),
+  cancelUpload: (sessionId: string) => send<{ cancelled: boolean }>({ target: 'offscreen', type: 'CANCEL_UPLOAD', sessionId }),
 };
 
 export const sendToContent = {

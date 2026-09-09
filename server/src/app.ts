@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
@@ -165,6 +165,23 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
       await writeStatus(dir, queued);
       void pipeline.enqueue(dir);
       sendJson(res, 202, { ok: true, ...queued });
+      return;
+    }
+
+    // POST /sessions/:id/cancel { delete?: boolean } — 処理を中止する。delete でフォルダごと消す
+    if (req.method === 'POST' && parts[2] === 'cancel' && parts.length === 3) {
+      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean };
+      const cancelled = await pipeline.cancel(dir);
+      let deleted = false;
+      if (body.delete === true) {
+        await rm(dir, { recursive: true, force: true });
+        dirCache.delete(sessionId);
+        deleted = true;
+        log(`deleted ${sessionId} (${dir})`);
+      } else if (cancelled) {
+        log(`cancelled ${sessionId}`);
+      }
+      sendJson(res, 200, { ok: true, cancelled, deleted });
       return;
     }
 
