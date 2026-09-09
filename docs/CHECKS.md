@@ -204,7 +204,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | ~~E~~ | ポップアップで Start を押すだけで録音が始まり、サイドパネルが開く（Start を 2 回押さなくてよい） | Phase 1 の手順 1〜2 | 拡張 ↻ |
 | ~~F~~ | 録音中もサイドパネルに保存済みセッションの一覧が出て、録音中でないセッションの「破棄」「フォルダを開く」が押せる | 録音中にパネルを見る | — |
 | G | 一覧の処理中・送信待ちの行に「処理中」「送信待ち」のタグが出る | 手順 D の途中でパネルを見る | — |
-| H | 常駐サーバーに `--llm codex` が渡っている（`agent:status` のコマンドラインか、処理後の `pipeline.json` の `result.notes: true`） | `pnpm --filter @lec-scribe/server agent:status` | `LEC_SCRIBE_LLM=codex … agent:install` していなければやり直す |
+| ~~H~~ | 常駐サーバーに `--llm codex` が渡っている（`agent:status` のコマンドラインか、処理後の `pipeline.json` の `result.notes: true`） | `pnpm --filter @lec-scribe/server agent:status` | `LEC_SCRIBE_LLM=codex … agent:install` していなければやり直す |
 | I | 90 分の講義を通しで処理できる（SPEC の見込みは Done まで 25〜30 分、Codex 込みでさらに数分） | 実講義 1 本 | 時間 |
 | J | Chrome のウィンドウを最小化しても録音・スライド保存が続くか（Phase 3 の手順 5 で未記録） | 録音中に最小化して数分待つ | — |
 
@@ -226,3 +226,4 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | 2026-09-08 | 8 | MacBook Pro M3 Max | OK | 16 分の講義で `lecture.md` を確認。「フォルダを開く」もサーバー経由で動作 |
 | 2026-09-09 | 9 | MacBook Pro M3 Max、Codex CLI 0.153（ChatGPT Go） | OK | 16 分の講義（17 節、約 6,000 字）を `codex exec` 2 回・100 秒で処理。フィラーが消え段落分けと要点が付いた `notes.md` ができた。内容の改変は見当たらず |
 | 2026-09-09 | 残 A, E, F | MacBook Pro M3 Max | OK | 文字起こし中の「破棄」で処理が止まり、`~/LecScribe/` のフォルダと拡張内の録音が消えた。ポップアップの Start 1 回で録音が始まりサイドパネルが開く。録音中もセッション一覧が表示される |
+| 2026-09-09 | 残 H | MacBook Pro M3 Max | OK | plist に `LEC_SCRIBE_LLM=codex` が入っており、`agent:restart` 後のログでも llm: codex |
