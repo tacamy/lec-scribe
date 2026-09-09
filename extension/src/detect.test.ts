@@ -122,6 +122,40 @@ describe('ChangeDetector', () => {
   });
 });
 
+describe('変化の広がり', () => {
+  const W = 160, H = 90;
+  /** 画面の一部（cols×rows のマス目）だけを黒くしたフレーム */
+  const patch = (cols: number, rows: number) => {
+    const f = new Uint8ClampedArray(PIXELS * 4).fill(255);
+    for (let y = 0; y < (H * rows) / 4; y++) {
+      for (let x = 0; x < (W * cols) / 4; x++) {
+        const p = y * W + x;
+        f[p * 4] = 0;
+        f[p * 4 + 1] = 0;
+        f[p * 4 + 2] = 0;
+      }
+    }
+    return f;
+  };
+  const blank = () => new Uint8ClampedArray(PIXELS * 4).fill(255);
+
+  it('1 か所にまとまった変化は切り替えとみなさない（人が動いただけ）', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.sample(blank(), 0);
+    // 左上 1 マス（全体の 6%）が真っ黒になっても、変化は 1 マスに収まる
+    const verdict = detector.sample(patch(1, 1), 500);
+    expect(verdict.diffPrev).toBeGreaterThan(cfg.changeThreshold);
+    expect(verdict.state).toBe('watching');
+  });
+
+  it('広い範囲に散った変化は切り替えとみなす', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.sample(blank(), 0);
+    const verdict = detector.sample(patch(4, 2), 500); // 上半分（8 マス）
+    expect(verdict.state).toBe('stabilizing');
+  });
+});
+
 describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
   /** 画素 [from, to) を色 rgb にする */
   const paint = (f: Uint8ClampedArray, from: number, to: number, rgb: [number, number, number]) => {

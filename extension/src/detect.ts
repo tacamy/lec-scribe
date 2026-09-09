@@ -56,7 +56,7 @@ export function diffRatio(a: Frame, b: Frame, threshold: number, counts?: Uint8A
 }
 
 /** この割合以上のサンプルで変わった画素は「動き続けている」（講師のワイプや動画の中身）とみなす */
-const MOTION_RATIO = 0.25;
+const MOTION_RATIO = 0.15;
 /** ただし最低この回数は変わっていること（開始直後に 1 回変わっただけの画素を外さないため） */
 const MOTION_MIN_HITS = 3;
 /** 動きの判定に使う最低サンプル数。これに満たない間は全画素で比べる */
@@ -65,12 +65,18 @@ const MOTION_MIN_SAMPLES = 4;
 const MOTION_MIN_STILL = 0.1;
 /** 直近の様子を重く見るため、サンプル数がこれを超えたら回数を半分にする */
 const MOTION_WINDOW = 200;
+/** 変化がどれだけ広い範囲に散っているかを見るための分割数（4×4） */
+const GRID = 4;
+/** 切り替えとみなすのに必要な「変化したマス目」の数。人が動いただけなら 1〜3 マスに収まる */
+const MIN_CHANGED_CELLS = 4;
 
 export class ChangeDetector {
   private prev: Frame | null = null;
   /** 今のスライドを見ている間の、画素ごとの変化回数 */
   private motion: Uint8Array | null = null;
   private motionSamples = 0;
+  /** 直前の比較で、変化がいくつのマス目に及んだか（切り替えの判定に使う） */
+  private changedCells = 0;
   private lastSaved: Frame | null = null;
   private state: Verdict['state'] = 'watching';
   private stabilizeStart = 0;
@@ -103,6 +109,11 @@ export class ChangeDetector {
     let changed = 0;
     let stillChanged = 0;
     let stillTotal = 0;
+    const cells = GRID * GRID;
+    const cellChanged = new Uint32Array(cells);
+    const cellTotal = new Uint32Array(cells);
+    const width = Math.max(1, this.cfg.detectWidth);
+    const height = Math.max(1, this.cfg.detectHeight);
     for (let i = 0; i < n; i += 4) {
       const p = i / 4;
       const dr = a[i]! - b[i]!;
@@ -119,8 +130,17 @@ export class ChangeDetector {
       if (!moving) {
         stillTotal++;
         if (differs) stillChanged++;
+        // 変化が画面のどこに散っているかも見る（人が動いただけなら 1 か所にまとまる）
+        const cell = Math.min(GRID - 1, Math.floor((Math.floor(p / width) * GRID) / height)) * GRID + Math.min(GRID - 1, Math.floor(((p % width) * GRID) / width));
+        cellTotal[cell]!++;
+        if (differs) cellChanged[cell]!++;
       }
     }
+    let hitCells = 0;
+    for (let c = 0; c < cells; c++) {
+      if (cellTotal[c]! > 0 && cellChanged[c]! >= cellTotal[c]! * this.cfg.changeThreshold) hitCells++;
+    }
+    this.changedCells = hitCells;
     const pixels = n / 4;
     if (!usable || stillTotal < pixels * MOTION_MIN_STILL) return changed / pixels;
     return stillTotal === 0 ? 0 : stillChanged / stillTotal;
@@ -145,7 +165,8 @@ export class ChangeDetector {
     this.prev = frame;
 
     if (this.state === 'watching') {
-      if (diffPrev >= this.cfg.changeThreshold) {
+      // 画面全体としての変化が大きく、かつ広い範囲に散っているときだけ「切り替わった」とみなす
+      if (diffPrev >= this.cfg.changeThreshold && this.changedCells >= MIN_CHANGED_CELLS) {
         this.state = 'stabilizing';
         this.stabilizeStart = now;
         this.stableCount = 0;
