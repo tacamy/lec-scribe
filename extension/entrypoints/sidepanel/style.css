@@ -27,6 +27,8 @@ body {
 }
 /* grid / flex の子は既定で内容幅まで広がる（min-width: auto）ので、
    長いタブ名がパネルを押し広げないよう明示的に 0 にして省略・折り返しさせる */
+/* display を指定した要素（.status / .rows / .row / .actions など）でも hidden 属性を効かせる */
+.panel [hidden] { display: none; }
 .panel { padding: 14px 16px 12px; display: grid; gap: 12px; max-width: 480px; min-width: 0; overflow-x: hidden; }
 .panel > * { min-width: 0; }
 body.popup { width: 320px; }
@@ -51,8 +53,6 @@ button.link { padding: 2px 6px; border: 0; background: transparent; color: var(-
 @keyframes pulse { 50% { opacity: 0.35; } }
 .rows { display: grid; gap: 6px; }
 .row { display: flex; gap: 10px; min-width: 0; }
-/* .row / .meter の display 指定が hidden 属性（display: none）に勝ってしまうので、隠すときはこちらを優先する */
-.rows [hidden] { display: none; }
 .label { width: 48px; color: var(--muted); flex: none; }
 .value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

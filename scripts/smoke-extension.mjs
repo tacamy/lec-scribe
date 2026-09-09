@@ -89,7 +89,12 @@ try {
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
   // サーバー未接続のうちは「このMacと接続」がポップアップに出る
   assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
-  assert.equal(await popup.evaluate(() => document.getElementById('actions').hidden), true, 'Start shown while unpaired');
+  // hidden 属性が CSS の display 指定に負けていないこと（計算後のスタイルで見る）
+  const setupDisplay = await popup.evaluate(() =>
+    Object.fromEntries(['status', 'rows', 'actions', 'footer', 'setup'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),
+  );
+  for (const id of ['status', 'rows', 'actions', 'footer']) assert.equal(setupDisplay[id], 'none', `${id} visible while unpaired: ${JSON.stringify(setupDisplay)}`);
+  assert.notEqual(setupDisplay.setup, 'none', JSON.stringify(setupDisplay));
 
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
   await popup.setViewportSize({ width: 320, height: 700 });
