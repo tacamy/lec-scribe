@@ -122,7 +122,7 @@ describe('ChangeDetector', () => {
   });
 });
 
-describe('見た目が同じ場面（映像中心の画面）', () => {
+describe('同じ場面（映像中心の画面）', () => {
   /** ざらざらした映像。seed を変えると細かい模様は変わるが、全体の明るさは同じ */
   const noise = (seed: number, shade = 128) => {
     const f = new Uint8ClampedArray(PIXELS * 4);
@@ -138,7 +138,7 @@ describe('見た目が同じ場面（映像中心の画面）', () => {
     return f;
   };
 
-  it('被写体が動いただけの場面は、細かく見れば大きく違っても撮らない', () => {
+  it('被写体が動いただけの場面は、細かく見れば大きく違っても撮らない（色の構成が同じ）', () => {
     const detector = new ChangeDetector(cfg);
     detector.markSaved(noise(1), 0);
     // 画面全体が動く映像なので、静止部分はほとんどない
@@ -151,9 +151,9 @@ describe('見た目が同じ場面（映像中心の画面）', () => {
     const detector = new ChangeDetector(cfg);
     detector.markSaved(noise(1, 60), 0);
     for (let i = 0; i < 8; i++) detector.sample(noise(i + 2, 60), 1000 + i * 500);
-    // 明るさがまるごと変わる = 別の場面（映像中心なので最短間隔 15 秒を過ぎてから）
-    detector.sample(noise(30, 220), 16_000);
-    const verdict = detector.flush(noise(31, 220), 16_500);
+    // 明るさがまるごと変わる = 色の構成が変わる = 別の場面
+    detector.sample(noise(30, 220), 5000);
+    const verdict = detector.flush(noise(31, 220), 5500);
     expect(verdict.save).toBe(true);
   });
 });
@@ -268,34 +268,5 @@ describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
     for (let i = 0; i < 8; i++) detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [i * 30, 0, 0]), i * 500);
     const verdict = detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]), 4000);
     expect(verdict.diffPrev).toBeGreaterThan(0.9);
-  });
-});
-
-describe('映像中心の画面の最短間隔', () => {
-  const noise = (seed: number, shade = 128) => {
-    const f = new Uint8ClampedArray(PIXELS * 4);
-    let x = seed;
-    for (let p = 0; p < PIXELS; p++) {
-      x = (x * 1103515245 + 12345) & 0x7fffffff;
-      const v = shade + ((x >> 16) % 60) - 30;
-      f[p * 4] = v;
-      f[p * 4 + 1] = v;
-      f[p * 4 + 2] = v;
-      f[p * 4 + 3] = 255;
-    }
-    return f;
-  };
-
-  it('場面が変わっても、前のキャプチャから間隔が空くまで撮らない', () => {
-    const detector = new ChangeDetector(cfg);
-    detector.markSaved(noise(1, 60), 0);
-    for (let i = 0; i < 8; i++) detector.sample(noise(i + 2, 60), 1000 + i * 500);
-    // 5 秒時点で別の場面になっても、映像中心なので 15 秒までは保存しない
-    detector.sample(noise(30, 220), 5000);
-    expect(detector.flush(noise(31, 220), 5500).save).toBe(false);
-    // 間隔が空けば保存する
-    detector.sample(noise(32, 60), 16_000); // いったん元の明るさに戻し
-    detector.sample(noise(33, 220), 16_500); // もう一度場面が変わる
-    expect(detector.flush(noise(34, 220), 17_000).save).toBe(true);
   });
 });

@@ -56,13 +56,11 @@ export type Config = {
      * 「場面が切り替わった」とみなす。カメラが動いているだけの連続したショットを撮り続けないため
      */
     cutThreshold: number;
-    /** 映像中心の画面での最短キャプチャ間隔（ms）。同じ場面が続く間に撮り続けないため */
-    footageMinIntervalMs: number;
     /**
-     * 粗く見て（32×18 に均して）これ未満しか違わなければ「見た目が同じ」として保存しない。
-     * 被写体が動いただけの映像を連続で撮らないため。画面の大半が動いているときだけ効く
+     * 映像中心の画面で、最後に保存した画像と色の分布がこの割合以上そろっていれば
+     * 「同じ場面」とみなして保存しない（0〜1）。被写体やカメラが動いても場面が同じなら色は似る
      */
-    lookAlikeThreshold: number;
+    sameSceneColor: number;
     /** 保存間隔の下限 */
     minShotIntervalMs: number;
     /** 再生中にタイムラインへ定期的に記録する間隔（SPEC §10.1） */
@@ -102,8 +100,7 @@ export const DEFAULT_CONFIG: Config = {
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
     cutThreshold: 0.3,
-    footageMinIntervalMs: 15_000,
-    lookAlikeThreshold: 0.12,
+    sameSceneColor: 0.65,
     minShotIntervalMs: 2000,
     tickIntervalMs: 10_000,
   },

@@ -69,11 +69,10 @@ const MOTION_MIN_SAMPLES = 4;
 const MOTION_MIN_STILL = 0.1;
 /** 直近の様子を重く見るため、サンプル数がこれを超えたら回数を半分にする */
 const MOTION_WINDOW = 200;
-/** 「見た目が同じ」かを見るときの粗さ（32×18 に均す） */
-const COARSE_X = 32;
-const COARSE_Y = 18;
-/** 静止部分がこの割合を超えるなら、スライド中心の画面とみなして「見た目が同じ」の判定は使わない */
-const COARSE_MAX_STILL = 0.5;
+/** 色の分布を数えるときの階調（RGB 各 8 段階 = 512 通り） */
+const COLOR_BINS = 8;
+/** 静止部分がこの割合を超えるなら、スライド中心の画面とみなして「同じ場面」の判定は使わない */
+const FOOTAGE_MAX_STILL = 0.5;
 /** 変化がどれだけ広い範囲に散っているかを見るための分割数（4×4） */
 const GRID = 4;
 /** 切り替えとみなすのに必要な「変化したマス目」の数。人が動いただけなら 1〜3 マスに収まる */
@@ -180,7 +179,7 @@ export class ChangeDetector {
       // 画面全体としての変化が大きく、かつ広い範囲に散っているときだけ「切り替わった」とみなす。
       // 映像中心の画面では、カメラや被写体が動いているだけの連続したショットを撮り続けないよう、
       // 1 サンプルで一気に変わったとき（カット）だけを拾う
-      const needed = this.stillFraction < COARSE_MAX_STILL ? Math.max(this.cfg.changeThreshold, this.cfg.cutThreshold) : this.cfg.changeThreshold;
+      const needed = this.stillFraction < FOOTAGE_MAX_STILL ? Math.max(this.cfg.changeThreshold, this.cfg.cutThreshold) : this.cfg.changeThreshold;
       if (diffPrev >= needed && this.changedCells >= MIN_CHANGED_CELLS) {
         this.state = 'stabilizing';
         this.stabilizeStart = now;
@@ -237,44 +236,32 @@ export class ChangeDetector {
     return { save, state: this.state, diffPrev, cells: this.changedCells, stillFraction: this.stillFraction, ...(diffSaved !== undefined ? { diffSaved } : {}) };
   }
 
-  /** 32×18 に均して比べる。細かい動き（被写体が少し動いた）は均されて消え、場面の違いだけが残る */
-  private coarseDiff(a: Frame, b: Frame): number {
-    const w = Math.max(1, this.cfg.detectWidth);
-    const h = Math.max(1, this.cfg.detectHeight);
-    const cells = COARSE_X * COARSE_Y;
-    const sumA = new Float64Array(cells * 3);
-    const sumB = new Float64Array(cells * 3);
-    const total = new Uint32Array(cells);
-    const n = Math.min(a.length, b.length, w * h * 4);
+  /**
+   * 色の分布（RGB 各 8 段階）がどれだけそろっているか（0〜1）。被写体やカメラが動いても、
+   * 同じ場面なら色の構成は似たまま。場面が変われば大きく下がる
+   */
+  private colorMatch(a: Frame, b: Frame): number {
+    const bins = COLOR_BINS ** 3;
+    const step = Math.ceil(256 / COLOR_BINS);
+    const ha = new Float64Array(bins);
+    const hb = new Float64Array(bins);
+    const n = Math.min(a.length, b.length);
+    let pixels = 0;
     for (let i = 0; i + 3 < n; i += 4) {
-      const p = i / 4;
-      const cell = Math.min(COARSE_Y - 1, Math.floor((Math.floor(p / w) * COARSE_Y) / h)) * COARSE_X + Math.min(COARSE_X - 1, Math.floor(((p % w) * COARSE_X) / w));
-      total[cell]!++;
-      for (let c = 0; c < 3; c++) {
-        sumA[cell * 3 + c]! += a[i + c]!;
-        sumB[cell * 3 + c]! += b[i + c]!;
-      }
+      ha[Math.floor(a[i]! / step) * COLOR_BINS * COLOR_BINS + Math.floor(a[i + 1]! / step) * COLOR_BINS + Math.floor(a[i + 2]! / step)]!++;
+      hb[Math.floor(b[i]! / step) * COLOR_BINS * COLOR_BINS + Math.floor(b[i + 1]! / step) * COLOR_BINS + Math.floor(b[i + 2]! / step)]!++;
+      pixels++;
     }
-    let differs = 0;
-    let counted = 0;
-    for (let cell = 0; cell < cells; cell++) {
-      const t = total[cell]!;
-      if (t === 0) continue;
-      counted++;
-      for (let c = 0; c < 3; c++) {
-        if (Math.abs(sumA[cell * 3 + c]! - sumB[cell * 3 + c]!) / t >= this.cfg.pixelDiffThreshold) {
-          differs++;
-          break;
-        }
-      }
-    }
-    return counted === 0 ? 0 : differs / counted;
+    if (pixels === 0) return 1;
+    let shared = 0;
+    for (let k = 0; k < bins; k++) shared += Math.min(ha[k]!, hb[k]!);
+    return shared / pixels;
   }
 
   private decide(frame: Frame, now: number, diffPrev: number): Verdict {
     const diffSaved = this.lastSaved ? diffRatio(frame, this.lastSaved, this.cfg.pixelDiffThreshold) : 1;
-    // 映像中心の画面では、被写体が動いただけの「見た目が同じ」場面を続けて撮らない
-    if (this.lastSaved && this.stillFraction < COARSE_MAX_STILL && this.coarseDiff(frame, this.lastSaved) < this.cfg.lookAlikeThreshold) {
+    // 映像中心の画面では、色の構成が同じなら「同じ場面」とみなして続けて撮らない
+    if (this.lastSaved && this.stillFraction < FOOTAGE_MAX_STILL && this.colorMatch(frame, this.lastSaved) >= this.cfg.sameSceneColor) {
       this.state = 'watching';
       return this.verdict(false, diffPrev, diffSaved);
     }
@@ -283,10 +270,7 @@ export class ChangeDetector {
       this.state = 'watching';
       return this.verdict(false, diffPrev, diffSaved);
     }
-    // 映像中心の画面では、同じ場面が続く間に何枚も撮らないよう間隔を長めに取る
-    const minInterval =
-      this.stillFraction < COARSE_MAX_STILL ? Math.max(this.cfg.minShotIntervalMs, this.cfg.footageMinIntervalMs) : this.cfg.minShotIntervalMs;
-    if (now - this.lastSaveAt < minInterval) {
+    if (now - this.lastSaveAt < this.cfg.minShotIntervalMs) {
       // 保存間隔が空くまで保留する。安定待ちのままにして次のサンプルや flush で再判定する
       this.state = 'stabilizing';
       return this.verdict(false, diffPrev, diffSaved);
