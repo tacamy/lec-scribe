@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
@@ -28,7 +28,41 @@ export type PipelineStatus = {
   };
   /** 各段階にかかった秒 */
   timings?: Partial<Record<'converting' | 'transcribing' | 'merging' | 'polishing', number>>;
+  /** 文字起こしに使った条件。同じ音声・同じモデルなら次回は whisperkit を飛ばして report を再利用する */
+  transcript?: { model: string; audioBytes: number; reused?: boolean };
 };
+
+/** 処理の途中で止まったままの段階（サーバーが落ちたときに残る） */
+const IN_PROGRESS: ReadonlySet<PipelineStatus['stage']> = new Set(['queued', 'converting', 'transcribing', 'merging', 'polishing']);
+
+/**
+ * サーバー起動時に、前回の実行で途中のまま残った pipeline.json を error にする。
+ * そのままだと拡張が永遠に「処理中」を見続けるため。文字起こし済みなら「やり直す」で続きから作れる
+ */
+export async function recoverInterrupted(outDir: string, log: (message: string) => void = () => undefined): Promise<string[]> {
+  const recovered: string[] = [];
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await readdir(outDir, { withFileTypes: true });
+  } catch {
+    return recovered;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(outDir, entry.name);
+    const status = await readPipelineStatus(dir);
+    if (!status || !IN_PROGRESS.has(status.stage)) continue;
+    await writeStatus(dir, {
+      ...status,
+      stage: 'error',
+      updatedAt: new Date().toISOString(),
+      error: `サーバーが再起動したため「${status.stage}」の途中で中断されました。一覧の「やり直す」で続きから作れます。`,
+    });
+    log(`recovered interrupted session (${status.stage}): ${dir}`);
+    recovered.push(dir);
+  }
+  return recovered;
+}
 
 export const PIPELINE_FILE = 'pipeline.json';
 
@@ -69,6 +103,11 @@ export class Pipeline {
     return this.jobs.has(dir);
   }
 
+  /** 待機中・実行中の件数 */
+  activeCount(): number {
+    return this.jobs.size;
+  }
+
   /** キューに積んで即座に戻る。結果は pipeline.json に書かれる */
   enqueue(dir: string): Promise<PipelineStatus> {
     const controller = new AbortController();
@@ -89,32 +128,15 @@ export class Pipeline {
     return true;
   }
 
-  private async writeCancelled(dir: string): Promise<PipelineStatus> {
-    this.log(`cancelled: ${dir}`);
-    return writeStatus(dir, { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }).catch(
-      () => ({ stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }) as PipelineStatus,
-    );
-  }
-
-  private async process(dir: string, signal: AbortSignal): Promise<PipelineStatus> {
-    const now = () => new Date().toISOString();
-    let status: PipelineStatus = { stage: 'converting', outputDir: dir, startedAt: now(), updatedAt: now(), timings: {} };
-    await writeStatus(dir, status);
-    const step = async <T>(stage: PipelineStatus['stage'], work: () => Promise<T>): Promise<T> => {
-      if (signal.aborted) throw new Error('cancelled');
-      status = await writeStatus(dir, { ...status, stage, updatedAt: now() });
-      const started = Date.now();
-      const result = await work();
-      if (signal.aborted) throw new Error('cancelled');
-      status.timings = { ...status.timings, [stage]: Math.round((Date.now() - started) / 100) / 10 };
-      return result;
-    };
-
-    try {
-      await migrateLayout(dir);
-      const audioWebm = workPath(dir, 'audio.webm');
-      const audioWav = workPath(dir, 'audio.wav');
-
+  /** audio.webm → wav → whisperkit-cli。report の区間を返す */
+  private async transcribe(
+    dir: string,
+    audioWebm: string,
+    audioWav: string,
+    reportDir: string,
+    step: <T>(stage: PipelineStatus['stage'], work: () => Promise<T>) => Promise<T>,
+    signal: AbortSignal,
+  ): Promise<ReturnType<typeof normalizeReport>> {
       await step('converting', async () => {
         this.log(`ffmpeg: ${audioWebm} → wav 16kHz mono`);
         const r = await run(this.config.ffmpegBin, [
@@ -135,8 +157,7 @@ export class Pipeline {
         if (r.code !== 0) throw new Error(`ffmpeg failed (${r.code}): ${r.stderr.trim().split('\n').slice(-5).join(' / ')}`);
       });
 
-      const reportDir = workPath(dir, 'whisperkit');
-      const segments = await step('transcribing', async () => {
+      return step('transcribing', async () => {
         await rm(reportDir, { recursive: true, force: true });
         await mkdir(reportDir, { recursive: true });
         const args = whisperkitArgs({ audioPath: audioWav, model: this.config.model, language: this.config.language, reportDir });
@@ -151,6 +172,53 @@ export class Pipeline {
         if (parsed.length === 0) throw new Error(`no segments in ${report}`);
         return parsed;
       });
+  }
+
+  private async writeCancelled(dir: string): Promise<PipelineStatus> {
+    this.log(`cancelled: ${dir}`);
+    return writeStatus(dir, { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }).catch(
+      () => ({ stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }) as PipelineStatus,
+    );
+  }
+
+  private async process(dir: string, signal: AbortSignal): Promise<PipelineStatus> {
+    const now = () => new Date().toISOString();
+    // 前回の文字起こしの条件は、最初の書き込みで消す前に読んでおく
+    const previous = await readPipelineStatus(dir);
+    let status: PipelineStatus = { stage: 'converting', outputDir: dir, startedAt: now(), updatedAt: now(), timings: {}, transcript: previous?.transcript };
+    await writeStatus(dir, status);
+    const step = async <T>(stage: PipelineStatus['stage'], work: () => Promise<T>): Promise<T> => {
+      if (signal.aborted) throw new Error('cancelled');
+      status = await writeStatus(dir, { ...status, stage, updatedAt: now() });
+      const started = Date.now();
+      const result = await work();
+      if (signal.aborted) throw new Error('cancelled');
+      status.timings = { ...status.timings, [stage]: Math.round((Date.now() - started) / 100) / 10 };
+      return result;
+    };
+
+    try {
+      await migrateLayout(dir);
+      const audioWebm = workPath(dir, 'audio.webm');
+      const audioWav = workPath(dir, 'audio.wav');
+      const reportDir = workPath(dir, 'whisperkit');
+
+      // 同じ音声を同じモデルで文字起こし済みなら whisperkit を飛ばす（「やり直す」でノートだけ作り直すとき）
+      const audioBytes = (await stat(audioWebm)).size;
+      const previousReport =
+        previous?.transcript && previous.transcript.model === this.config.model && previous.transcript.audioBytes === audioBytes
+          ? await findReport(reportDir)
+          : null;
+      status.transcript = { model: this.config.model, audioBytes, ...(previousReport ? { reused: true } : {}) };
+
+      const segments = previousReport
+        ? await (async () => {
+            this.log(`transcript を再利用: ${previousReport}`);
+            const parsed = normalizeReport(JSON.parse(await readFile(previousReport, 'utf8')));
+            if (parsed.length === 0) throw new Error(`no segments in ${previousReport}`);
+            return parsed;
+          })()
+        : await this.transcribe(dir, audioWebm, audioWav, reportDir, step, signal);
 
       const result = await step('merging', async () => {
         const timeline = await readJson(workPath(dir, 'timeline.json'));

@@ -607,6 +607,12 @@ audio.webm
 
 処理中の進捗は `whisperkit-cli --verbose` の出力から推定できれば `percent` に反映し、できなければ stage のみとする。
 
+補足（2026-09-09）:
+
+- 同じセッションを finalize し直したとき（拡張の「やり直す」）、`pipeline.json` の `transcript`（モデル名と `audio.webm` のバイト数）が今回と一致し、`whisperkit/` の report が残っていれば、ffmpeg と whisperkit-cli を飛ばして report を再利用する。ノートの形式やプロンプトを変えたあとに作り直すのが数分で済む。モデルを変えたときは文字起こしからやり直す。
+- サーバー起動時に `outDir` を走査し、`queued` 〜 `polishing` のまま残っている `pipeline.json` を `error`（「サーバーが再起動したため中断」）にする。そのままだと拡張が永遠に処理中を見続けるため。
+- `GET /health` は `processing`（待機中 + 実行中の件数）を返し、`agent.mjs restart` は 0 でなければ拒む（`--force` で強制）。
+
 ---
 
 ## 13. 文字起こしと統合

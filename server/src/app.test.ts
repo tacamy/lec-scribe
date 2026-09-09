@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
+import { recoverInterrupted } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
 /**
@@ -184,6 +185,35 @@ describe('local server', () => {
     });
     expect(openedMd.status).toBe(200);
     expect(await readFile(path.join(tmp, 'opened.txt'), 'utf8')).toBe(path.join(outputDir, 'notes.md'));
+
+    // 同じ音声で finalize し直すと whisperkit を飛ばして report を再利用する（ノートだけ作り直す）
+    const pipeline1 = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'pipeline.json'), 'utf8')) as { transcript?: { reused?: boolean; audioBytes: number } };
+    expect(pipeline1.transcript).toEqual({ model: 'stub', audioBytes: 7 });
+    await writeFile(path.join(outputDir, '.lecscribe', 'whisperkit', 'marker.txt'), 'kept');
+    expect((await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers })).status).toBe(202);
+    status = { stage: 'queued' };
+    for (let i = 0; i < 50 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      status = (await (await fetch(`${base}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+    }
+    expect(status.stage).toBe('done');
+    const pipeline2 = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'pipeline.json'), 'utf8')) as { transcript?: { reused?: boolean }; timings?: Record<string, number> };
+    expect(pipeline2.transcript).toEqual({ model: 'stub', audioBytes: 7, reused: true });
+    expect(pipeline2.timings?.transcribing).toBeUndefined();
+    // whisperkit フォルダを消していない（スタブが作り直していれば marker は消えている）
+    expect(await readFile(path.join(outputDir, '.lecscribe', 'whisperkit', 'marker.txt'), 'utf8')).toBe('kept');
+  });
+
+  it('marks sessions left mid-pipeline as errors on startup', async () => {
+    const dir = path.join(config.outDir, '20260908-140000-stuk_stuck');
+    await (await import('node:fs/promises')).mkdir(path.join(dir, '.lecscribe'), { recursive: true });
+    await writeFile(path.join(dir, '.lecscribe', 'pipeline.json'), JSON.stringify({ stage: 'polishing', outputDir: dir, updatedAt: 'x' }));
+    const recovered = await recoverInterrupted(config.outDir);
+    expect(recovered).toEqual([dir]);
+    const after = JSON.parse(await readFile(path.join(dir, '.lecscribe', 'pipeline.json'), 'utf8')) as { stage: string; error?: string };
+    expect(after.stage).toBe('error');
+    expect(after.error).toContain('polishing');
+    expect(await recoverInterrupted(config.outDir)).toEqual([]); // done / error は触らない
   });
 
   it('moves files of the old flat layout into .lecscribe when a session is processed again', async () => {

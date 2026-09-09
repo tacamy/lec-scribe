@@ -83,6 +83,7 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
         ffmpeg: (await resolveBin(config.ffmpegBin)) !== null,
         whisperkit: (await resolveBin(config.whisperkitBin)) !== null,
         authorized: isAuthorized(req.headers.authorization, token),
+        processing: pipeline.activeCount(),
       });
       return;
     }
@@ -161,7 +162,9 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
         sendJson(res, 202, { ok: true, stage: 'queued', outputDir: dir });
         return;
       }
-      const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString() };
+      // 前回の文字起こしの条件（transcript）は引き継ぐ。同じ音声なら whisperkit を飛ばせる
+      const previous = await readPipelineStatus(dir);
+      const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString(), transcript: previous?.transcript };
       await writeStatus(dir, queued);
       void pipeline.enqueue(dir);
       sendJson(res, 202, { ok: true, ...queued });

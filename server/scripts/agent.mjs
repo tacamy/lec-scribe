@@ -4,7 +4,7 @@
 //   node server/scripts/agent.mjs install    登録して起動（既に登録済みなら更新して再起動）
 //   node server/scripts/agent.mjs uninstall  停止して登録を外す
 //   node server/scripts/agent.mjs status     登録状態と /health
-//   node server/scripts/agent.mjs restart    再起動（サーバーのコードを更新したあとに）
+//   node server/scripts/agent.mjs restart    再起動（サーバーのコードを更新したあとに。処理中なら拒む。--force で強制）
 //   node server/scripts/agent.mjs print      plist の内容を表示するだけ
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -180,6 +180,12 @@ async function status() {
 async function restart() {
   if (!isLoaded()) {
     console.error('登録されていません。先に install してください。');
+    process.exit(1);
+  }
+  // 文字起こし・ノート作成の途中で止めると、そのセッションはやり直しになる
+  const h = await health();
+  if (h?.processing > 0 && !process.argv.includes('--force')) {
+    console.error(`サーバーは ${h.processing} 件を処理中です。終わってから再起動するか、--force を付けてください。`);
     process.exit(1);
   }
   run('launchctl', ['kickstart', '-k', `${domain}/${LABEL}`]);

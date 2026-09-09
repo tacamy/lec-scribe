@@ -9,6 +9,7 @@
  */
 import { mkdir } from 'node:fs/promises';
 import { createApp, VERSION } from './app.ts';
+import { recoverInterrupted } from './pipeline.ts';
 import { loadConfig } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
@@ -24,6 +25,7 @@ if (!(await resolveBin(config.ffmpegBin))) missing.push(`ffmpeg（${config.ffmpe
 if (!(await resolveBin(config.whisperkitBin))) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
 
 const { server } = createApp(config, token, log);
+await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
   console.log(`LecScribe server v${VERSION}`);
   console.log(`  listening : http://${config.host}:${config.port}`);
