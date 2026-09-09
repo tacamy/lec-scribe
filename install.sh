@@ -30,6 +30,13 @@ if ! command -v brew >/dev/null 2>&1; then
   fi
 fi
 
+# 1.5 Xcode Command Line Tools（git の実体。Homebrew を入れたときに一緒に入るが、無ければここで入れる）
+if ! xcode-select -p >/dev/null 2>&1; then
+  say "Xcode Command Line Tools を入れます（ダイアログで「インストール」を押してください）"
+  xcode-select --install || true
+  until xcode-select -p >/dev/null 2>&1; do sleep 10; done
+fi
+
 # 2. 必要なコマンド
 say "必要なコマンドを確認します"
 need=()
