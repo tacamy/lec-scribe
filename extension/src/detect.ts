@@ -55,10 +55,14 @@ export function diffRatio(a: Frame, b: Frame, threshold: number, counts?: Uint8A
   return changed / (n / 4);
 }
 
-/** この回数以上変わった画素は「動き続けている」（講師のワイプや動画の中身）とみなす */
-const MOTION_HITS = 3;
+/** この割合以上のサンプルで変わった画素は「動き続けている」（講師のワイプや動画の中身）とみなす */
+const MOTION_RATIO = 0.5;
 /** 動きの判定に使う最低サンプル数。これに満たない間は全画素で比べる */
 const MOTION_MIN_SAMPLES = 4;
+/** 静止部分がこの割合を切ったら（画面全体が動画）マスクは使わず全画素で比べる */
+const MOTION_MIN_STILL = 0.1;
+/** 直近の様子を重く見るため、サンプル数がこれを超えたら回数を半分にする */
+const MOTION_WINDOW = 200;
 
 export class ChangeDetector {
   private prev: Frame | null = null;
@@ -74,31 +78,68 @@ export class ChangeDetector {
   constructor(private readonly cfg: DetectConfig) {}
 
   /**
-   * 保存済みの画像と比べる。動き続けている画素（ワイプなど）は除くので、
+   * 保存済みの画像と比べる。動き続けている画素（講師のワイプ、動画の中身）は除くので、
    * 本文が 1 行増えたような小さな変化（全体の 1% 前後）もワイプの動き（0.4〜0.9%）と区別できる
    */
   diffFromSaved(frame: Frame, saved: Frame): number {
-    const motion = this.motion;
-    if (!motion || this.motionSamples < MOTION_MIN_SAMPLES) return diffRatio(frame, saved, this.cfg.pixelDiffThreshold);
-    const n = Math.min(frame.length, saved.length, motion.length * 4);
+    return this.compare(frame, saved, null);
+  }
+
+  /**
+   * 2 枚を比べ、動き続けている画素を除いた差分率を返す。
+   * counts を渡すと、そのついでに画素ごとの変化回数を数える（マスクの材料）。
+   * まだサンプルが少ない、または静止部分がほとんどない（画面全体が動画）ときは全画素で比べる
+   */
+  private compare(a: Frame, b: Frame, counts: Uint8Array | null): number {
     const threshold = this.cfg.pixelDiffThreshold;
+    const motion = this.motion;
+    const samples = this.motionSamples;
+    const usable = motion !== null && samples >= MOTION_MIN_SAMPLES;
+    const limit = Math.min(a.length, b.length);
+    const n = limit - (limit % 4);
+    if (n === 0) return 0;
     let changed = 0;
-    let counted = 0;
-    for (let i = 0; i + 3 < n; i += 4) {
-      if (motion[i / 4]! >= MOTION_HITS) continue; // 動き続けている画素は見ない
-      counted++;
-      const dr = frame[i]! - saved[i]!;
-      const dg = frame[i + 1]! - saved[i + 1]!;
-      const db = frame[i + 2]! - saved[i + 2]!;
-      if (dr >= threshold || -dr >= threshold || dg >= threshold || -dg >= threshold || db >= threshold || -db >= threshold) changed++;
+    let stillChanged = 0;
+    let stillTotal = 0;
+    for (let i = 0; i < n; i += 4) {
+      const p = i / 4;
+      const dr = a[i]! - b[i]!;
+      const dg = a[i + 1]! - b[i + 1]!;
+      const db = a[i + 2]! - b[i + 2]!;
+      const differs =
+        dr >= threshold || -dr >= threshold || dg >= threshold || -dg >= threshold || db >= threshold || -db >= threshold;
+      // マスクの判定は回数を足す前の状態で行う（今回の変化がそのまま自分をマスクしないように）
+      const moving = usable && motion![p]! >= samples * MOTION_RATIO;
+      if (differs) {
+        changed++;
+        if (counts && counts[p]! < 255) counts[p]!++;
+      }
+      if (!moving) {
+        stillTotal++;
+        if (differs) stillChanged++;
+      }
     }
-    return counted === 0 ? 0 : changed / counted;
+    const pixels = n / 4;
+    if (!usable || stillTotal < pixels * MOTION_MIN_STILL) return changed / pixels;
+    return stillTotal === 0 ? 0 : stillChanged / stillTotal;
+  }
+
+  /** 直近を重く見るため、たまに回数を半分にする（長い動画で飽和させない） */
+  private observed(): void {
+    this.motionSamples++;
+    if (this.motionSamples >= MOTION_WINDOW && this.motion) {
+      for (let p = 0; p < this.motion.length; p++) this.motion[p]! >>= 1;
+      this.motionSamples >>= 1;
+    }
   }
 
   /** 再生中のサンプルを 1 つ処理する */
   sample(frame: Frame, now: number): Verdict {
-    const diffPrev = this.prev ? diffRatio(frame, this.prev, this.cfg.pixelDiffThreshold, this.motionFor(frame)) : 0;
-    if (this.prev) this.motionSamples++;
+    let diffPrev = 0;
+    if (this.prev) {
+      diffPrev = this.compare(frame, this.prev, this.motionFor(frame));
+      this.observed();
+    }
     this.prev = frame;
 
     if (this.state === 'watching') {
@@ -120,8 +161,11 @@ export class ChangeDetector {
 
   /** 一時停止など画面が静止したことが確実なとき、安定待ちを打ち切って判定する */
   flush(frame: Frame, now: number): Verdict {
-    const diffPrev = this.prev ? diffRatio(frame, this.prev, this.cfg.pixelDiffThreshold, this.motionFor(frame)) : 0;
-    if (this.prev) this.motionSamples++;
+    let diffPrev = 0;
+    if (this.prev) {
+      diffPrev = this.compare(frame, this.prev, this.motionFor(frame));
+      this.observed();
+    }
     this.prev = frame;
     if (this.state !== 'stabilizing') return { save: false, state: this.state, diffPrev };
     return this.decide(frame, now, diffPrev);
@@ -147,9 +191,8 @@ export class ChangeDetector {
     this.lastSaved = frame;
     this.lastSaveAt = now;
     this.state = 'watching';
-    // 新しいスライドを見始めるので、どこが動き続けているかは数え直す
-    this.motion?.fill(0);
-    this.motionSamples = 0;
+    // 動きの統計はスライドをまたいで持ち越す。講師のワイプの位置は動画全体で変わらないので、
+    // スライドが変わるたびに数え直すと、その直後だけ判定がゆるくなってしまう
   }
 
   private decide(frame: Frame, now: number, diffPrev: number): Verdict {

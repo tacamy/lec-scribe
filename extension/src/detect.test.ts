@@ -170,13 +170,33 @@ describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
     expect(detector.diffFromSaved(slide(130), saved)).toBeGreaterThan(0.015);
   });
 
-  it('新しいスライドを保存したら動きの記録をやり直す', () => {
+  it('動きの記録はスライドをまたいで持ち越す（保存直後だけ判定がゆるくならないように）', () => {
     const detector = new ChangeDetector(cfg);
     const saved = slide(10);
     detector.markSaved(saved, 0);
     for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    detector.markSaved(saved, 5000); // 次のスライドへ
     expect(detector.diffFromSaved(slide(130), saved)).toBeLessThan(0.004);
-    detector.markSaved(saved, 5000); // 次のスライド: 記録は白紙に戻る
-    expect(detector.diffFromSaved(slide(130), saved)).toBeGreaterThan(0.015);
+  });
+
+  it('切り替えの判定でもワイプの動きを無視する', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(slide(10), 0);
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    // ワイプだけが動いた次のサンプル: 全画素で見れば 2% だが、切り替えとはみなさない
+    const wipeOnly = detector.sample(slide(200), 5000);
+    expect(wipeOnly.diffPrev).toBeLessThan(cfg.changeThreshold);
+    expect(wipeOnly.state).toBe('watching');
+    // 本文が丸ごと変わればちゃんと切り替えとみなす
+    const switched = detector.sample(paint(slide(200), 0, Math.round(PIXELS * 0.5), [0, 0, 0]), 5500);
+    expect(switched.state).toBe('stabilizing');
+  });
+
+  it('画面全体が動画のときはマスクを使わず全画素で比べる', () => {
+    const detector = new ChangeDetector(cfg);
+    // 毎サンプル全画素が変わる（風景の映像など）
+    for (let i = 0; i < 8; i++) detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [i * 30, 0, 0]), i * 500);
+    const verdict = detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]), 4000);
+    expect(verdict.diffPrev).toBeGreaterThan(0.9);
   });
 });
