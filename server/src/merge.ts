@@ -20,6 +20,8 @@ export type SlideEntry = {
   reason?: string;
   width?: number;
   height?: number;
+  /** 拡張が保存を決めたときの数値。stillFraction が半分未満なら映像中心の画面 */
+  trigger?: { diffPrev?: number; diffSaved?: number; cells?: number; stillFraction?: number };
 };
 
 /**

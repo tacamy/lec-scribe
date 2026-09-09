@@ -1,0 +1,87 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { resolveBin, run } from './exec.ts';
+import type { SlideEntry } from './merge.ts';
+import { colorMatch, pickShownSlides, readThumbnail, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+
+const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
+
+/** ざらざらした映像のサムネイル。seed で模様が変わり、shade で全体の明るさが変わる */
+function footage(seed: number, shade = 128): Uint8Array {
+  const f = new Uint8Array(PIXELS * 4);
+  let x = seed;
+  for (let p = 0; p < PIXELS; p++) {
+    x = (x * 1103515245 + 12345) & 0x7fffffff;
+    const v = shade + ((x >> 16) % 60) - 30;
+    f[p * 4] = v;
+    f[p * 4 + 1] = v;
+    f[p * 4 + 2] = v;
+    f[p * 4 + 3] = 255;
+  }
+  return f;
+}
+
+const slide = (n: number, stillFraction?: number): SlideEntry => ({
+  filename: `slide_${String(n).padStart(3, '0')}.png`,
+  seq: n,
+  videoTime: n * 10,
+  ...(stillFraction !== undefined ? { trigger: { stillFraction } } : {}),
+});
+
+describe('colorMatch', () => {
+  it('同じ場面（模様は違うが明るさは同じ）は高く、別の場面は低い', () => {
+    expect(colorMatch(footage(1), footage(2))).toBeGreaterThan(0.9);
+    expect(colorMatch(footage(1, 60), footage(2, 220))).toBeLessThan(0.2);
+  });
+});
+
+describe('pickShownSlides', () => {
+  const thumbs = new Map<string, Uint8Array>([
+    ['slide_001.png', footage(1, 60)],
+    ['slide_002.png', footage(2, 60)], // 1 と同じ場面
+    ['slide_003.png', footage(3, 60)], // まだ同じ場面
+    ['slide_004.png', footage(4, 220)], // 場面が変わる
+    ['slide_005.png', footage(5, 220)], // 4 と同じ場面
+  ]);
+
+  it('映像中心の画面では、最後に載せた画像と同じ場面の画像を外す', () => {
+    const slides = [1, 2, 3, 4, 5].map((n) => slide(n, 0.1));
+    const d = pickShownSlides(slides, thumbs, 0.65);
+    expect(d.map((x) => x.shown)).toEqual([true, false, false, true, false]);
+    expect(d[1]!.sameSceneAs).toBe('slide_001.png');
+    expect(d[4]!.sameSceneAs).toBe('slide_004.png');
+  });
+
+  it('スライド中心の画面（静止部分が半分以上）や、記録のない画像は外さない', () => {
+    const slides = [slide(1, 0.9), slide(2, 0.9), slide(3), slide(4, 0.1), slide(5, 0.1)];
+    const d = pickShownSlides(slides, thumbs, 0.65);
+    // 1〜3 は対象外。4 は 3（載っている）と別の場面。5 は 4 と同じ場面
+    expect(d.map((x) => x.shown)).toEqual([true, true, true, true, false]);
+  });
+
+  it('閾値 0 なら何も外さない。サムネイルがない画像も載せる', () => {
+    const slides = [1, 2, 3].map((n) => slide(n, 0.1));
+    expect(pickShownSlides(slides, thumbs, 0).every((x) => x.shown)).toBe(true);
+    const partial = new Map([['slide_001.png', footage(1, 60)]]);
+    expect(pickShownSlides(slides, partial, 0.65).every((x) => x.shown)).toBe(true);
+  });
+});
+
+describe('readThumbnail', () => {
+  it('ffmpeg があれば 160×90 の RGBA を返し、壊れたファイルでは null', async () => {
+    const ffmpeg = await resolveBin('ffmpeg');
+    if (!ffmpeg) return; // CI など ffmpeg のない環境では飛ばす
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-scenes-'));
+    const png = path.join(dir, 'red.png');
+    await run(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36', '-frames:v', '1', png]);
+    const thumb = await readThumbnail(ffmpeg, png);
+    expect(thumb?.length).toBe(PIXELS * 4);
+    expect(thumb?.[0]).toBeGreaterThan(200); // R
+    expect(thumb?.[1]).toBeLessThan(40); // G
+    const broken = path.join(dir, 'broken.png');
+    await writeFile(broken, 'not a png');
+    expect(await readThumbnail(ffmpeg, broken)).toBeNull();
+  });
+});

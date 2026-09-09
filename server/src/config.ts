@@ -28,6 +28,8 @@ export type ServerConfig = {
   openaiApiKey: string;
   ollamaUrl: string;
   llmCharsPerCall: number;
+  /** 同じ場面の画像を notes.md から外す色の一致の閾値（0〜1）。0 で無効（SPEC §13.4b） */
+  sceneColor: number;
 };
 
 export const DEFAULT_PORT = 47321;
@@ -55,6 +57,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     openaiApiKey: env['OPENAI_API_KEY'] ?? '',
     ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
     llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '4000')),
+    sceneColor: Number(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65')),
   };
 }
 
