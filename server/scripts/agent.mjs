@@ -7,7 +7,7 @@
 //   node server/scripts/agent.mjs restart    再起動（サーバーのコードを更新したあとに。処理中なら拒む。--force で強制）
 //   node server/scripts/agent.mjs print      plist の内容を表示するだけ
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -136,8 +136,14 @@ async function install() {
   mkdirSync(logDir, { recursive: true });
   writeAppBundle();
   writeFileSync(plistPath, plistXml(), { mode: 0o600 }); // OPENAI_API_KEY などを含むので本人だけ読める
+  chmodSync(plistPath, 0o600); // 既存ファイルの mode は writeFileSync では変わらない
   if (isLoaded()) run('launchctl', ['bootout', `${domain}/${LABEL}`]);
-  const boot = run('launchctl', ['bootstrap', domain, plistPath]);
+  // bootout の直後は launchd 側の後始末が終わっておらず bootstrap が "5: Input/output error" で失敗することがあるので少し待って再試行する
+  let boot = run('launchctl', ['bootstrap', domain, plistPath]);
+  for (let i = 0; boot.status !== 0 && i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    boot = run('launchctl', ['bootstrap', domain, plistPath]);
+  }
   if (boot.status !== 0) {
     console.error(`launchctl bootstrap に失敗しました: ${boot.stderr || boot.stdout}`);
     process.exit(1);
