@@ -23,6 +23,10 @@ export type Verdict = {
   diffPrev: number;
   /** 最後に保存した画像との変化画素率（判定したときだけ） */
   diffSaved?: number;
+  /** 変化が及んだマス目の数（16 分割） */
+  cells: number;
+  /** 静止部分の割合。小さいほど映像中心の画面 */
+  stillFraction: number;
 };
 
 /**
@@ -173,13 +177,16 @@ export class ChangeDetector {
     this.prev = frame;
 
     if (this.state === 'watching') {
-      // 画面全体としての変化が大きく、かつ広い範囲に散っているときだけ「切り替わった」とみなす
-      if (diffPrev >= this.cfg.changeThreshold && this.changedCells >= MIN_CHANGED_CELLS) {
+      // 画面全体としての変化が大きく、かつ広い範囲に散っているときだけ「切り替わった」とみなす。
+      // 映像中心の画面では、カメラや被写体が動いているだけの連続したショットを撮り続けないよう、
+      // 1 サンプルで一気に変わったとき（カット）だけを拾う
+      const needed = this.stillFraction < COARSE_MAX_STILL ? Math.max(this.cfg.changeThreshold, this.cfg.cutThreshold) : this.cfg.changeThreshold;
+      if (diffPrev >= needed && this.changedCells >= MIN_CHANGED_CELLS) {
         this.state = 'stabilizing';
         this.stabilizeStart = now;
         this.stableCount = 0;
       }
-      return { save: false, state: this.state, diffPrev };
+      return this.verdict(false, diffPrev);
     }
 
     // 安定待ち: 直前との差が小さいサンプルが続くか、上限時間を超えたら判定する
@@ -187,7 +194,7 @@ export class ChangeDetector {
     if (this.stableCount >= this.cfg.stableSamples || now - this.stabilizeStart >= this.cfg.maxStabilizeMs) {
       return this.decide(frame, now, diffPrev);
     }
-    return { save: false, state: this.state, diffPrev };
+    return this.verdict(false, diffPrev);
   }
 
   /** 一時停止など画面が静止したことが確実なとき、安定待ちを打ち切って判定する */
@@ -198,7 +205,7 @@ export class ChangeDetector {
       this.observed();
     }
     this.prev = frame;
-    if (this.state !== 'stabilizing') return { save: false, state: this.state, diffPrev };
+    if (this.state !== 'stabilizing') return this.verdict(false, diffPrev);
     return this.decide(frame, now, diffPrev);
   }
 
@@ -224,6 +231,10 @@ export class ChangeDetector {
     this.state = 'watching';
     // 動きの統計はスライドをまたいで持ち越す。講師のワイプの位置は動画全体で変わらないので、
     // スライドが変わるたびに数え直すと、その直後だけ判定がゆるくなってしまう
+  }
+
+  private verdict(save: boolean, diffPrev: number, diffSaved?: number): Verdict {
+    return { save, state: this.state, diffPrev, cells: this.changedCells, stillFraction: this.stillFraction, ...(diffSaved !== undefined ? { diffSaved } : {}) };
   }
 
   /** 32×18 に均して比べる。細かい動き（被写体が少し動いた）は均されて消え、場面の違いだけが残る */
@@ -265,19 +276,19 @@ export class ChangeDetector {
     // 映像中心の画面では、被写体が動いただけの「見た目が同じ」場面を続けて撮らない
     if (this.lastSaved && this.stillFraction < COARSE_MAX_STILL && this.coarseDiff(frame, this.lastSaved) < this.cfg.lookAlikeThreshold) {
       this.state = 'watching';
-      return { save: false, state: this.state, diffPrev, diffSaved };
+      return this.verdict(false, diffPrev, diffSaved);
     }
     if (diffSaved < this.cfg.dedupeThreshold) {
       // 最後に保存した画像と同じ（元に戻った、ちらつき）
       this.state = 'watching';
-      return { save: false, state: this.state, diffPrev, diffSaved };
+      return this.verdict(false, diffPrev, diffSaved);
     }
     if (now - this.lastSaveAt < this.cfg.minShotIntervalMs) {
       // 保存間隔が空くまで保留する。安定待ちのままにして次のサンプルや flush で再判定する
       this.state = 'stabilizing';
-      return { save: false, state: this.state, diffPrev, diffSaved };
+      return this.verdict(false, diffPrev, diffSaved);
     }
     this.state = 'watching';
-    return { save: true, state: this.state, diffPrev, diffSaved };
+    return this.verdict(true, diffPrev, diffSaved);
   }
 }

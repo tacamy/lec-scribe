@@ -52,6 +52,11 @@ export type Config = {
     /** 最後に保存した画像との差がこれ未満なら保存しない */
     dedupeThreshold: number;
     /**
+     * 映像中心の画面（静止部分が半分未満）では、1 サンプルでこれ以上変わったときだけ
+     * 「場面が切り替わった」とみなす。カメラが動いているだけの連続したショットを撮り続けないため
+     */
+    cutThreshold: number;
+    /**
      * 粗く見て（32×18 に均して）これ未満しか違わなければ「見た目が同じ」として保存しない。
      * 被写体が動いただけの映像を連続で撮らないため。画面の大半が動いているときだけ効く
      */
@@ -94,6 +99,7 @@ export const DEFAULT_CONFIG: Config = {
     stableSamples: 2,
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
+    cutThreshold: 0.3,
     lookAlikeThreshold: 0.12,
     minShotIntervalMs: 2000,
     tickIntervalMs: 10_000,

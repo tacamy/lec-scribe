@@ -30,6 +30,8 @@ export type SlideMeta = {
   /** 何をきっかけに保存したか（initial / manual / change） */
   reason: string;
   bytes: number;
+  /** どの数値で保存を決めたか（閾値を実データで詰めるための記録） */
+  trigger?: { diffPrev: number; diffSaved?: number; cells: number; stillFraction: number };
   /** 切り替わる直前の状態（最終状態）で画像を上書きしたか */
   updated?: boolean;
   /** 上書きした画像の動画時刻・録音時刻 */

@@ -348,7 +348,7 @@ function rememberStable(current: Session, frame: Frame): void {
   ctx.drawImage(video, 0, 0, width, height);
   const now = Date.now();
   current.stable = { frame, videoTime: video.currentTime, t: (now - current.recorderStartEpochMs) / 1000, at: now };
-  logVerdict(current, 'stable', { save: false, state: 'watching', diffPrev: 0 }, `${width}x${height}`);
+  logVerdict(current, 'stable', { save: false, state: 'watching', diffPrev: 0, cells: 0, stillFraction: 1 }, `${width}x${height}`);
 }
 
 /**
@@ -357,7 +357,7 @@ function rememberStable(current: Session, frame: Frame): void {
  */
 async function finalizePrevious(current: Session): Promise<void> {
   const { stable, lastSaved, fullCanvas } = current;
-  const note = (why: string) => logVerdict(current, 'final', { save: false, state: 'watching', diffPrev: 0 }, why);
+  const note = (why: string) => logVerdict(current, 'final', { save: false, state: 'watching', diffPrev: 0, cells: 0, stillFraction: 1 }, why);
   if (!current.slide.finalState) return;
   if (!stable || !lastSaved || !fullCanvas || current.finalizing) {
     note(`skip stable=${!!stable} saved=${!!lastSaved} canvas=${!!fullCanvas} finalizing=${current.finalizing}`);
@@ -549,6 +549,16 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
       source: 'direct',
       reason,
       bytes: saved.bytes,
+      ...(current.lastVerdict
+        ? {
+            trigger: {
+              diffPrev: Math.round(current.lastVerdict.diffPrev * 10000) / 10000,
+              ...(current.lastVerdict.diffSaved !== undefined ? { diffSaved: Math.round(current.lastVerdict.diffSaved * 10000) / 10000 } : {}),
+              cells: current.lastVerdict.cells,
+              stillFraction: Math.round(current.lastVerdict.stillFraction * 1000) / 1000,
+            },
+          }
+        : {}),
     };
     // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
     current.detector.markSaved(savedFrame, capturedAt.getTime());
