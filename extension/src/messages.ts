@@ -41,6 +41,8 @@ export type ToBackground =
   | { target: 'sw'; type: 'START'; tabId: number }
   | { target: 'sw'; type: 'STOP' }
   | { target: 'sw'; type: 'GET_STATE' }
+  /** ローカルサーバーと接続する（サーバーが Mac のダイアログで承認を求め、拡張専用トークンを返す） */
+  | { target: 'sw'; type: 'PAIR' }
   | { target: 'sw'; type: 'EXPORT'; sessionId: string }
   | { target: 'sw'; type: 'DISCARD'; sessionId: string }
   /** 指定タブの <video> を調べる（Start 前の表示用） */
@@ -181,6 +183,7 @@ export const sendToBackground = {
   start: (tabId: number) => send<StateReply>({ target: 'sw', type: 'START', tabId }),
   stop: () => send<StateReply>({ target: 'sw', type: 'STOP' }),
   getState: () => send<StateReply>({ target: 'sw', type: 'GET_STATE' }),
+  pair: () => send<StateReply & { paired: boolean }>({ target: 'sw', type: 'PAIR' }),
   export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
   discard: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId }),
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),

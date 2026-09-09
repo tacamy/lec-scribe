@@ -34,7 +34,7 @@ pnpm typecheck && pnpm test      # 型検査と単体テスト
 node scripts/smoke-extension.mjs # headless Chromium で拡張を読み込むスモークテスト
 pnpm fixtures:make               # 合成スライド動画を生成（Phase 3 以降で使用）
 pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
-pnpm --filter @lec-scribe/server start   # ローカルサーバー。拡張の設定画面「このMacと接続」→ Mac のダイアログで「許可」
+pnpm --filter @lec-scribe/server start   # ローカルサーバー。拡張のポップアップに出る「このMacと接続」→ Mac のダイアログで「許可」
 ```
 
 ツールバーのアイコンのポップアップから Start すると、そのタブにサイドパネルが開いて録音中の状態を表示します（他のタブには出ません。他のタブからはアイコンのポップアップで同じ状態を見られます）。Stop すると自動でサーバーに送って文字起こしが始まります。処理中に次の動画の録音を始めてもよく、Stop 後は送信待ちに並びます。一覧の「文字起こしする / やり直す」も処理中に押せて、同じく送信待ちに並びます。「やり直す」は同じ音声・同じモデルなら文字起こしを再利用してノートだけ作り直すので数分で終わります。処理中のセッションを一覧の「破棄」で消すと処理も中止されます。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
@@ -61,7 +61,7 @@ LEC_SCRIBE_LLM=codex pnpm --filter @lec-scribe/server agent:install             
 ターミナルで起動しておく代わりに、launchd のユーザーエージェントとして登録するとログイン時に自動起動し、落ちても再起動されます。
 
 ```sh
-pnpm --filter @lec-scribe/server agent:install    # 登録して起動。そのあと拡張の設定画面で「このMacと接続」
+pnpm --filter @lec-scribe/server agent:install    # 登録して起動。そのあと拡張のポップアップで「このMacと接続」
 pnpm --filter @lec-scribe/server agent:status     # 状態と /health
 pnpm --filter @lec-scribe/server agent:restart    # サーバーのコードを更新したあとに（処理中なら拒む。--force で強制）
 pnpm --filter @lec-scribe/server agent:uninstall  # 解除

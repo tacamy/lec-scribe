@@ -1,5 +1,5 @@
 import { defineBackground } from 'wxt/utils/define-background';
-import { authHeaders, loadConfig, serverEnabled, type Config } from '../src/config';
+import { authHeaders, loadConfig, saveConfig, serverEnabled, type Config } from '../src/config';
 import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
 import { makeSessionId } from '../src/format';
 import {
@@ -84,6 +84,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return { state: await stop('user') };
     case 'GET_STATE':
       return { state: await readState() };
+    case 'PAIR':
+      return pair();
     case 'EXPORT':
       return { state: await exportSession(msg.sessionId) };
     case 'DISCARD':
@@ -547,6 +549,34 @@ async function discardSession(sessionId: string): Promise<SessionState> {
   }
   await closeOffscreenIfIdle();
   return next;
+}
+
+/**
+ * ローカルサーバーと接続する。サーバーが Mac のダイアログで承認を求め、「許可」なら拡張専用のトークンを返すので保存する。
+ * ポップアップはダイアログにフォーカスを取られて閉じるため、fetch はここ（service worker）で行う
+ */
+async function pair(): Promise<{ state: SessionState; paired: boolean }> {
+  const config = await loadConfig();
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${config.server.port}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: chrome.runtime.getManifest().name }),
+    });
+  } catch (e) {
+    throw new LecError(
+      'SERVER_UNREACHABLE',
+      `ローカルサーバーに接続できません（127.0.0.1:${config.server.port}）。サーバーを起動してください。${toErrorInfo(e).message}`,
+    );
+  }
+  const body = (await res.json().catch(() => undefined)) as { paired?: boolean; token?: string; error?: { message?: string } } | undefined;
+  if (!res.ok || !body?.paired || !body.token) {
+    throw new LecError('SERVER_REJECTED', body?.error?.message ?? `接続できませんでした（HTTP ${res.status}）`);
+  }
+  await saveConfig({ ...config, server: { ...config.server, paired: true, token: body.token } });
+  const current = await readState();
+  return { state: { ...current, error: undefined, warnings: current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE') }, paired: true };
 }
 
 /** サーバーに処理の中止（と削除）を頼む。繋がらなくても破棄は続ける */

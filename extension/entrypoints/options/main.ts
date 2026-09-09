@@ -1,4 +1,5 @@
 import { authHeaders, loadConfig, saveConfig, type Config } from '../../src/config';
+import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -42,24 +43,14 @@ $('pair').addEventListener('click', async () => {
   await saveConfig(config);
   show('Mac の画面に確認ダイアログが出ます。「許可」を押してください…');
   try {
-    const res = await fetch(`http://127.0.0.1:${config.server.port}/pair`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: chrome.runtime.getManifest().name }),
-    });
-    const body = (await res.json()) as { paired?: boolean; token?: string; error?: { message?: string } };
-    if (res.ok && body.paired && body.token) {
-      // 承認時にサーバーが発行した拡張専用トークンを保存する（貼り付け不要）
-      config = { ...config, server: { ...config.server, paired: true, token: body.token } };
-      await saveConfig(config);
-      token.value = body.token;
-      renderPairStatus();
-      show('接続しました。', true);
-    } else {
-      show(body.error?.message ?? `接続できませんでした（HTTP ${res.status}）`, false);
-    }
+    // 承認と保存は service worker が行う（ポップアップからも同じ経路）
+    await sendToBackground.pair();
+    config = await loadConfig();
+    token.value = config.server.token;
+    renderPairStatus();
+    show('接続しました。', true);
   } catch (e) {
-    show(`サーバーに繋がりません（127.0.0.1:${config.server.port}）。サーバーが起動しているか確認してください。\n${e instanceof Error ? e.message : String(e)}`, false);
+    show(e instanceof Error ? e.message : String(e), false);
   }
 });
 

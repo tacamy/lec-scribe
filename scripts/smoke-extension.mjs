@@ -87,6 +87,8 @@ try {
   );
   for (const id of ['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow']) assert.equal(idleRows[id], 'none', `${id} visible while idle: ${JSON.stringify(idleRows)}`);
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
+  // サーバー未接続のうちは「このMacと接続」がポップアップに出る
+  assert.equal(await popup.evaluate(() => document.getElementById('pairBtn').hidden), false, 'pairBtn hidden while unpaired');
 
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
   await popup.setViewportSize({ width: 320, height: 700 });
@@ -480,17 +482,21 @@ try {
 
   // 接続承認: 拡張ページから POST /pair →（osascript スタブが「許可」）→ 以後はトークンなしで通る
   const paired = await popup.evaluate(async (port) => {
-    const res = await fetch(`http://127.0.0.1:${port}/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'smoke' }) });
-    const body = await res.json();
+    const reply = await chrome.runtime.sendMessage({ target: 'sw', type: 'PAIR' });
+    const { config } = await chrome.storage.local.get('config');
     // 承認時に発行されたトークンで /health を呼ぶと authorized / paired になる（Origin は GET に付かない）
-    const health = await (await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${body.token}` } })).json();
-    return { status: res.status, body, health };
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${config.server.token}` } })).json();
+    return { reply, server: config.server, health };
   }, SERVER_PORT);
-  assert.equal(paired.status, 200, JSON.stringify(paired));
-  assert.equal(paired.body.paired, true, JSON.stringify(paired));
+  assert.equal(paired.reply.ok, true, JSON.stringify(paired));
+  assert.equal(paired.server.paired, true, JSON.stringify(paired.server));
+  assert.notEqual(paired.server.token, SERVER_TOKEN, 'issued token replaces the shared one');
   assert.equal(paired.health.authorized, true, JSON.stringify(paired.health));
   assert.equal(paired.health.paired, true, JSON.stringify(paired.health));
-  console.log('pairing: approved via dialog stub, issued token authorizes /health');
+  await popup.reload();
+  await popup.waitForSelector('#startBtn');
+  assert.equal(await popup.evaluate(() => document.getElementById('pairBtn').hidden), true, 'pairBtn still visible after pairing');
+  console.log('pairing: approved via dialog stub through the service worker, issued token authorizes /health');
 
   // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
   // サーバー側の処理が止まってフォルダが消え、拡張内のセッションも消えること。

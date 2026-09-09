@@ -37,6 +37,7 @@ const startBtn = $<HTMLButtonElement>('startBtn');
 const stopBtn = $<HTMLButtonElement>('stopBtn');
 const snapBtn = $<HTMLButtonElement>('snapBtn');
 const openBtn = $<HTMLButtonElement>('openBtn');
+const pairBtn = $<HTMLButtonElement>('pairBtn');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
@@ -125,6 +126,8 @@ function render(state: SessionState) {
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
   openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
+  // サーバーと未接続なら、設定画面へ行かなくてもここから接続できる
+  pairBtn.hidden = serverConfigured || active;
 
   if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
@@ -203,7 +206,7 @@ function describeServer(state: SessionState): string {
   }
   if (pending) return `待機中${pending}`;
   if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${shortPath(state.lastSession.outputDir)}`;
-  return serverConfigured ? '待機中' : '未接続（設定画面で「このMacと接続」）';
+  return serverConfigured ? '待機中' : '未接続';
 }
 
 /** /Users/<name>/… を ~/… にして短く見せる */
@@ -440,6 +443,22 @@ stopBtn.addEventListener('click', () => {
 openBtn.addEventListener('click', () => {
   const last = current.lastSession;
   if (last?.outputDir) void openOutput(last.sessionId, 'folder', last.outputDir);
+});
+
+pairBtn.addEventListener('click', () => {
+  pairBtn.disabled = true;
+  showMessage('Mac の画面に確認ダイアログが出ます。「許可」を押してください。', 'info');
+  void act(async () => {
+    try {
+      const reply = await sendToBackground.pair();
+      await refreshConfig();
+      return reply;
+    } finally {
+      pairBtn.disabled = false;
+    }
+  }).then(() => {
+    if (serverConfigured) showMessage('接続しました。Stop すると自動で文字起こしに送られます。', 'info');
+  });
 });
 
 // 手動保存の結果はボタン自体の表示で返す（メッセージ欄だとレイアウトが動いて読みにくい）
