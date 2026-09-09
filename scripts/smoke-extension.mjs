@@ -68,6 +68,10 @@ try {
   const extensionId = new URL(worker.url()).host;
   console.log(`service worker: ${worker.url()}`);
 
+  // 未接続画面は既定ポート（47321）にサーバーがいるか見に行く。CI には何もいないので接続拒否が
+  // コンソールエラーとして残り、最後の「ページエラーなし」で落ちる。先に smoke 用のポートを設定しておく
+  await worker.evaluate((port) => chrome.storage.local.set({ config: { server: { port } } }), SERVER_PORT);
+
   const popup = await context.newPage();
   const errors = [];
   popup.on('pageerror', (e) => errors.push(String(e)));
