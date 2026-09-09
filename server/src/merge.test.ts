@@ -45,7 +45,9 @@ describe('buildLectureMarkdown', () => {
     expect(md).not.toContain('## 00:');
     expect(md).toContain('---\n\n![slide_001](slides/slide_001.png)\n\n一枚目の話。');
     expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n二枚目の話。');
-    expect(md).toContain('---\n\n![slide_003](slides/slide_003.png)\n\n（このスライドの間の発話はありません）');
+    // 発話のないスライドは画像だけ（注記なし）。最後の節なので画像で終わる
+    expect(md.endsWith('---\n\n![slide_003](slides/slide_003.png)\n')).toBe(true);
+    expect(md).not.toContain('発話はありません');
   });
 
   it('works without slides and without text', () => {
@@ -79,5 +81,18 @@ describe('buildNotesMarkdown', () => {
     const md = buildNotesMarkdown({ sections, polished });
     expect(md).not.toContain('## ');
     expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n---\n\n![slide_002]');
+  });
+
+  it('falls back to the transcript when the polished text came back empty', () => {
+    // LLM が本文を落としてしまっても、発話があった節を黙って消さない
+    const md = buildNotesMarkdown({ sections, polished: new Map([['slide_001', { text: '' }]]) });
+    expect(md).toContain('![slide_001](slides/slide_001.png)\n\n（整えられなかったため文字起こしのまま）\n\n一枚目の話。');
+  });
+
+  it('leaves a silent slide as the image alone', () => {
+    const silent = groupSections([seg(12, '一枚目の話。')], slides);
+    const md = buildNotesMarkdown({ sections: silent, polished: new Map([['slide_001', { text: '一枚目の本文。' }], ['slide_002', { text: '' }]]) });
+    expect(md).not.toContain('（整えられなかった');
+    expect(md.endsWith('![slide_002](slides/slide_002.png)\n')).toBe(true);
   });
 });
