@@ -97,8 +97,21 @@ function isStockPhraseOnly(text: string): boolean {
   return true;
 }
 
-/** 決まり文句だけの区間を「窓いっぱい」とみなす長さ */
-const PHRASE_ARTIFACT_SEC = 15;
+/**
+ * 決まり文句だけの区間が「長すぎる」か。日本語の話し言葉は 1 文字あたり 0.15〜0.2 秒なので、
+ * 0.35 秒/文字を超えるなら実際には言っていない（無音の窓に埋められた）とみなす。
+ * 「ご視聴ありがとうございました」（14 文字）なら 4.9 秒以上が対象
+ */
+function isTooSlow(s: Segment): boolean {
+  const chars = normalizePhrase(s.text).length;
+  const seconds = s.end - s.start;
+  return chars > 0 && seconds >= Math.max(PHRASE_MIN_SEC, chars * PHRASE_MAX_SEC_PER_CHAR);
+}
+
+/** これより短ければ、本当に言っている可能性があるので残す */
+const PHRASE_MIN_SEC = 3;
+const PHRASE_MAX_SEC_PER_CHAR = 0.35;
+
 /** 30 秒の窓いっぱいの区間とみなす長さ */
 const WINDOW_ARTIFACT_SEC = 20;
 /** 他の区間と重なる合計がこれ以上なら「窓の重複」= 実在しない区間 */
@@ -120,9 +133,9 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   const dropped: DroppedSegment[] = [];
   const duration = (s: Segment) => s.end - s.start;
 
-  // 決まり文句だけの長い区間は、重なりを見るまでもなく捨てられる
+  // 決まり文句だけで、しゃべる速さから考えて長すぎる区間は、重なりを見るまでもなく捨てられる
   const survivors = segments.filter((s) => {
-    if (duration(s) < PHRASE_ARTIFACT_SEC || !isStockPhraseOnly(s.text)) return true;
+    if (!isStockPhraseOnly(s.text) || !isTooSlow(s)) return true;
     dropped.push({ ...s, reason: 'phrase' });
     return false;
   });

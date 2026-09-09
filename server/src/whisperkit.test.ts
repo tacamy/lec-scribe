@@ -102,13 +102,23 @@ describe('dropWindowArtifacts', () => {
     expect(kept.map((s) => s.start)).toEqual([62]);
   });
 
-  it('drops a long stock phrase even without overlap', () => {
+  it('drops a stock phrase that is too long for the words it contains', () => {
     const { kept, dropped } = dropWindowArtifacts([
       { start: 0, end: 4, text: 'こんにちは' },
       { start: 10, end: 40, text: 'ご視聴ありがとうございました。' },
     ]);
     expect(dropped.map((s) => s.reason)).toEqual(['phrase']);
     expect(kept).toHaveLength(1);
+  });
+
+  it('keeps a stock phrase said at a normal speed, drops the same words stretched over a silent window', () => {
+    // 実測（3 章の録音）: 7.4 秒に「ご視聴ありがとうございました」だけ = 1 文字 0.53 秒。話し言葉は 0.15〜0.2 秒/文字
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 100, end: 102.5, text: 'ご視聴ありがとうございました' },
+      { start: 159.4, end: 166.8, text: 'ご視聴ありがとうございました' },
+    ]);
+    expect(dropped.map((s) => s.start)).toEqual([159.4]);
+    expect(kept.map((s) => s.start)).toEqual([100]);
   });
 
   it('drops a repeated stock phrase (Whisper のループ)', () => {
