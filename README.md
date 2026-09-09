@@ -22,8 +22,25 @@
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.4（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
+| [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.5（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
 | [docs/CHECKS.md](docs/CHECKS.md) | Phase ごとの手動確認手順と記録 |
+
+## 使い方（利用者向け）
+
+必要なもの: Apple Silicon の Mac、Chrome。
+
+1. Chrome ウェブストアから LecScribe 拡張を入れる（公開準備中）。
+2. ツールバーの LecScribe アイコンを押す。Mac 側の準備がまだなら、ポップアップに次の 1 行が出るので「ターミナル」に貼り付けて Enter を押す。
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/tacamy/lec-scribe/main/install.sh | bash
+   ```
+
+   Homebrew と ffmpeg / whisperkit-cli を入れ、サーバーを `~/LecScribe-app/` に置いてログイン時に自動起動するよう登録します。途中で Mac のパスワードを聞かれることがあります。
+3. もう一度アイコンを押して「このMacと接続」→ Mac に出る確認画面で「許可」。
+4. 講義ページで動画を再生し、アイコン → Start。見終わったら Stop すると文字起こしが始まり、`~/LecScribe/` にノートができます（初回はモデルのダウンロードで数分余計にかかります）。
+
+更新は `bash ~/LecScribe-app/update.sh`。ノートを話し言葉から整えたい場合は下の「話し言葉を整えて要点を付ける」を参照。
 
 ## 使い方（開発中）
 

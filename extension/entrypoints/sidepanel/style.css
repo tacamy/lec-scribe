@@ -73,6 +73,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 .setup { display: grid; gap: 10px; }
 .setup p { margin: 0; font-size: 13px; line-height: 1.6; }
 .setup .note { color: var(--muted); font-size: 11px; }
+.install { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.installRow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.installRow code { flex: 1; min-width: 0; font-size: 11px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--fg) 8%, transparent); overflow-x: auto; white-space: nowrap; }
+.installRow button { flex: none; padding: 6px 10px; font-size: 12px; }
 .warnings { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .warnings li { padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); font-size: 12px; line-height: 1.4; }
 .sessions h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }

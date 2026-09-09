@@ -560,6 +560,8 @@ sessions/<sessionId>/
 
 ### 12.1 起動と設定
 
+利用者向けの導入は `install.sh`（`curl … | bash` の 1 行。Homebrew → node / git / ffmpeg / whisperkit-cli → `~/LecScribe-app/` に取得 → `agent.mjs install`）。拡張は Chrome ウェブストアで配る前提で、未接続画面がサーバーを見つけられないときにこの 1 行をコピーできる形で案内する（2026-09-09）。更新は `update.sh`（処理中なら待って `agent restart`）。
+
 ```text
 pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 ```

@@ -212,6 +212,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | ~~H~~ | 常駐サーバーに `--llm codex` が渡っている（`agent:status` のコマンドラインか、処理後の `pipeline.json` の `result.notes: true`） | `pnpm --filter @lec-scribe/server agent:status` | `LEC_SCRIBE_LLM=codex … agent:install` していなければやり直す |
 | I | 90 分の講義を通しで処理できる（SPEC の見込みは Done まで 25〜30 分、Codex 込みでさらに数分） | 実講義 1 本 | 時間 |
 | J | Chrome のウィンドウを最小化しても録音・スライド保存が続くか（Phase 3 の手順 5 で未記録） | 録音中に最小化して数分待つ | — |
+| O | サーバーが動いていないとき、ポップアップに install の 1 行とコピーボタンが出て、「このMacと接続」は出ない。`agent:uninstall` → アイコン → 表示を確認 → `install.sh` を実行（別 Mac か、`LEC_SCRIBE_APP_DIR` を変えて）→ サーバーが見つかり接続できる | `pnpm --filter @lec-scribe/server agent:uninstall` | 元に戻すには `agent:install` |
 
 ## 過去セッションの再処理
 

@@ -40,6 +40,12 @@ const openBtn = $<HTMLButtonElement>('openBtn');
 const pairBtn = $<HTMLButtonElement>('pairBtn');
 const setupSection = $('setup');
 const setupStatus = $('setupStatus');
+const installHint = $('installHint');
+const installCmd = $('installCmd');
+const copyCmdBtn = $<HTMLButtonElement>('copyCmdBtn');
+/** Mac 側サーバーを入れる 1 行（README の「利用者向け」と同じ） */
+const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/tacamy/lec-scribe/main/install.sh | bash';
+installCmd.textContent = INSTALL_COMMAND;
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
@@ -106,13 +112,25 @@ async function checkServerPresence() {
       missing.length > 0
         ? `Mac 側の LecScribe サーバーは動いていますが、${missing.join(' と ')} が見つかりません。ターミナルで brew install whisperkit-cli ffmpeg を実行してください。`
         : `Mac 側の LecScribe サーバーが見つかりました（v${body.version ?? '?'}）。`;
+    installHint.hidden = true;
+    pairBtn.hidden = false;
     pairBtn.disabled = false;
   } catch {
-    setupStatus.textContent =
-      'Mac 側の LecScribe サーバーが見つかりません。まだ入れていなければ README の「サーバーの常駐化」の手順で登録してください。登録済みなら少し待ってから、もう一度アイコンを押してください。';
-    pairBtn.disabled = true;
+    setupStatus.textContent = 'Mac 側の LecScribe サーバーが見つかりません。';
+    installHint.hidden = false;
+    pairBtn.hidden = true;
   }
 }
+
+copyCmdBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(INSTALL_COMMAND);
+    copyCmdBtn.textContent = 'コピーしました';
+  } catch {
+    copyCmdBtn.textContent = '選択してコピーしてください';
+  }
+  window.setTimeout(() => (copyCmdBtn.textContent = 'コピー'), 2000);
+});
 
 /** サーバーに頼んで出力フォルダ（または lecture.md）を Finder / 既定のアプリで開く */
 async function openOutput(sessionId: string, target: 'folder' | 'lecture', fallbackPath?: string) {

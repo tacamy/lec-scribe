@@ -19,6 +19,14 @@
           最初に 1 回だけ、Mac との接続を許可してください。
         </p>
         <p class="note" id="setupStatus">Mac 側を確認しています…</p>
+        <div class="install" id="installHint" hidden>
+          <p>Mac 側の準備がまだです。「ターミナル」を開いて次の 1 行を貼り付け、Enter を押してください。終わったら、もう一度このアイコンを押してください。</p>
+          <div class="installRow">
+            <code id="installCmd"></code>
+            <button id="copyCmdBtn" class="secondary" type="button">コピー</button>
+          </div>
+          <p class="note">Homebrew と文字起こしに必要なもの（ffmpeg / whisperkit-cli）を入れて、サーバーを常駐させます。途中で Mac のパスワードを聞かれることがあります。</p>
+        </div>
         <button id="pairBtn" class="primary" type="button">このMacと接続</button>
         <p class="note">押すと Mac に確認画面が出るので「許可」を押してください。この画面は閉じてかまいません。そのあと、もう一度アイコンを押すと Start できます。</p>
       </section>
