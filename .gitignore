@@ -1,0 +1,12 @@
+node_modules/
+.output/
+.wxt/
+dist/
+coverage/
+*.log
+.DS_Store
+fixtures/slides.webm
+fixtures/slides.webm.version
+fixtures/slides.raw.webm
+test-results/
+playwright-report/

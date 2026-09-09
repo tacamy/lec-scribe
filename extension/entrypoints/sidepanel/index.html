@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>LecScribe</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <h1>LecScribe</h1>
+        <button id="optionsBtn" class="link" type="button">設定</button>
+      </header>
+
+      <!-- サーバー未接続のときはこれだけを出す（接続しないと文字起こしできないため） -->
+      <section class="setup" id="setup" hidden>
+        <p>
+          録音した音声を Mac の中で文字起こしして、スライドと並べたノートを作ります（音声も画像も Mac の外には出ません）。
+          最初に 1 回だけ、Mac との接続を許可してください。
+        </p>
+        <p class="note" id="setupStatus">Mac 側を確認しています…</p>
+        <div class="install" id="installHint" hidden>
+          <p>Mac 側の準備がまだです。「ターミナル」を開いて次の 1 行を貼り付け、Enter を押してください。終わったら、もう一度このアイコンを押してください。</p>
+          <div class="installRow">
+            <code id="installCmd"></code>
+            <button id="copyCmdBtn" class="secondary" type="button">コピー</button>
+          </div>
+          <p class="note">Homebrew と文字起こしに必要なもの（ffmpeg / whisperkit-cli）を入れて、サーバーを常駐させます。途中で Mac のパスワードを聞かれることがあります。</p>
+        </div>
+        <button id="pairBtn" class="primary" type="button">このMacと接続</button>
+        <p class="note">押すと Mac に確認画面が出るので「許可」を押してください。この画面は閉じてかまいません。そのあと、もう一度アイコンを押すと Start できます。</p>
+      </section>
+
+      <section class="status" id="status">
+        <span class="dot" id="dot" data-state="IDLE"></span>
+        <span id="stateLabel">Ready</span><span class="dots" id="dots" aria-hidden="true" hidden></span>
+        <span class="elapsed" id="elapsed"></span>
+      </section>
+
+      <section class="rows" id="rows">
+        <div class="row" id="audioRow" hidden>
+          <span class="label">Audio</span>
+          <span class="value" id="audioValue">—</span>
+        </div>
+        <div class="meter" id="meter" aria-hidden="true" hidden><div class="meterFill" id="meterFill"></div></div>
+        <div class="row" id="videoRow" hidden>
+          <span class="label">Video</span>
+          <span class="value" id="videoValue">—</span>
+        </div>
+        <div class="row" id="slidesRow" hidden>
+          <span class="label">Slides</span>
+          <span class="value" id="slidesValue">—</span>
+        </div>
+        <div class="row" id="tabRow" hidden>
+          <span class="label">Tab</span>
+          <span class="value ellipsis" id="tabValue" title="">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Server</span>
+          <span class="value" id="serverValue">—</span>
+        </div>
+      </section>
+
+      <ul class="warnings" id="warnings" hidden></ul>
+
+      <p class="message" id="message" hidden></p>
+
+      <div class="actions" id="actions">
+        <button id="startBtn" class="primary" type="button">Start</button>
+        <button id="stopBtn" class="danger" type="button" hidden>Stop</button>
+        <button id="openBtn" class="secondary" type="button" hidden>出力フォルダを開く</button>
+        <button id="snapBtn" class="secondary" type="button" title="自動保存が拾えなかったときに使います" hidden>今の画面を手動で保存</button>
+      </div>
+
+      <section class="sessions" id="sessions" hidden>
+        <h2>保存済みセッション</h2>
+        <ul id="sessionList"></ul>
+      </section>
+
+      <footer class="footer" id="footer">動画ページで動画を再生した状態で Start を押してください。</footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,45 @@
+import { spawn } from 'node:child_process';
+import { access, constants } from 'node:fs/promises';
+import path from 'node:path';
+
+export type RunResult = { code: number; stdout: string; stderr: string };
+
+/** 外部コマンドを実行して終了を待つ。stdout/stderr は末尾だけ保持する */
+export function run(
+  bin: string,
+  args: string[],
+  options: { cwd?: string; onLine?: (line: string) => void; signal?: AbortSignal } = {},
+): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'], signal: options.signal });
+    let stdout = '';
+    let stderr = '';
+    const keepTail = (s: string) => (s.length > 20_000 ? s.slice(-20_000) : s);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout = keepTail(stdout + chunk);
+      if (options.onLine) for (const line of chunk.split('\n')) if (line.trim()) options.onLine(line);
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr = keepTail(stderr + chunk);
+      if (options.onLine) for (const line of chunk.split('\n')) if (line.trim()) options.onLine(line);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+  });
+}
+
+/** PATH（または絶対パス）でコマンドが見つかるか */
+export async function resolveBin(bin: string): Promise<string | null> {
+  const candidates = bin.includes('/') ? [bin] : (process.env['PATH'] ?? '').split(path.delimiter).map((dir) => path.join(dir, bin));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // 次を探す
+    }
+  }
+  return null;
+}

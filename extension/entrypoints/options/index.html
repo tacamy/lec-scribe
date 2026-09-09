@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="manifest.open_in_tab" content="true" />
+    <title>LecScribe 設定</title>
+    <style>
+      :root { color-scheme: light dark; --fg: #1c1c1e; --muted: #6e6e73; --bg: #ffffff; --border: #e5e5ea; --accent: #0a84ff; --ok: #34c759; --danger: #ff3b30; }
+      @media (prefers-color-scheme: dark) { :root { --fg: #f2f2f7; --muted: #98989d; --bg: #1c1c1e; --border: #3a3a3c; } }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans", sans-serif; color: var(--fg); background: var(--bg); }
+      main { max-width: 640px; margin: 0 auto; padding: 32px 24px 48px; display: grid; gap: 24px; }
+      h1 { margin: 0; font-size: 20px; }
+      h2 { margin: 0 0 8px; font-size: 15px; }
+      section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+      label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+      input { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 100%; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+      button.primary { background: var(--accent); color: #fff; }
+      button.secondary { background: transparent; border-color: var(--border); color: var(--fg); }
+      .result { font-size: 13px; white-space: pre-wrap; }
+      .result.ok { color: var(--ok); }
+      .result.ng { color: var(--danger); }
+      code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
+      p { margin: 0; color: var(--muted); font-size: 13px; }
+      details { display: grid; gap: 10px; }
+      summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>LecScribe 設定</h1>
+
+      <section>
+        <h2>ローカルサーバー</h2>
+        <p>
+          Mac 上のサーバーが録音を受け取り、WhisperKit で文字起こしします。サーバーを起動した状態で
+          「このMacと接続」を押すと Mac に確認ダイアログが出るので、「許可」を押してください。
+          接続していないときは送信せず、録音とスライドの保存だけを行います。
+        </p>
+        <div class="row">
+          <button id="pair" class="primary" type="button">このMacと接続</button>
+          <span id="pairStatus" class="result"></span>
+        </div>
+        <details>
+          <summary>詳細設定（ポート / トークン）</summary>
+          <label>ポート <input id="port" type="number" min="1024" max="65535" /></label>
+          <label>トークン（「このMacと接続」で自動で入ります。<code>~/.lec-scribe/token</code> の値を手で貼ることもできます） <input id="token" type="text" autocomplete="off" spellcheck="false" /></label>
+          <div class="row">
+            <button id="save" class="secondary" type="button">保存</button>
+          </div>
+        </details>
+        <div class="row">
+          <button id="test" class="secondary" type="button">接続テスト</button>
+          <span id="result" class="result"></span>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

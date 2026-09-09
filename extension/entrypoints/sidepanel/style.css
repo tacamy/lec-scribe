@@ -1,0 +1,92 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1c1c1e;
+  --muted: #6e6e73;
+  --bg: #ffffff;
+  --border: #e5e5ea;
+  --accent: #0a84ff;
+  --danger: #ff3b30;
+  --ok: #34c759;
+  --warn: #ff9f0a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #f2f2f7;
+    --muted: #98989d;
+    --bg: #1c1c1e;
+    --border: #3a3a3c;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 260px;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+/* grid / flex の子は既定で内容幅まで広がる（min-width: auto）ので、
+   長いタブ名がパネルを押し広げないよう明示的に 0 にして省略・折り返しさせる */
+/* display を指定した要素（.status / .rows / .row / .actions など）でも hidden 属性を効かせる */
+.panel [hidden] { display: none; }
+.panel { padding: 14px 16px 12px; display: grid; gap: 12px; max-width: 480px; min-width: 0; overflow-x: hidden; }
+.panel > * { min-width: 0; }
+body.popup { width: 320px; }
+.header { display: flex; align-items: baseline; justify-content: space-between; }
+h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.phase { font-size: 11px; color: var(--muted); }
+button.link { padding: 2px 6px; border: 0; background: transparent; color: var(--accent); font-weight: 500; font-size: 12px; }
+.status { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.status .dots { margin-left: -8px; }
+.elapsed { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+/* 処理中の「…」を 1 文字ずつ増やす。動きを減らす設定なら固定の「…」 */
+.dots::after { content: '…'; display: inline-block; width: 1.2em; text-align: left; }
+@media (prefers-reduced-motion: no-preference) {
+  .dots::after { animation: dots 1.6s steps(1, end) infinite; }
+}
+@keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot[data-state="CAPTURING"] { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.dot[data-state="STARTING"], .dot[data-state="STOPPING"] { background: var(--warn); }
+.dot[data-state="ERROR"] { background: var(--danger); }
+.dot[data-state="IDLE"] { background: var(--ok); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.rows { display: grid; gap: 6px; }
+.row { display: flex; gap: 10px; min-width: 0; }
+.label { width: 48px; color: var(--muted); flex: none; }
+.value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.footer, .message, .warnings li { overflow-wrap: anywhere; }
+.meter { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-left: 58px; }
+.meterFill { height: 100%; width: 0; background: var(--ok); transition: width 120ms linear; }
+.message { margin: 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); white-space: pre-wrap; word-break: break-word; }
+.actions { display: grid; gap: 6px; }
+button.secondary { background: transparent; border-color: var(--border); color: var(--fg); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background-color 150ms, color 150ms; }
+button.secondary.done { background: color-mix(in srgb, var(--ok) 14%, transparent); border-color: color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok); }
+button.secondary.failed { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); }
+.message.info { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+button { font: inherit; font-weight: 600; padding: 9px 12px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; }
+button.danger { background: var(--danger); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+.footer { color: var(--muted); font-size: 11px; }
+.setup { display: grid; gap: 10px; }
+.setup p { margin: 0; font-size: 13px; line-height: 1.6; }
+.setup .note { color: var(--muted); font-size: 11px; }
+.install { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.installRow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.installRow code { flex: 1; min-width: 0; font-size: 11px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--fg) 8%, transparent); overflow-x: auto; white-space: nowrap; }
+.installRow button { flex: none; padding: 6px 10px; font-size: 12px; }
+.warnings { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.warnings li { padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); font-size: 12px; line-height: 1.4; }
+.sessions h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sessions ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sessions li { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.sessionMain { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; min-width: 0; }
+.sessionMain > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionMeta { color: var(--muted); flex: none; }
+.sessionBtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sessionBtns button { padding: 4px 10px; font-size: 12px; font-weight: 500; background: transparent; border-color: var(--border); color: var(--fg); }
+.sessionBtns button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+.tag { display: inline-flex; align-items: center; font-size: 11px; line-height: 1; padding: 5px 7px; border-radius: 4px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.tag.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }

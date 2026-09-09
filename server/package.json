@@ -1,0 +1,21 @@
+{
+  "name": "@lec-scribe/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "agent:install": "node scripts/agent.mjs install",
+    "agent:uninstall": "node scripts/agent.mjs uninstall",
+    "agent:status": "node scripts/agent.mjs status",
+    "agent:restart": "node scripts/agent.mjs restart",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  }
+}
