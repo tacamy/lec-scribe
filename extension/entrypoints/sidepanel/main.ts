@@ -24,7 +24,8 @@ const elapsed = $('elapsed');
 const dots = $('dots');
 const audioValue = $('audioValue');
 // 録音していないときは中身のない行（Audio / Video / Slides / Tab）を出さない。Server 行だけ常に出す
-const detailRows = [$('audioRow'), $('meter'), $('videoRow'), $('slidesRow'), $('tabRow')];
+const videoRow = $('videoRow');
+const detailRows = [$('audioRow'), $('meter'), videoRow, $('slidesRow'), $('tabRow')];
 const meterFill = $('meterFill');
 const videoValue = $('videoValue');
 const slidesValue = $('slidesValue');
@@ -247,7 +248,9 @@ async function showProbe() {
     if (!tab?.id) return;
     const { probe } = await sendToBackground.probe(tab.id);
     if (isActive(current)) return;
+    // Start 前の確認用に、動画が見つかったときだけ Video 行を出す（見つからなければ警告で伝える）
     videoValue.textContent = describeProbe(probe);
+    videoRow.hidden = !probe.chosen;
     if (!probe.chosen) {
       const codes: WarningCode[] = ['NO_VIDEO'];
       if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
