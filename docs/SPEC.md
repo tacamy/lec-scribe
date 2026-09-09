@@ -262,7 +262,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
 6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「Downloads に書き出す」「破棄」を選べる
-7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したときは `pendingUploads` に積み、前の処理が終わり次第順に送る。処理中・送信待ちのセッションを「破棄」すると `POST /sessions/:id/cancel { delete: true }` で中止・削除し、次の送信待ちを始める
+7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションを「破棄」すると `POST /sessions/:id/cancel { delete: true }` で中止・削除し、次の送信待ちを始める
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。
 

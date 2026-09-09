@@ -330,7 +330,8 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   discardBtn.textContent = '破棄';
   const busy = !!current.exporting || !!current.processing;
   const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
-  uploadBtn.disabled = busy;
+  // 処理中でも「文字起こしする / やり直す」は押せる（送信待ちに並ぶ）。処理中・送信待ちの本人だけ押せない
+  uploadBtn.disabled = !!current.exporting || inFlight;
   exportBtn.disabled = busy;
   // 破棄は処理中でも押せる（処理を中止して消す）。エクスポート中だけ待つ
   discardBtn.disabled = !!current.exporting;

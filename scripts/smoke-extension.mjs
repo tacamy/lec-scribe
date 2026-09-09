@@ -476,21 +476,24 @@ try {
   await off3.goto(`chrome-extension://${extensionId}/offscreen.html`);
   await off3.waitForFunction(() => !!globalThis.__lecscribe);
   const cancelSession = '20990101-000002-smok';
-  await off3.evaluate(async (sessionId) => {
-    const api = globalThis.__lecscribe;
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const dest = ctx.createMediaStreamDestination();
-    osc.connect(dest);
-    osc.start();
-    await ctx.resume();
-    const config = { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } };
-    await api.startFromStream(dest.stream, config, { sessionId, title: 'smoke cancel', startedAt: new Date().toISOString() });
-    await new Promise((r) => setTimeout(r, 900));
-    await api.stop();
-    osc.stop();
-    await ctx.close();
-  }, cancelSession);
+  const queuedSession = '20990101-000003-smok';
+  for (const sessionId of [cancelSession, queuedSession]) {
+    await off3.evaluate(async (sessionId) => {
+      const api = globalThis.__lecscribe;
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const dest = ctx.createMediaStreamDestination();
+      osc.connect(dest);
+      osc.start();
+      await ctx.resume();
+      const config = { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } };
+      await api.startFromStream(dest.stream, config, { sessionId, title: 'smoke cancel', startedAt: new Date().toISOString() });
+      await new Promise((r) => setTimeout(r, 900));
+      await api.stop();
+      osc.stop();
+      await ctx.close();
+    }, sessionId);
+  }
   await off3.close();
   const cancelUpload = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), cancelSession);
   assert.equal(cancelUpload.ok, true, JSON.stringify(cancelUpload));
@@ -507,25 +510,47 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
   assert.ok(reachedTranscribing, `never reached transcribing: ${cancelTrace.join(' → ')}`);
+  // 処理中にもう 1 本「文字起こしする」→ 送信待ちに並ぶ（処理中の分は変わらない）
+  const queuedReply = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), queuedSession);
+  assert.equal(queuedReply.ok, true, JSON.stringify(queuedReply));
+  assert.deepEqual(queuedReply.state.pendingUploads, [queuedSession], JSON.stringify(queuedReply.state));
+  assert.equal(queuedReply.state.processing?.sessionId, cancelSession, JSON.stringify(queuedReply.state));
   const cancelStarted = Date.now();
   const cancelled = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), cancelSession);
   const cancelMs = Date.now() - cancelStarted;
   assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
   assert.ok(cancelMs < 5000, `discard during processing took ${cancelMs} ms (whisperkit stub sleeps 30 s)`);
-  assert.equal(cancelled.state.processing, undefined, JSON.stringify(cancelled.state));
-  assert.notEqual(cancelled.state.state, 'PROCESSING', JSON.stringify(cancelled.state));
   assert.ok(!readdirSync(serverOut).some((d) => d.startsWith(cancelSession)), `server dir still exists: ${readdirSync(serverOut)}`);
+  // 中止で空いたので、送信待ちだった 2 本目が始まる
+  assert.equal(cancelled.state.processing?.sessionId, queuedSession, JSON.stringify(cancelled.state));
+  assert.equal(cancelled.state.pendingUploads, undefined, JSON.stringify(cancelled.state));
+  let queuedTranscribing = false;
+  for (let i = 0; i < 100; i++) {
+    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (s.processing?.sessionId === queuedSession && s.processing.stage === 'transcribing') {
+      queuedTranscribing = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(queuedTranscribing, 'queued session never reached transcribing');
+  const cancelled2 = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), queuedSession);
+  assert.equal(cancelled2.ok, true, JSON.stringify(cancelled2));
+  assert.equal(cancelled2.state.processing, undefined, JSON.stringify(cancelled2.state));
+  assert.notEqual(cancelled2.state.state, 'PROCESSING', JSON.stringify(cancelled2.state));
+  assert.ok(!readdirSync(serverOut).some((d) => d.startsWith(queuedSession)), `server dir still exists: ${readdirSync(serverOut)}`);
   // 遅れて届く polling 結果で処理中に戻らないこと
   await popup.waitForTimeout(2500);
   const afterCancel = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   assert.equal(afterCancel.processing, undefined, JSON.stringify(afterCancel));
+  assert.equal(afterCancel.pendingUploads, undefined, JSON.stringify(afterCancel));
   await popup.reload();
   await popup.waitForSelector('#startBtn');
   await popup.waitForTimeout(300);
   const listedAfterCancel = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
-  assert.ok(!listedAfterCancel.some((t) => t.includes('2099-01-01 00:00:02')), `cancelled session still listed: ${listedAfterCancel}`);
+  assert.ok(!listedAfterCancel.some((t) => t.includes('2099-01-01 00:00:02') || t.includes('2099-01-01 00:00:03')), `cancelled session still listed: ${listedAfterCancel}`);
   rmSync(slowMarker, { force: true });
-  console.log(`cancel: discarded while transcribing in ${cancelMs} ms (${cancelTrace.join(' → ')})`);
+  console.log(`cancel: discarded while transcribing in ${cancelMs} ms, queued session started and was discarded too (${cancelTrace.join(' → ')})`);
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');

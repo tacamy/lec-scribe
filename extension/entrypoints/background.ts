@@ -333,10 +333,17 @@ async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
 async function upload(sessionId: string, pending: string[] = []): Promise<SessionState> {
   const current = await readState();
   if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
-  if (current.processing) throw new LecError('BUSY', '別のセッションを処理中です。終わったら順に送ります。');
   const config = await loadConfig();
   if (!config.server.token) {
     throw new LecError('SERVER_REJECTED', 'ローカルサーバーのトークンが未設定です。設定画面で貼り付けてください。');
+  }
+  // 別のセッションを処理中なら送信待ちに並べる。処理が終わり次第 onProcessStatus が順に送る
+  if (current.processing) {
+    if (current.processing.sessionId === sessionId) throw new LecError('BUSY', 'このセッションは処理中です。');
+    const queue = [...(current.pendingUploads ?? []).filter((id) => id !== sessionId), sessionId, ...pending.filter((id) => id !== sessionId)];
+    const queued: SessionState = { ...current, error: undefined, pendingUploads: [...new Set(queue)] };
+    await writeState(queued);
+    return queued;
   }
   const remaining = pending.filter((id) => id !== sessionId);
 
