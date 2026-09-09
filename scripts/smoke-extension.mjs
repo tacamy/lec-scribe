@@ -14,7 +14,7 @@ const ext = path.resolve('extension/dist/chrome-mv3');
 // Phase 3 以降は fixture ページ（video.js 風 DOM + 合成スライド動画）を使う。
 // 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
 const FIXTURE_PORT = 8791;
-const FIXTURE_VERSION = 2; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
+const FIXTURE_VERSION = 3; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
 const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
 if (!existsSync('fixtures/slides.webm') || fixtureVersion !== String(FIXTURE_VERSION)) {
   console.log('generating fixtures/slides.webm…');
@@ -240,7 +240,8 @@ try {
 
   // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。
   // offscreen.html をタブとして開き、合成ストリームでセッションを始めておく。
-  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0 };
+  // updateThreshold は fixture の「追加の行」が小さいので少し下げる（既定は 1.2%。ワイプの動きだけの 0.5〜0.9% では更新しない値）
+  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0, finalState: true, updateThreshold: 0.01 };
   const frameSession = '20990101-000001-smok';
   const off2 = await context.newPage();
   off2.on('pageerror', (e) => errors.push(String(e)));
@@ -342,6 +343,13 @@ try {
   assert.ok(manual.slide.videoTime > 0, `videoTime ${manual.slide.videoTime}`);
   assert.ok(manual.slide.t >= 0);
 
+  // 最初の検知を明示的に止め、判定履歴（診断用）を受け取る
+  const firstStop = await popup.evaluate(
+    ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId }),
+    target,
+  );
+  assert.equal(firstStop.ok, true, JSON.stringify(firstStop));
+
   // 二重注入しても壊れないこと: もう一度注入 → DETECT_START → DETECT_STOP
   const again = await popup.evaluate(async ({ tabId, frameId, selector, index, slide, detect }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
@@ -385,6 +393,10 @@ try {
   assert.deepEqual([be32(frames.head, 16), be32(frames.head, 20)], expectedSize, 'PNG IHDR size = video size');
   assert.equal(frames.slides.length, 4);
   assert.deepEqual(frames.slides.map((s) => s.reason), ['initial', 'change', 'change', 'manual']);
+  // スライド 2 は表示から 1.8 秒後に 1 行増える → 切り替わる直前の状態で画像が上書きされている
+  assert.equal(frames.slides[1].updated, true, `slide 2 was not updated with its final state: ${JSON.stringify(frames.slides[1])}\nverdicts: ${JSON.stringify(firstStop.verdicts)}`);
+  assert.ok(frames.slides[1].finalVideoTime > frames.slides[1].videoTime, JSON.stringify(frames.slides[1]));
+  assert.notEqual(frames.slides[0].updated, true, `slide 1 should not be updated: ${JSON.stringify(frames.slides[0])}`);
   // 切り替わりの時刻: スライド 2 は 2 秒、3 は 4 秒に出るので、その少し後に保存されている
   assert.ok(frames.slides[1].videoTime > 2 && frames.slides[1].videoTime < 4, `slide 2 at ${frames.slides[1].videoTime}`);
   assert.ok(frames.slides[2].videoTime > 4, `slide 3 at ${frames.slides[2].videoTime}`);

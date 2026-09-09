@@ -1,6 +1,6 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import type { Config } from '../src/config';
-import { ChangeDetector, type Frame, type Verdict } from '../src/detect';
+import { ChangeDetector, diffRatio, type Frame, type Verdict } from '../src/detect';
 import { LecError } from '../src/errors';
 import {
   hasTarget,
@@ -52,13 +52,24 @@ type Session = {
   lastVerdict: Verdict | null;
   /** 直近の判定履歴（診断用。DETECT_STOP の応答で返す） */
   verdicts: VerdictLog[];
+  /** 直近の「静止していた」フレーム。切り替わりを検知したときに、前のスライドの最終状態として使う */
+  stable: { frame: Frame; videoTime: number; t: number; at: number } | null;
+  /** そのフレームのフル解像度（stable と同時に描く） */
+  fullCanvas: HTMLCanvasElement | null;
+  /** 最後に保存（または上書き）したスライド。最終状態との比較に使う */
+  lastSaved: { seq: number; frame: Frame; at: number } | null;
+  finalizing: boolean;
+  /** ページ上のフィードバック表示 */
+  toastHost: HTMLElement | null;
+  toastTimer: number;
   lastTimeline: TimelineEvent | undefined;
   lastFrameAt: number | null;
   taintFree: boolean | null;
   heartbeat: number;
   frameCallback: number | null;
   /** フレーム取得中（同時に 2 枚は撮らない） */
-  grabbing: boolean;
+  /** 保存は 1 枚ずつ順番に行う（サンプリングは止めない） */
+  grabQueue: Promise<unknown>;
   onEvent: (event: Event) => void;
   onVisibility: () => void;
   onInitial: () => void;
@@ -146,12 +157,18 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     tickTimer: 0,
     lastVerdict: null,
     verdicts: [],
+    stable: null,
+    fullCanvas: null,
+    lastSaved: null,
+    finalizing: false,
+    toastHost: null,
+    toastTimer: 0,
     lastTimeline: undefined,
     lastFrameAt: null,
     taintFree: null,
     heartbeat: 0,
     frameCallback: null,
-    grabbing: false,
+    grabQueue: Promise.resolve(),
     onInitial: () => void grabFrame(current, 'initial').catch(() => undefined),
     onEvent: (event) => {
       // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
@@ -207,6 +224,12 @@ async function stopDetection(): Promise<object> {
   if (current.frameCallback !== null && typeof current.video.cancelVideoFrameCallback === 'function') {
     current.video.cancelVideoFrameCallback(current.frameCallback);
   }
+  // 今映っている画面が最後のスライドの最終状態。保存済みと違えば上書きしてから止める
+  if (canSample(current)) {
+    rememberStable(current, grayFrame(current));
+    await finalizePrevious(current).catch(() => undefined);
+  }
+  current.toastHost?.remove();
   // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
   await sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, 'stop')).catch(() => undefined);
   return { verdicts: current.verdicts };
@@ -282,7 +305,7 @@ function grayFrame(current: Session): Frame {
 
 function canSample(current: Session): boolean {
   const { video } = current;
-  if (session !== current || current.grabbing) return false;
+  if (session !== current) return false;
   if (video.readyState < 2 || video.videoWidth === 0) return false;
   if (current.taintFree === null) current.taintFree = checkTaint(video);
   return current.taintFree === true;
@@ -291,16 +314,142 @@ function canSample(current: Session): boolean {
 /** sampleIntervalMs ごとの変化検知（SPEC §9.2）。一時停止中は何もしない */
 function sampleOnce(current: Session): void {
   if (!canSample(current) || current.video.paused || current.video.ended) return;
-  const verdict = current.detector.sample(grayFrame(current), Date.now());
+  const frame = grayFrame(current);
+  const wasWatching = current.lastVerdict === null || current.lastVerdict.state === 'watching';
+  const verdict = current.detector.sample(frame, Date.now());
   current.lastVerdict = verdict;
   logVerdict(current, 'sample', verdict);
+  if (verdict.state === 'stabilizing' && wasWatching) {
+    // 切り替わりを検知した瞬間: 直前まで静止していたフレームが前のスライドの最終状態
+    void finalizePrevious(current).catch(() => undefined);
+  } else if (verdict.state === 'watching' && !verdict.save && verdict.diffPrev < current.detect.changeThreshold) {
+    // 切り替わりではない小さな変化（ワイプの動き、文字が 1 行増えた）も含めて「同じスライドの最新の画面」として持つ
+    rememberStable(current, frame);
+  }
   if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
 }
 
-type VerdictLog = { kind: 'sample' | 'flush'; t: number; videoTime: number; state: Verdict['state']; save: boolean; diffPrev: number; diffSaved?: number };
+/** 静止しているフレームをフル解像度で取っておく（切り替わりのときに前のスライドの最終状態として使う） */
+function rememberStable(current: Session, frame: Frame): void {
+  if (!current.slide.finalState) return;
+  const { video, slide } = current;
+  const scale = slide.maxSlideWidth > 0 && video.videoWidth > slide.maxSlideWidth ? slide.maxSlideWidth / video.videoWidth : 1;
+  const width = Math.round(video.videoWidth * scale);
+  const height = Math.round(video.videoHeight * scale);
+  if (width === 0 || height === 0) return;
+  current.fullCanvas ??= document.createElement('canvas');
+  const canvas = current.fullCanvas;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.drawImage(video, 0, 0, width, height);
+  const now = Date.now();
+  current.stable = { frame, videoTime: video.currentTime, t: (now - current.recorderStartEpochMs) / 1000, at: now };
+  logVerdict(current, 'stable', { save: false, state: 'watching', diffPrev: 0 }, `${width}x${height}`);
+}
+
+/**
+ * 前のスライドの最終状態（切り替わる直前に静止していたフレーム）が保存済みの画像と違えば、
+ * その画像を上書きする。文字が 1 行ずつ出るスライドで、全部出た状態を残すため（SPEC §9.2）
+ */
+async function finalizePrevious(current: Session): Promise<void> {
+  const { stable, lastSaved, fullCanvas } = current;
+  const note = (why: string) => logVerdict(current, 'final', { save: false, state: 'watching', diffPrev: 0 }, why);
+  if (!current.slide.finalState) return;
+  if (!stable || !lastSaved || !fullCanvas || current.finalizing) {
+    note(`skip stable=${!!stable} saved=${!!lastSaved} canvas=${!!fullCanvas} finalizing=${current.finalizing}`);
+    return;
+  }
+  if (stable.at <= lastSaved.at) {
+    note(`skip older stable=${stable.at} saved=${lastSaved.at}`);
+    return; // 保存より前のフレームなら、保存した画像のほうが新しい
+  }
+  const diff = diffRatio(stable.frame, lastSaved.frame, current.detect.pixelDiffThreshold);
+  if (diff < current.slide.updateThreshold) {
+    note(`skip diff=${diff.toFixed(4)} < ${current.slide.updateThreshold}`);
+    return;
+  }
+  note(`update seq=${lastSaved.seq} diff=${diff.toFixed(4)}`);
+  current.finalizing = true;
+  try {
+    const mime = current.slide.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+    // toBlob はこの時点の内容を写す。以後 rememberStable が描き直しても影響しない
+    const blob = await new Promise<Blob | null>((resolve) => fullCanvas.toBlob(resolve, mime, current.slide.jpegQuality));
+    if (!blob) return;
+    const thumb = thumbnailOf(fullCanvas);
+    const saved = await sendToOffscreen.slideUpdate({
+      sessionId: current.sessionId,
+      seq: lastSaved.seq,
+      videoTime: stable.videoTime,
+      t: stable.t,
+      mime,
+      dataBase64: await blobToBase64(blob),
+    });
+    current.detector.replaceSaved(stable.frame);
+    current.lastSaved = { seq: saved.seq, frame: stable.frame, at: stable.at };
+    current.stable = null;
+    showToast(current, `スライド ${saved.seq} を最終状態で更新`, thumb);
+  } finally {
+    current.finalizing = false;
+  }
+}
+
+// ---- ページ上のフィードバック（SPEC §15.3）: 保存した瞬間にサムネイルと一言を動画の右下に出す
+
+const TOAST_MS = 2500;
+
+function thumbnailOf(source: CanvasImageSource): string {
+  const c = document.createElement('canvas');
+  c.width = 160;
+  c.height = 90;
+  c.getContext('2d')?.drawImage(source, 0, 0, 160, 90);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+function showToast(current: Session, text: string, thumbnail: string): void {
+  if (session !== current) return;
+  const parent = document.fullscreenElement ?? document.body;
+  if (!current.toastHost) {
+    const host = document.createElement('div');
+    host.setAttribute('data-lecscribe', 'toast');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `
+      <style>
+        :host { all: initial; position: fixed; z-index: 2147483647; pointer-events: none; }
+        .box { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 8px; border-radius: 10px;
+               background: rgba(20, 20, 22, 0.88); color: #fff; font: 600 13px/1.3 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+               box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
+        .box.show { opacity: 1; transform: translateY(0); }
+        img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #000; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #34c759; flex: none; }
+      </style>
+      <div class="box"><img alt="" /><span class="dot"></span><span class="text"></span></div>`;
+    current.toastHost = host;
+  }
+  const host = current.toastHost;
+  if (host.parentElement !== parent) parent.appendChild(host);
+  const rect = current.video.getBoundingClientRect();
+  host.style.left = `${Math.max(8, Math.round(rect.right - 8 - 260))}px`;
+  host.style.top = `${Math.max(8, Math.round(rect.bottom - 8 - 70))}px`;
+  const root = host.shadowRoot!;
+  (root.querySelector('img') as HTMLImageElement).src = thumbnail;
+  (root.querySelector('.text') as HTMLElement).textContent = text;
+  const box = root.querySelector('.box') as HTMLElement;
+  window.clearTimeout(current.toastTimer);
+  box.classList.remove('show');
+  // 連続で出したときも一度消えてから出るよう、次のフレームで表示する
+  requestAnimationFrame(() => box.classList.add('show'));
+  current.toastTimer = window.setTimeout(() => box.classList.remove('show'), TOAST_MS);
+}
+
+type VerdictLog = { kind: 'sample' | 'flush' | 'stable' | 'final'; t: number; videoTime: number; state: Verdict['state']; save: boolean; diffPrev: number; diffSaved?: number; note?: string };
 const VERDICT_LOG_MAX = 120;
-function logVerdict(current: Session, kind: VerdictLog['kind'], v: Verdict): void {
+function logVerdict(current: Session, kind: VerdictLog['kind'], v: Verdict, note?: string): void {
   current.verdicts.push({
+    ...(note ? { note } : {}),
     kind,
     t: Math.round((Date.now() - current.recorderStartEpochMs)) / 1000,
     videoTime: Math.round(current.video.currentTime * 1000) / 1000,
@@ -315,9 +464,16 @@ function logVerdict(current: Session, kind: VerdictLog['kind'], v: Verdict): voi
 /** 一時停止・終了の瞬間に安定待ちを打ち切る */
 function flushDetection(current: Session): void {
   if (!canSample(current)) return;
-  const verdict = current.detector.flush(grayFrame(current), Date.now());
+  const frame = grayFrame(current);
+  const wasWatching = current.lastVerdict === null || current.lastVerdict.state === 'watching';
+  const verdict = current.detector.flush(frame, Date.now());
   current.lastVerdict = verdict;
   logVerdict(current, 'flush', verdict);
+  if (wasWatching && !verdict.save) {
+    // 止まった画面がそのスライドの最終状態。保存済みと違えば上書きする
+    rememberStable(current, frame);
+  }
+  void finalizePrevious(current).catch(() => undefined);
   if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
 }
 
@@ -332,9 +488,17 @@ async function grabFrame(current: Session, reason: SlideReason): Promise<Capture
   if (current.taintFree === false) {
     throw new LecError('CAPTURE_FAILED', 'この動画は canvas に描けないため画像を取得できません（cross-origin）。');
   }
-  if (current.grabbing) throw new LecError('BUSY', '前の画像の保存が終わっていません。');
-  current.grabbing = true;
-  try {
+  // 前の保存（エンコードと送信）が終わるまで待ってから撮る。待っている間もサンプリングは続く。
+  // 保存に時間がかかる環境で、次のサンプルが飛んで切り替わりや最終状態を見逃さないため
+  const task = current.grabQueue.catch(() => undefined).then(() => grabFrameNow(current, reason));
+  current.grabQueue = task;
+  return task;
+}
+
+async function grabFrameNow(current: Session, reason: SlideReason): Promise<CaptureFrameResult> {
+  const { video, slide } = current;
+  if (session !== current) throw new LecError('NOT_CAPTURING', '動画を追跡していません。');
+  {
     const scale = slide.maxSlideWidth > 0 && video.videoWidth > slide.maxSlideWidth ? slide.maxSlideWidth / video.videoWidth : 1;
     const width = Math.round(video.videoWidth * scale);
     const height = Math.round(video.videoHeight * scale);
@@ -382,9 +546,11 @@ async function grabFrame(current: Session, reason: SlideReason): Promise<Capture
     };
     // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
     current.detector.markSaved(savedFrame, capturedAt.getTime());
+    current.lastSaved = { seq: saved.seq, frame: savedFrame, at: capturedAt.getTime() };
+    // 保存中に取れた、より新しい静止フレームは残す（最終状態の上書きに使う）
+    if (current.stable && current.stable.at <= capturedAt.getTime()) current.stable = null;
+    showToast(current, reason === 'manual' ? `スライド ${saved.seq} を手動で保存` : `スライド ${saved.seq} を保存`, thumbnailOf(canvas));
     return { slide: meta };
-  } finally {
-    current.grabbing = false;
   }
 }
 

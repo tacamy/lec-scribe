@@ -88,6 +88,11 @@ export class ChangeDetector {
     return this.decide(frame, now, diffPrev);
   }
 
+  /** 保存済みの画像を最終状態で上書きしたとき、重複判定の基準だけ差し替える（保存間隔や状態は触らない） */
+  replaceSaved(frame: Frame): void {
+    this.lastSaved = frame;
+  }
+
   /** フル解像度の保存に成功したら呼ぶ（手動保存や開始時の 1 枚も含む） */
   markSaved(frame: Frame, now: number): void {
     this.lastSaved = frame;

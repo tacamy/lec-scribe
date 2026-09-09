@@ -18,7 +18,7 @@ const out = path.join(here, 'slides.webm');
 const raw = path.join(here, 'slides.raw.webm');
 
 /** 描画内容を変えたら上げる。スモークテストは古い世代の動画を作り直す */
-export const FIXTURE_VERSION = 2;
+export const FIXTURE_VERSION = 3;
 
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
@@ -65,6 +65,10 @@ const base64 = await page.evaluate(async ({ slides, seconds, width, height, cloc
     for (let line = 0; line < 5; line++) {
       const y = height * (0.28 + line * 0.11);
       ctx.fillText(`• 項目 ${line + 1}: スライド ${i + 1} の本文テキスト（${'あいうえお'.repeat(1 + ((i + line) % 3))}）`, width * 0.36, y);
+    }
+    // スライド 2 は表示から 1.8 秒後に 1 行増える（文字が後から出るスライドの代わり。最終状態の上書きを確かめる）
+    if (i === 1 && t - i * seconds * 1000 >= 1800) {
+      ctx.fillText('• 追加の行（あとから表示）', width * 0.36, height * 0.83);
     }
     // Wipe: a small box whose contents move every frame.
     const bw = width * 0.18;

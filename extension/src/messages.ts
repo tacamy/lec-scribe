@@ -81,6 +81,8 @@ export type ToOffscreen =
       dataBase64: string;
       reason: SlideReason;
     }
+  /** 保存済みのスライド画像を、切り替わる直前の状態で上書きする（SPEC §9.2） */
+  | { target: 'offscreen'; type: 'SLIDE_UPDATE'; sessionId: string; seq: number; videoTime: number; t: number; mime: string; dataBase64: string }
   /** 検知用 content script からの再生イベント（SPEC §10）。offscreen が timeline.json に書く */
   | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent }
   /** OPFS のセッションをサーバーへ送り、finalize まで行う。以後は status を polling して PROCESS_STATUS を送る */
@@ -207,6 +209,8 @@ export const sendToOffscreen = {
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
   slide: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE' }>, 'target' | 'type'>) =>
     send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE', ...params }),
+  slideUpdate: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE_UPDATE' }>, 'target' | 'type'>) =>
+    send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE_UPDATE', ...params }),
   timelineEvent: (sessionId: string, event: TimelineEvent) =>
     send<object>({ target: 'offscreen', type: 'TIMELINE_EVENT', sessionId, event }),
   upload: (sessionId: string, server: ServerTarget) =>

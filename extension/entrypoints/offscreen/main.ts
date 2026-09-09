@@ -120,6 +120,8 @@ type Capture = {
   writer: AudioFileWriter;
   dir: FileSystemDirectoryHandle;
   slidesDir: FileSystemDirectoryHandle | null;
+  /** slides.json の書き込みを直列にする（保存と上書きが重なるため） */
+  slidesWrite: Promise<void>;
   slides: SlideMeta[];
   timeline: TimelineEvent[];
   /** timeline.json の書き込みを直列にする（古い内容で上書きしないため） */
@@ -151,6 +153,8 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return discardSession(msg.sessionId);
     case 'SLIDE':
       return saveSlide(msg);
+    case 'SLIDE_UPDATE':
+      return updateSlide(msg);
     case 'TIMELINE_EVENT':
       return recordTimelineEvent(msg.sessionId, msg.event);
     case 'UPLOAD':
@@ -425,6 +429,7 @@ async function startFromStream(stream: MediaStream, config: Config, meta: Sessio
     dir,
     slidesDir: null,
     slides: [],
+    slidesWrite: Promise.resolve(),
     timeline: [],
     timelineWrite: Promise.resolve(),
     stopping: false,
@@ -599,11 +604,43 @@ async function saveSlide(msg: Extract<ToOffscreen, { type: 'SLIDE' }>): Promise<
       reason: msg.reason,
       bytes: bytes.size,
     });
-    await writeJson(current.dir, SLIDES_FILE, current.slides);
+    await writeSlidesJson(current);
   } catch (e) {
     throw new LecError('STORAGE_FAILED', `スライド画像を保存できません: ${toErrorInfo(e).message}`);
   }
   return { seq, filename, bytes: bytes.size };
+}
+
+function writeSlidesJson(current: Capture): Promise<void> {
+  const snapshot = current.slides.map((s) => ({ ...s }));
+  current.slidesWrite = current.slidesWrite.catch(() => undefined).then(() => writeJson(current.dir, SLIDES_FILE, snapshot));
+  return current.slidesWrite;
+}
+
+/** 保存済みのスライド画像を、切り替わる直前の状態で上書きする（SPEC §9.2） */
+async function updateSlide(msg: Extract<ToOffscreen, { type: 'SLIDE_UPDATE' }>): Promise<SlideSaveResult> {
+  const current = capture;
+  if (!current || current.sessionId !== msg.sessionId) {
+    throw new LecError('NOT_CAPTURING', 'このセッションはキャプチャ中ではありません。');
+  }
+  const meta = current.slides.find((s) => s.seq === msg.seq);
+  if (!meta) throw new LecError('NO_SESSION', `スライド ${msg.seq} がありません。`);
+  const bytes = await (await fetch(`data:${msg.mime};base64,${msg.dataBase64}`)).blob();
+  try {
+    current.slidesDir ??= await current.dir.getDirectoryHandle(SLIDES_DIR, { create: true });
+    const file = await current.slidesDir.getFileHandle(meta.filename, { create: true });
+    const writable = await file.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+    meta.bytes = bytes.size;
+    meta.updated = true;
+    meta.finalVideoTime = msg.videoTime;
+    meta.finalT = msg.t;
+    await writeSlidesJson(current);
+  } catch (e) {
+    throw new LecError('STORAGE_FAILED', `スライド画像を上書きできません: ${toErrorInfo(e).message}`);
+  }
+  return { seq: meta.seq, filename: meta.filename, bytes: bytes.size };
 }
 
 /** Creates blob: URLs for the session files; the worker downloads them (SPEC §11.2). */

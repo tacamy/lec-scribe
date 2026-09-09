@@ -25,6 +25,12 @@ export type Config = {
     jpegQuality: number;
     /** 保存画像の幅の上限。0 なら動画のネイティブ解像度のまま */
     maxSlideWidth: number;
+    /**
+     * スライドが切り替わる直前の状態（文字が 1 行ずつ出るスライドなら全部出た状態）で画像を上書きする。
+     * 保存した画像との差が updateThreshold 以上のときだけ
+     */
+    finalState: boolean;
+    updateThreshold: number;
   };
   /** 画面変化の検知パラメータ（SPEC §9.1） */
   detect: {
@@ -67,6 +73,9 @@ export const DEFAULT_CONFIG: Config = {
     imageFormat: 'png',
     jpegQuality: 0.9,
     maxSlideWidth: 0,
+    finalState: true,
+    // 講師ワイプの動きだけで 0.4〜0.9% 変わるので、それより上
+    updateThreshold: 0.012,
   },
   // 閾値は fixture の実測から決めた（SPEC §9.3）:
   // 本文テキストだけが変わるスライドで約 3.2%、講師ワイプの動きで 0.4〜0.9%。
