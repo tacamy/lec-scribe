@@ -45,7 +45,9 @@ describe('buildLectureMarkdown', () => {
     expect(md).not.toContain('## 00:');
     expect(md).toContain('---\n\n![slide_001](slides/slide_001.png)\n\n一枚目の話。');
     expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n二枚目の話。');
-    expect(md).toContain('---\n\n![slide_003](slides/slide_003.png)\n\n（このスライドの間の発話はありません）');
+    // 発話のないスライドは画像だけ（注記なし）
+    expect(md).toContain('---\n\n![slide_003](slides/slide_003.png)\n');
+    expect(md).not.toContain('発話はありません');
   });
 
   it('works without slides and without text', () => {

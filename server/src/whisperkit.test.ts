@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
+import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
 describe('normalizeReport', () => {
   it('reads { segments } and strips special tokens', () => {
@@ -57,5 +57,34 @@ describe('whisperkitArgs', () => {
     expect(args).toContain('--report');
     expect(args[args.indexOf('--report-path') + 1]).toBe('/r');
     expect(args[args.indexOf('--language') + 1]).toBe('ja');
+  });
+});
+
+describe('dropWindowArtifacts', () => {
+  it('drops 30-second window segments that overlap real speech, and long stock phrases', () => {
+    // 実例（1章）: 59.6〜89.6 の決まり文句が 61〜86 秒の本物の発話と重なっていた
+    const segments = [
+      { start: 55.6, end: 59.6, text: 'この羽を外してみると、' },
+      { start: 59.6, end: 89.58, text: 'ご視聴ありがとうございました' },
+      { start: 61.3, end: 66.8, text: 'ここに見えているのがねじればねの頭になります' },
+      { start: 68.3, end: 75.8, text: 'このように体の中にねじればねの本体が寄生しています' },
+      { start: 75.8, end: 105.78, text: 'ご視聴ありがとうございました' },
+      { start: 77.4, end: 86.4, text: '寄生とは、生物が他の生物についたりして、そこから栄養を取ることです' },
+      { start: 300, end: 330, text: 'ここからは長い説明が続きますが本物の発話で、重なる区間はありません' },
+      { start: 400, end: 402, text: 'ご視聴ありがとうございました' },
+    ];
+    const { kept, dropped } = dropWindowArtifacts(segments);
+    expect(dropped.map((s) => s.start)).toEqual([59.6, 75.8]);
+    // 重なりのない長い区間と、短い決まり文句（本当に言った締めの言葉）は残す
+    expect(kept.map((s) => s.start)).toEqual([55.6, 61.3, 68.3, 77.4, 300, 400]);
+  });
+
+  it('drops a long stock phrase even without overlap', () => {
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 0, end: 4, text: 'こんにちは' },
+      { start: 10, end: 40, text: 'ご視聴ありがとうございました。' },
+    ]);
+    expect(dropped).toHaveLength(1);
+    expect(kept).toHaveLength(1);
   });
 });

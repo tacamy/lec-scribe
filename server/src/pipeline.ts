@@ -7,7 +7,7 @@ import { NOTES_FILE, migrateLayout, workPath } from './layout.ts';
 import { createBackend, outline, polish } from './llm.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment } from './merge.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
-import { normalizeReport, whisperkitArgs } from './whisperkit.ts';
+import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
 /** pipeline.json の内容。拡張が GET /sessions/:id/status で読む */
 export type PipelineStatus = {
@@ -140,6 +140,13 @@ export class Pipeline {
     return true;
   }
 
+  /** 窓の重複や決まり文句だけの区間（Whisper の幻覚）を落とし、落としたものをログに残す */
+  private cleanSegments(segments: Segment[]): Segment[] {
+    const { kept, dropped } = dropWindowArtifacts(segments);
+    for (const d of dropped) this.log(`dropped artifact segment ${d.start.toFixed(1)}-${d.end.toFixed(1)}: ${d.text.slice(0, 40)}`);
+    return kept;
+  }
+
   /** audio.webm → wav → whisperkit-cli。report の区間を返す */
   private async transcribe(
     dir: string,
@@ -180,7 +187,7 @@ export class Pipeline {
         }
         const report = await findReport(reportDir);
         if (!report) throw new Error(`whisperkit-cli produced no JSON report in ${reportDir}`);
-        const parsed = normalizeReport(JSON.parse(await readFile(report, 'utf8')));
+        const parsed = this.cleanSegments(normalizeReport(JSON.parse(await readFile(report, 'utf8'))));
         if (parsed.length === 0) throw new Error(`no segments in ${report}`);
         return parsed;
       });
@@ -230,7 +237,7 @@ export class Pipeline {
       const segments = previousReport
         ? await (async () => {
             this.log(`transcript を再利用: ${previousReport}`);
-            const parsed = normalizeReport(JSON.parse(await readFile(previousReport, 'utf8')));
+            const parsed = this.cleanSegments(normalizeReport(JSON.parse(await readFile(previousReport, 'utf8'))));
             if (parsed.length === 0) throw new Error(`no segments in ${previousReport}`);
             return parsed;
           })()

@@ -391,7 +391,7 @@ async function finalizePrevious(current: Session): Promise<void> {
     current.detector.replaceSaved(stable.frame);
     current.lastSaved = { seq: saved.seq, frame: stable.frame, at: stable.at };
     current.stable = null;
-    showToast(current, `スライド ${saved.seq} を最終状態で更新`, thumb);
+    showToast(current, thumb);
   } finally {
     current.finalizing = false;
   }
@@ -409,7 +409,7 @@ function thumbnailOf(source: CanvasImageSource): string {
   return c.toDataURL('image/jpeg', 0.7);
 }
 
-function showToast(current: Session, text: string, thumbnail: string): void {
+function showToast(current: Session, thumbnail: string): void {
   if (session !== current) return;
   const parent = document.fullscreenElement ?? document.body;
   if (!current.toastHost) {
@@ -419,24 +419,22 @@ function showToast(current: Session, text: string, thumbnail: string): void {
     root.innerHTML = `
       <style>
         :host { all: initial; position: fixed; z-index: 2147483647; pointer-events: none; }
-        .box { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 8px; border-radius: 10px;
-               background: rgba(20, 20, 22, 0.88); color: #fff; font: 600 13px/1.3 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+        /* サムネイルだけ。文字も色分けも出さない（動画の領域を取るため） */
+        .box { padding: 3px; border-radius: 8px; background: rgba(0, 0, 0, 0.4);
                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
         .box.show { opacity: 1; transform: translateY(0); }
-        img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #000; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; background: #34c759; flex: none; }
+        img { display: block; width: 112px; height: 63px; object-fit: cover; border-radius: 5px; background: #000; }
       </style>
-      <div class="box"><img alt="" /><span class="dot"></span><span class="text"></span></div>`;
+      <div class="box"><img alt="" /></div>`;
     current.toastHost = host;
   }
   const host = current.toastHost;
   if (host.parentElement !== parent) parent.appendChild(host);
   const rect = current.video.getBoundingClientRect();
-  host.style.left = `${Math.max(8, Math.round(rect.right - 8 - 260))}px`;
-  host.style.top = `${Math.max(8, Math.round(rect.bottom - 8 - 70))}px`;
+  host.style.left = `${Math.max(8, Math.round(rect.right - 8 - 118))}px`;
+  host.style.top = `${Math.max(8, Math.round(rect.bottom - 8 - 69))}px`;
   const root = host.shadowRoot!;
   (root.querySelector('img') as HTMLImageElement).src = thumbnail;
-  (root.querySelector('.text') as HTMLElement).textContent = text;
   const box = root.querySelector('.box') as HTMLElement;
   window.clearTimeout(current.toastTimer);
   box.classList.remove('show');
@@ -549,7 +547,7 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
     current.lastSaved = { seq: saved.seq, frame: savedFrame, at: capturedAt.getTime() };
     // 保存中に取れた、より新しい静止フレームは残す（最終状態の上書きに使う）
     if (current.stable && current.stable.at <= capturedAt.getTime()) current.stable = null;
-    showToast(current, reason === 'manual' ? `スライド ${saved.seq} を手動で保存` : `スライド ${saved.seq} を保存`, thumbnailOf(canvas));
+    showToast(current, thumbnailOf(canvas));
     return { slide: meta };
   }
 }

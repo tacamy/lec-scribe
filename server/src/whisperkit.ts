@@ -62,6 +62,48 @@ export function normalizeReport(raw: unknown): Segment[] {
   return segments.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * Whisper が無音や区切りの悪い窓で出す決まり文句（学習データの動画の締めの言葉）。
+ * 本物の発話でも言い得るので、これだけでは落とさず、窓いっぱい（15 秒以上）の区間のときだけ落とす
+ */
+const KNOWN_HALLUCINATIONS = new Set(
+  ['ご視聴ありがとうございました', 'ご視聴ありがとうございます', 'チャンネル登録お願いします', 'チャンネル登録をお願いします', '最後までご視聴ありがとうございました', 'おやすみなさい'].map(
+    (s) => s.replace(/[\s。、.,!！?？]/g, ''),
+  ),
+);
+
+/** 30 秒の窓いっぱいの区間とみなす長さ */
+const WINDOW_ARTIFACT_SEC = 20;
+/** 他の区間と重なる合計がこれ以上なら「窓の重複」= 実在しない区間 */
+const OVERLAP_ARTIFACT_SEC = 5;
+
+/**
+ * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
+ * （実例: 59.6〜89.6 秒の「ご視聴ありがとうございました」が 61〜86 秒の発話と重なる）。
+ * 1 本の音声で区間が重なることはないので、長い区間が他の区間と大きく重なっていれば捨てる。
+ * 決まり文句だけの長い区間も捨てる。
+ */
+export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segment[]; dropped: Segment[] } {
+  const kept: Segment[] = [];
+  const dropped: Segment[] = [];
+  for (const s of segments) {
+    const duration = s.end - s.start;
+    let reason: string | null = null;
+    if (duration >= 15 && KNOWN_HALLUCINATIONS.has(s.text.replace(/[\s。、.,!！?？]/g, ''))) {
+      reason = 'phrase';
+    } else if (duration >= WINDOW_ARTIFACT_SEC) {
+      let overlap = 0;
+      for (const o of segments) {
+        if (o === s) continue;
+        overlap += Math.max(0, Math.min(s.end, o.end) - Math.max(s.start, o.start));
+      }
+      if (overlap >= OVERLAP_ARTIFACT_SEC) reason = 'overlap';
+    }
+    (reason ? dropped : kept).push(s);
+  }
+  return { kept, dropped };
+}
+
 function numberOf(value: unknown): number | null {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(n) ? n : null;
