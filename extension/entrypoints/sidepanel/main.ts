@@ -137,6 +137,7 @@ function render(state: SessionState) {
 
   videoValue.textContent = active ? describeVideo(state) : '—';
   serverValue.textContent = describeServer(state);
+  syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
 
   if (state.state === 'CAPTURING') {
@@ -172,6 +173,21 @@ function render(state: SessionState) {
 }
 
 let sessionsKey = '';
+
+// 処理中の経過時間は状態が変わらなくても進めたいので、1 秒ごとに Server 行だけ描き直す
+let processingTimer: number | undefined;
+function syncProcessingClock(state: SessionState) {
+  if (state.processing) {
+    if (processingTimer === undefined) {
+      processingTimer = window.setInterval(() => {
+        serverValue.textContent = describeServer(current);
+      }, 1000);
+    }
+  } else if (processingTimer !== undefined) {
+    window.clearInterval(processingTimer);
+    processingTimer = undefined;
+  }
+}
 
 function describeServer(state: SessionState): string {
   const p = state.processing;
