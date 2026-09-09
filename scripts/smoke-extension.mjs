@@ -307,6 +307,7 @@ try {
       return { duration: v.duration, currentTime: v.currentTime, ended: v.ended, readyState: v.readyState, size: [v.videoWidth, v.videoHeight] };
     });
     const saved = await off2.evaluate(async (sessionId) => {
+      await globalThis.__lecscribe.stop(); // キャプチャ中は export できないので止めてから読む（この後 fail する）
       const { files } = await globalThis.__lecscribe.export(sessionId);
       const read = async (suffix) => {
         const f = files.find((x) => x.filename.endsWith(suffix));
