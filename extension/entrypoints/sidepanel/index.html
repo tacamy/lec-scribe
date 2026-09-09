@@ -15,11 +15,12 @@
       <!-- サーバー未接続のときはこれだけを出す（接続しないと文字起こしできないため） -->
       <section class="setup" id="setup" hidden>
         <p>
-          録音した音声を Mac 上のサーバーで文字起こしして、スライドと並べたノートを作ります。
-          まず Mac とつなぎます。サーバーが起動している状態で下のボタンを押し、Mac に出る確認ダイアログで「許可」を押してください。
+          録音した音声を Mac の中で文字起こしして、スライドと並べたノートを作ります（音声も画像も Mac の外には出ません）。
+          最初に 1 回だけ、Mac との接続を許可してください。
         </p>
+        <p class="note" id="setupStatus">Mac 側を確認しています…</p>
         <button id="pairBtn" class="primary" type="button">このMacと接続</button>
-        <p class="note">このポップアップはダイアログが出ると閉じますが、承認はそのまま続きます。「許可」のあと、もう一度アイコンを押すと Start できます。</p>
+        <p class="note">押すと Mac に確認画面が出るので「許可」を押してください。この画面は閉じてかまいません。そのあと、もう一度アイコンを押すと Start できます。</p>
       </section>
 
       <section class="status" id="status">

@@ -39,6 +39,7 @@ const snapBtn = $<HTMLButtonElement>('snapBtn');
 const openBtn = $<HTMLButtonElement>('openBtn');
 const pairBtn = $<HTMLButtonElement>('pairBtn');
 const setupSection = $('setup');
+const setupStatus = $('setupStatus');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
@@ -92,6 +93,27 @@ async function refreshConfig() {
   serverConfigured = serverEnabled(config);
 }
 
+/** 未接続画面で、Mac 側にサーバーがいるかを先に見せる（いなければ接続ボタンを押しても意味がないため） */
+let presenceChecked = false;
+async function checkServerPresence() {
+  if (presenceChecked) return;
+  presenceChecked = true;
+  try {
+    const res = await fetch(`http://127.0.0.1:${serverTarget.port}/health`, { signal: AbortSignal.timeout(2000) });
+    const body = (await res.json()) as { version?: string; whisperkit?: boolean; ffmpeg?: boolean };
+    const missing = [!body.whisperkit && 'whisperkit-cli', !body.ffmpeg && 'ffmpeg'].filter(Boolean);
+    setupStatus.textContent =
+      missing.length > 0
+        ? `Mac 側の LecScribe サーバーは動いていますが、${missing.join(' と ')} が見つかりません。ターミナルで brew install whisperkit-cli ffmpeg を実行してください。`
+        : `Mac 側の LecScribe サーバーが見つかりました（v${body.version ?? '?'}）。`;
+    pairBtn.disabled = false;
+  } catch {
+    setupStatus.textContent =
+      'Mac 側の LecScribe サーバーが見つかりません。まだ入れていなければ README の「サーバーの常駐化」の手順で登録してください。登録済みなら少し待ってから、もう一度アイコンを押してください。';
+    pairBtn.disabled = true;
+  }
+}
+
 /** サーバーに頼んで出力フォルダ（または lecture.md）を Finder / 既定のアプリで開く */
 async function openOutput(sessionId: string, target: 'folder' | 'lecture', fallbackPath?: string) {
   try {
@@ -136,6 +158,7 @@ function render(state: SessionState) {
   if (setupMode) {
     message.hidden = true;
     warningsList.hidden = true;
+    void checkServerPresence();
   }
 
   if (state.error) {
