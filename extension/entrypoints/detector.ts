@@ -345,6 +345,11 @@ async function grabFrame(current: Session, reason: SlideReason): Promise<Capture
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new LecError('CAPTURE_FAILED', 'canvas を作成できません。');
     ctx.drawImage(video, 0, 0, width, height);
+    // 重複判定の基準にする縮小フレームは、フル解像度を描いたこの瞬間に取る。
+    // エンコードと送信を待ってから取ると、その間に次のスライドへ進んでいた場合に
+    // 「保存した画像 = 次のスライド」と誤認して、次の切り替わりを重複として捨ててしまう
+    //（CI の遅いマシンで再現。保存に 1 秒かかると 4 秒目の切り替わりを見逃した）
+    const savedFrame = grayFrame(current);
 
     const mime = slide.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, slide.jpegQuality));
@@ -374,7 +379,7 @@ async function grabFrame(current: Session, reason: SlideReason): Promise<Capture
       bytes: saved.bytes,
     };
     // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
-    current.detector.markSaved(grayFrame(current), Date.now());
+    current.detector.markSaved(savedFrame, capturedAt.getTime());
     return { slide: meta };
   } finally {
     current.grabbing = false;
