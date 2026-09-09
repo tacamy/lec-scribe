@@ -4,7 +4,7 @@
 
 ## 正とする文書
 
-- `docs/SPEC.md` — 仕様（設計判断 D-xx、未決事項 Q-xx、Phase 0〜8 と完了条件）。設計を変えたらここを更新する
+- `docs/SPEC.md` — 仕様（設計判断 D-xx、未決事項 Q-xx、Phase 0〜9 と完了条件）。設計を変えたらここを更新する
 - `docs/CHECKS.md` — Phase ごとの Mac 実機での確認手順と記録。Phase を実装したら手順を追記し、結果を記録する
 - `README.md` の「状態」表 — Phase の進捗
 
@@ -31,7 +31,7 @@ pnpm fixtures:make && pnpm fixtures:serve  # http://127.0.0.1:8787/player.html
 - permission は必要になった Phase で追加する。`<all_urls>` は要求しない
 - 拡張の状態の正本は `chrome.storage.session` と offscreen document。service worker はいつ止まってもよい前提で書く
 - service worker の状態更新は `serialized()` を通す（並行イベントで書き戻しが競合するため）
-- 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。「破棄」は OPFS の分だけ消す
+- 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。「破棄」は OPFS の分だけ消す（例外: 文字起こし中・送信待ちのセッションは処理を中止してサーバー側のフォルダも消す。成果物になる前なので）
 - コミットは英語、ドキュメントと UI 文言は日本語。コードコメントも日本語（Phase 2 以前の英語コメントは触ったときに直す）
 - コード変更後は `pnpm lint`（oxlint）と `pnpm typecheck` を通す
 - `scripts/smoke-extension.mjs` は fixture サーバーを自前で立てる（`fixtures/slides.webm` がなければ生成する）

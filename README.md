@@ -37,7 +37,7 @@ pnpm fixtures:serve              # http://127.0.0.1:8787/player.html
 pnpm --filter @lec-scribe/server start   # ローカルサーバー。初回起動時にトークンを表示するので拡張の設定に貼る
 ```
 
-ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
+ツールバーのアイコンのポップアップから Start すると、サイドパネルが開いて録音中の状態を表示します。Stop すると自動でサーバーに送って文字起こしが始まります。処理中に次の動画の録音を始めてもよく、Stop 後は送信待ちに並びます。処理中のセッションを一覧の「破棄」で消すと処理も中止されます。Chrome への読み込み方と各 Phase の確認項目は [docs/CHECKS.md](docs/CHECKS.md) を参照。
 
 ### 出力フォルダ
 
@@ -69,7 +69,7 @@ pnpm --filter @lec-scribe/server agent:uninstall  # 解除
 
 ログは `~/Library/Logs/lec-scribe/server.log`。登録時の `node` のパスと `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を書き込むので、Node を入れ替えたときは `agent:install` をやり直してください。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めてから登録します。
 
-起動には `~/Applications/LecScribe Server.app`（中身は Node を呼ぶだけのスクリプト）を経由します。これは macOS の「ログイン項目と機能拡張」に「LecScribe Server」という名前で表示させるためで、直接 `node` を登録すると署名者の「Node.js Foundation」と表示されてしまいます。
+起動には `~/Applications/LecScribe Server.app`（中身は Node を呼ぶだけのスクリプト）を経由します。これは macOS の「ログイン項目と機能拡張」に「LecScribe Server」という名前で表示させるためで、直接 `node` を登録すると署名者の「Node.js Foundation」と表示されてしまいます。表示される場所は「アプリのバックグラウンドでのアクティビティ」で、「ログイン時に開く」には出ません（launchd のエージェントはこちらに分類されます）。署名していないので「開発元を識別できない項目」と付きます。
 
 ## 構成
 
