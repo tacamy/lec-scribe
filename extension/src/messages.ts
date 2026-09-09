@@ -80,6 +80,8 @@ export type ToOffscreen =
       mime: string;
       dataBase64: string;
       reason: SlideReason;
+      /** 判定に使った数値（slides.json に残して閾値を詰めるため） */
+      trigger?: SlideMeta['trigger'];
     }
   /** 保存済みのスライド画像を、切り替わる直前の状態で上書きする（SPEC §9.2） */
   | { target: 'offscreen'; type: 'SLIDE_UPDATE'; sessionId: string; seq: number; videoTime: number; t: number; mime: string; dataBase64: string }

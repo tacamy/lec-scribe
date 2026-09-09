@@ -527,6 +527,12 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, slide.jpegQuality));
     if (!blob) throw new LecError('CAPTURE_FAILED', '画像のエンコードに失敗しました。');
 
+    const v = current.lastVerdict;
+    const round = (n: number, digits = 4) => Math.round(n * 10 ** digits) / 10 ** digits;
+    const trigger: SlideMeta['trigger'] = v
+      ? { diffPrev: round(v.diffPrev), ...(v.diffSaved !== undefined ? { diffSaved: round(v.diffSaved) } : {}), cells: v.cells, stillFraction: round(v.stillFraction, 3) }
+      : undefined;
+
     const saved = await sendToOffscreen.slide({
       sessionId: current.sessionId,
       videoTime,
@@ -537,6 +543,7 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
       mime,
       dataBase64: await blobToBase64(blob),
       reason,
+      ...(trigger ? { trigger } : {}),
     });
     const meta: SlideMeta = {
       filename: saved.filename,
@@ -549,16 +556,7 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
       source: 'direct',
       reason,
       bytes: saved.bytes,
-      ...(current.lastVerdict
-        ? {
-            trigger: {
-              diffPrev: Math.round(current.lastVerdict.diffPrev * 10000) / 10000,
-              ...(current.lastVerdict.diffSaved !== undefined ? { diffSaved: Math.round(current.lastVerdict.diffSaved * 10000) / 10000 } : {}),
-              cells: current.lastVerdict.cells,
-              stillFraction: Math.round(current.lastVerdict.stillFraction * 1000) / 1000,
-            },
-          }
-        : {}),
+      ...(trigger ? { trigger } : {}),
     };
     // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
     current.detector.markSaved(savedFrame, capturedAt.getTime());

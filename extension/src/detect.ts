@@ -283,7 +283,10 @@ export class ChangeDetector {
       this.state = 'watching';
       return this.verdict(false, diffPrev, diffSaved);
     }
-    if (now - this.lastSaveAt < this.cfg.minShotIntervalMs) {
+    // 映像中心の画面では、同じ場面が続く間に何枚も撮らないよう間隔を長めに取る
+    const minInterval =
+      this.stillFraction < COARSE_MAX_STILL ? Math.max(this.cfg.minShotIntervalMs, this.cfg.footageMinIntervalMs) : this.cfg.minShotIntervalMs;
+    if (now - this.lastSaveAt < minInterval) {
       // 保存間隔が空くまで保留する。安定待ちのままにして次のサンプルや flush で再判定する
       this.state = 'stabilizing';
       return this.verdict(false, diffPrev, diffSaved);

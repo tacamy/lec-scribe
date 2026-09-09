@@ -603,6 +603,7 @@ async function saveSlide(msg: Extract<ToOffscreen, { type: 'SLIDE' }>): Promise<
       source: 'direct',
       reason: msg.reason,
       bytes: bytes.size,
+      ...(msg.trigger ? { trigger: msg.trigger } : {}),
     });
     await writeSlidesJson(current);
   } catch (e) {
