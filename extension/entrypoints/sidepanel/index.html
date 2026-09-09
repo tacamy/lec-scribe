@@ -12,13 +12,23 @@
         <button id="optionsBtn" class="link" type="button">設定</button>
       </header>
 
-      <section class="status">
+      <!-- サーバー未接続のときはこれだけを出す（接続しないと文字起こしできないため） -->
+      <section class="setup" id="setup" hidden>
+        <p>
+          録音した音声を Mac 上のサーバーで文字起こしして、スライドと並べたノートを作ります。
+          まず Mac とつなぎます。サーバーが起動している状態で下のボタンを押し、Mac に出る確認ダイアログで「許可」を押してください。
+        </p>
+        <button id="pairBtn" class="primary" type="button">このMacと接続</button>
+        <p class="note">このポップアップはダイアログが出ると閉じますが、承認はそのまま続きます。「許可」のあと、もう一度アイコンを押すと Start できます。</p>
+      </section>
+
+      <section class="status" id="status">
         <span class="dot" id="dot" data-state="IDLE"></span>
         <span id="stateLabel">Ready</span><span class="dots" id="dots" aria-hidden="true" hidden></span>
         <span class="elapsed" id="elapsed"></span>
       </section>
 
-      <section class="rows">
+      <section class="rows" id="rows">
         <div class="row" id="audioRow" hidden>
           <span class="label">Audio</span>
           <span class="value" id="audioValue">—</span>
@@ -46,9 +56,8 @@
 
       <p class="message" id="message" hidden></p>
 
-      <div class="actions">
+      <div class="actions" id="actions">
         <button id="startBtn" class="primary" type="button">Start</button>
-        <button id="pairBtn" class="secondary" type="button" title="Mac に確認ダイアログが出ます。「許可」を押すと文字起こしを送れるようになります" hidden>このMacと接続</button>
         <button id="stopBtn" class="danger" type="button" hidden>Stop</button>
         <button id="openBtn" class="secondary" type="button" hidden>出力フォルダを開く</button>
         <button id="snapBtn" class="secondary" type="button" title="自動保存が拾えなかったときに使います" hidden>今の画面を手動で保存</button>

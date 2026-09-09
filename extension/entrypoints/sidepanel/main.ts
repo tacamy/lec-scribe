@@ -38,9 +38,12 @@ const stopBtn = $<HTMLButtonElement>('stopBtn');
 const snapBtn = $<HTMLButtonElement>('snapBtn');
 const openBtn = $<HTMLButtonElement>('openBtn');
 const pairBtn = $<HTMLButtonElement>('pairBtn');
+const setupSection = $('setup');
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const footer = $('footer');
+// 未接続のときに隠す通常 UI
+const mainSections = [$('status'), $('rows'), $('actions'), footer];
 
 // 末尾の「…」は CSS のアニメーション（.dots）で 1 文字ずつ増やす
 const STATE_LABEL: Record<SessionState['state'], string> = {
@@ -126,8 +129,14 @@ function render(state: SessionState) {
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
   openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
-  // サーバーと未接続なら、設定画面へ行かなくてもここから接続できる
-  pairBtn.hidden = serverConfigured || active;
+  // サーバーと未接続で何も動いていなければ、「このMacと接続」だけを出す（接続しないと文字起こしできない）
+  const setupMode = !serverConfigured && !active && !state.processing && !state.exporting;
+  setupSection.hidden = !setupMode;
+  for (const el of mainSections) el.hidden = setupMode;
+  if (setupMode) {
+    message.hidden = true;
+    warningsList.hidden = true;
+  }
 
   if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
@@ -447,7 +456,7 @@ openBtn.addEventListener('click', () => {
 
 pairBtn.addEventListener('click', () => {
   pairBtn.disabled = true;
-  showMessage('Mac の画面に確認ダイアログが出ます。「許可」を押してください。', 'info');
+  pairBtn.textContent = 'Mac の画面で「許可」を押してください…';
   void act(async () => {
     try {
       const reply = await sendToBackground.pair();
@@ -455,9 +464,10 @@ pairBtn.addEventListener('click', () => {
       return reply;
     } finally {
       pairBtn.disabled = false;
+      pairBtn.textContent = 'このMacと接続';
     }
   }).then(() => {
-    if (serverConfigured) showMessage('接続しました。Stop すると自動で文字起こしに送られます。', 'info');
+    if (serverConfigured) showMessage('接続しました。講義ページで Start を押すと録音が始まり、Stop で文字起こしに送られます。', 'info');
   });
 });
 

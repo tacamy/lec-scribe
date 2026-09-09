@@ -73,7 +73,7 @@ try {
   popup.on('pageerror', (e) => errors.push(String(e)));
   popup.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   await popup.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-  await popup.waitForSelector('#startBtn');
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
   await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent === 'Ready');
   assert.equal(await popup.getAttribute('#dot', 'data-state'), 'IDLE');
 
@@ -88,7 +88,8 @@ try {
   for (const id of ['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow']) assert.equal(idleRows[id], 'none', `${id} visible while idle: ${JSON.stringify(idleRows)}`);
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
   // サーバー未接続のうちは「このMacと接続」がポップアップに出る
-  assert.equal(await popup.evaluate(() => document.getElementById('pairBtn').hidden), false, 'pairBtn hidden while unpaired');
+  assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
+  assert.equal(await popup.evaluate(() => document.getElementById('actions').hidden), true, 'Start shown while unpaired');
 
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
   await popup.setViewportSize({ width: 320, height: 700 });
@@ -103,7 +104,7 @@ try {
   });
   assert.ok(overflow.scroll <= overflow.client, `panel overflows: ${JSON.stringify(overflow)}`);
   await popup.reload();
-  await popup.waitForSelector('#startBtn');
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
 
   // STOP while idle is a no-op.
   const stopped = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'STOP' }));
@@ -210,7 +211,7 @@ try {
   const discarded = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), rec.sessionId);
   assert.equal(discarded.ok, true, `${JSON.stringify(discarded)}\nstate before discard: ${JSON.stringify(stateBeforeDiscard)}`);
   await popup.reload();
-  await popup.waitForSelector('#startBtn');
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
   await popup.waitForTimeout(300);
   const listed = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
   assert.ok(!listed.some((t) => t.includes('2099-01-01')), `session still listed: ${listed}`);
@@ -494,8 +495,9 @@ try {
   assert.equal(paired.health.authorized, true, JSON.stringify(paired.health));
   assert.equal(paired.health.paired, true, JSON.stringify(paired.health));
   await popup.reload();
-  await popup.waitForSelector('#startBtn');
-  assert.equal(await popup.evaluate(() => document.getElementById('pairBtn').hidden), true, 'pairBtn still visible after pairing');
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
+  assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), true, 'setup view still visible after pairing');
+  assert.equal(await popup.evaluate(() => document.getElementById('actions').hidden), false, 'Start hidden after pairing');
   console.log('pairing: approved via dialog stub through the service worker, issued token authorizes /health');
 
   // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
@@ -575,7 +577,7 @@ try {
   assert.equal(afterCancel.processing, undefined, JSON.stringify(afterCancel));
   assert.equal(afterCancel.pendingUploads, undefined, JSON.stringify(afterCancel));
   await popup.reload();
-  await popup.waitForSelector('#startBtn');
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
   await popup.waitForTimeout(300);
   const listedAfterCancel = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
   assert.ok(!listedAfterCancel.some((t) => t.includes('2099-01-01 00:00:02') || t.includes('2099-01-01 00:00:03')), `cancelled session still listed: ${listedAfterCancel}`);
