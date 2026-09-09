@@ -99,9 +99,9 @@ export function mergeConfig(base: Config, override: unknown): Config {
   return out;
 }
 
-/** サーバーに送れる状態か（承認済みかトークンあり） */
+/** サーバーに送れる状態か。実際に使うのはトークンなので、承認済みでもトークンを消していれば未接続 */
 export function serverEnabled(config: Pick<Config, 'server'>): boolean {
-  return config.server.paired || config.server.token.length > 0;
+  return config.server.token.length > 0;
 }
 
 /** サーバーへの要求に付けるヘッダー */

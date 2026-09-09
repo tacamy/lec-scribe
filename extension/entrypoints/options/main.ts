@@ -19,14 +19,17 @@ function show(text: string, ok: boolean | null = null) {
 }
 
 function renderPairStatus() {
-  pairStatus.textContent = config.server.paired ? '接続済み（この Mac のサーバーが承認済み）' : '未接続';
-  pairStatus.className = `result${config.server.paired ? ' ok' : ''}`;
+  const connected = config.server.paired && config.server.token.length > 0;
+  pairStatus.textContent = connected ? '接続済み（この Mac のサーバーが承認済み）' : config.server.token ? 'トークンで接続' : '未接続';
+  pairStatus.className = `result${connected ? ' ok' : ''}`;
 }
 
 function readForm(): Config {
+  const value = token.value.trim();
+  // トークンを消したら承認済みの記録も外す（次はポップアップの「このMacと接続」からやり直す）
   return {
     ...config,
-    server: { ...config.server, port: Number(port.value) || 47321, token: token.value.trim() },
+    server: { ...config.server, port: Number(port.value) || 47321, token: value, paired: value.length > 0 && config.server.paired },
   };
 }
 
