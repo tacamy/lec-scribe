@@ -101,6 +101,8 @@ export function createApp(
         outDir: config.outDir,
         ffmpeg: (await resolveBin(config.ffmpegBin)) !== null,
         whisperkit: (await resolveBin(config.whisperkitBin)) !== null,
+        // ノート作成の呼び出し先。拡張の設定画面が「未設定なら有効にする手順」を出すのに使う
+        llm: config.llm,
         authorized: authorized(req),
         paired: trustedByToken(trusted, req.headers.authorization) !== null,
         processing: pipeline.activeCount(),

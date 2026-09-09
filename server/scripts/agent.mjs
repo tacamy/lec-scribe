@@ -94,9 +94,8 @@ function plistXml() {
     <key>PATH</key><string>${escape(process.env.PATH ?? '/usr/bin:/bin')}</string>
     <key>HOME</key><string>${escape(home)}</string>
     <key>LEC_SCRIBE_PORT</key><string>${port}</string>
-${Object.entries(process.env)
-  .filter(([k]) => (k.startsWith('LEC_SCRIBE_') && k !== 'LEC_SCRIBE_PORT') || k === 'OPENAI_API_KEY')
-  .map(([k, v]) => `    <key>${k}</key><string>${escape(v ?? '')}</string>`)
+${Object.entries(settingsEnv())
+  .map(([k, v]) => `    <key>${k}</key><string>${escape(v)}</string>`)
   .join('\n')}
   </dict>
   <key>RunAtLoad</key><true/>
@@ -108,6 +107,29 @@ ${Object.entries(process.env)
 </plist>
 `;
 }
+
+/**
+ * plist に書く設定（LEC_SCRIBE_* と OPENAI_API_KEY）。今の環境変数が優先で、
+ * 無ければ既に登録されている plist の値を引き継ぐ。install.sh を後から流し直しても
+ * enable-notes.sh で入れた LEC_SCRIBE_LLM が消えないようにするため
+ */
+function settingsEnv() {
+  const merged = {};
+  if (existsSync(plistPath)) {
+    const xml = readFileSync(plistPath, 'utf8');
+    const dict = xml.split('<key>EnvironmentVariables</key>')[1] ?? '';
+    for (const m of dict.matchAll(/<key>([^<]+)<\/key><string>([^<]*)<\/string>/g)) {
+      if (isSetting(m[1])) merged[m[1]] = unescapeXml(m[2]);
+    }
+  }
+  for (const [k, v] of Object.entries(process.env)) {
+    if (isSetting(k) && v !== undefined) merged[k] = v;
+  }
+  return merged;
+}
+
+const isSetting = (key) => (key.startsWith('LEC_SCRIBE_') && key !== 'LEC_SCRIBE_PORT') || key === 'OPENAI_API_KEY';
+const unescapeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
 async function health() {
   try {
@@ -159,6 +181,7 @@ async function waitAndReport() {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
+      console.log(`ノート作成: ${h.llm && h.llm !== 'none' ? h.llm : 'なし（notes.md は文字起こしそのまま。bash "' + repoRoot + '/enable-notes.sh" で有効にできます）'}`);
       console.log('Chrome の LecScribe アイコンを押して「このMacと接続」→ Mac のダイアログで「許可」してください。');
       if (existsSync(tokenPath)) console.log(`（トークンで繋ぐ場合: ${readFileSync(tokenPath, 'utf8').trim()}）`);
       return;

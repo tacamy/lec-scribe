@@ -26,6 +26,7 @@
       p { margin: 0; color: var(--muted); font-size: 13px; }
       details { display: grid; gap: 10px; }
       summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+      code#notesCmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; }
     </style>
   </head>
   <body>
@@ -54,6 +55,25 @@
         <div class="row">
           <button id="test" class="secondary" type="button">接続テスト</button>
           <span id="result" class="result"></span>
+        </div>
+      </section>
+
+      <section>
+        <h2>ノート作成</h2>
+        <p>
+          文字起こしは話し言葉のままです。有効にすると、フィラーを取って読みやすく整え、
+          動画全体の要点と話題ごとの見出しを付けた <code>notes.md</code> を作ります。
+        </p>
+        <div class="row">
+          <span id="notesStatus" class="result">確認中…</span>
+        </div>
+        <div id="notesHint" hidden>
+          <p>「ターミナル」で次の 1 行を実行すると有効になります（Codex CLI を入れて ChatGPT アカウントでログインします。API キーは要りません）。</p>
+          <div class="row">
+            <code id="notesCmd"></code>
+            <button id="copyNotesCmd" class="secondary" type="button">コピー</button>
+          </div>
+          <p>ローカルの Ollama を使う場合は末尾に <code>ollama</code> を付けます。無効に戻すには <code>none</code>。</p>
         </div>
       </section>
     </main>
