@@ -29,6 +29,7 @@ server.listen(config.port, config.host, () => {
   console.log(`  listening : http://${config.host}:${config.port}`);
   console.log(`  output    : ${config.outDir}`);
   console.log(`  model     : ${config.model} (${config.language})`);
+  console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
   console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
   console.log('');
   console.log('  拡張機能の設定（オプション）に次のトークンを貼り付けてください:');

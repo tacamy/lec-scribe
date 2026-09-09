@@ -226,4 +226,4 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | 2026-09-08 | 8 | MacBook Pro M3 Max | OK | 16 分の講義で `lecture.md` を確認。「フォルダを開く」もサーバー経由で動作 |
 | 2026-09-09 | 9 | MacBook Pro M3 Max、Codex CLI 0.153（ChatGPT Go） | OK | 16 分の講義（17 節、約 6,000 字）を `codex exec` 2 回・100 秒で処理。フィラーが消え段落分けと要点が付いた `notes.md` ができた。内容の改変は見当たらず |
 | 2026-09-09 | 残 A, E, F | MacBook Pro M3 Max | OK | 文字起こし中の「破棄」で処理が止まり、`~/LecScribe/` のフォルダと拡張内の録音が消えた。ポップアップの Start 1 回で録音が始まりサイドパネルが開く。録音中もセッション一覧が表示される |
-| 2026-09-09 | 残 H | MacBook Pro M3 Max | OK | plist に `LEC_SCRIBE_LLM=codex` が入っており、`agent:restart` 後のログでも llm: codex |
+| 2026-09-09 | 残 H | MacBook Pro M3 Max | OK | plist に `LEC_SCRIBE_LLM=codex` が入っている（起動ログに `llm` 行を出すようにした） |
