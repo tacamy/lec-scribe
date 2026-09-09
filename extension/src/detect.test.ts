@@ -121,3 +121,62 @@ describe('ChangeDetector', () => {
     expect(detector.flush(gray(200), 2600).save).toBe(false);
   });
 });
+
+describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
+  /** 画素 [from, to) を色 rgb にする */
+  const paint = (f: Uint8ClampedArray, from: number, to: number, rgb: [number, number, number]) => {
+    for (let p = from; p < to; p++) {
+      f[p * 4] = rgb[0];
+      f[p * 4 + 1] = rgb[1];
+      f[p * 4 + 2] = rgb[2];
+      f[p * 4 + 3] = 255;
+    }
+    return f;
+  };
+  /** 白地。ワイプ（末尾 2%）はサンプルごとに色が変わり、本文の 1 行（0.9%）は最後に一度だけ増える */
+  const wipeFrom = Math.round(PIXELS * 0.98);
+  const textFrom = Math.round(PIXELS * 0.5);
+  const textTo = textFrom + Math.round(PIXELS * 0.009);
+  const slide = (wipeShade: number, withLine = false) => {
+    const f = paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]);
+    paint(f, wipeFrom, PIXELS, [wipeShade, wipeShade, wipeShade]);
+    if (withLine) paint(f, textFrom, textTo, [0, 0, 0]);
+    return f;
+  };
+
+  it('ワイプの動きは無視し、本文が 1 行増えたことは拾う', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    // 同じスライドを見ている間、ワイプだけが動く
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    const final = slide(130, true); // ワイプの色も変わっている（本物の動画と同じ状況）
+
+    // 素の比較ではワイプの 2% が乗ってしまうが、動きを除けば本文の変化だけが残る
+    expect(diffRatio(final, saved, cfg.pixelDiffThreshold)).toBeGreaterThan(0.02);
+    const masked = detector.diffFromSaved(final, saved);
+    expect(masked).toBeGreaterThan(0.004);
+    expect(masked).toBeLessThan(0.012);
+
+    // ワイプだけが動いた画面は、上書きの閾値（0.4%）に届かない
+    expect(detector.diffFromSaved(slide(130), saved)).toBeLessThan(0.004);
+  });
+
+  it('サンプルが少ないうちは全画素で比べる', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    detector.sample(slide(130), 500);
+    expect(detector.diffFromSaved(slide(130), saved)).toBeGreaterThan(0.015);
+  });
+
+  it('新しいスライドを保存したら動きの記録をやり直す', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    expect(detector.diffFromSaved(slide(130), saved)).toBeLessThan(0.004);
+    detector.markSaved(saved, 5000); // 次のスライド: 記録は白紙に戻る
+    expect(detector.diffFromSaved(slide(130), saved)).toBeGreaterThan(0.015);
+  });
+});

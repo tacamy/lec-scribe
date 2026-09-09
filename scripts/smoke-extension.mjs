@@ -240,8 +240,8 @@ try {
 
   // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。
   // offscreen.html をタブとして開き、合成ストリームでセッションを始めておく。
-  // updateThreshold は fixture の「追加の行」が小さいので少し下げる（既定は 1.2%。ワイプの動きだけの 0.5〜0.9% では更新しない値）
-  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0, finalState: true, updateThreshold: 0.01 };
+  // 既定値のまま通す（動き続ける領域を除いて比べるので、ワイプが動いても 0.4% には届かない）
+  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0, finalState: true, updateThreshold: 0.004 };
   const frameSession = '20990101-000001-smok';
   const off2 = await context.newPage();
   off2.on('pageerror', (e) => errors.push(String(e)));
@@ -276,7 +276,7 @@ try {
     detectWidth: 160,
     detectHeight: 90,
     pixelDiffThreshold: 24,
-    changeThreshold: 0.02,
+    changeThreshold: 0.025,
     stableThreshold: 0.015,
     stableSamples: 2,
     maxStabilizeMs: 3000,

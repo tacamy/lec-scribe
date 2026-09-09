@@ -74,8 +74,8 @@ export const DEFAULT_CONFIG: Config = {
     jpegQuality: 0.9,
     maxSlideWidth: 0,
     finalState: true,
-    // 講師ワイプの動きだけで 0.4〜0.9% 変わるので、それより上
-    updateThreshold: 0.012,
+    // 動き続ける領域は比較から除くので、ワイプの動き（0.4〜0.9%）より下でよい（SPEC §9.2b）
+    updateThreshold: 0.004,
   },
   // 閾値は fixture の実測から決めた（SPEC §9.3）:
   // 本文テキストだけが変わるスライドで約 3.2%、講師ワイプの動きで 0.4〜0.9%。
@@ -84,7 +84,7 @@ export const DEFAULT_CONFIG: Config = {
     detectWidth: 160,
     detectHeight: 90,
     pixelDiffThreshold: 24,
-    changeThreshold: 0.02,
+    changeThreshold: 0.025,
     stableThreshold: 0.015,
     stableSamples: 2,
     maxStabilizeMs: 3000,

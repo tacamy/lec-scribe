@@ -1,6 +1,6 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import type { Config } from '../src/config';
-import { ChangeDetector, diffRatio, type Frame, type Verdict } from '../src/detect';
+import { ChangeDetector, type Frame, type Verdict } from '../src/detect';
 import { LecError } from '../src/errors';
 import {
   hasTarget,
@@ -367,7 +367,7 @@ async function finalizePrevious(current: Session): Promise<void> {
     note(`skip older stable=${stable.at} saved=${lastSaved.at}`);
     return; // 保存より前のフレームなら、保存した画像のほうが新しい
   }
-  const diff = diffRatio(stable.frame, lastSaved.frame, current.detect.pixelDiffThreshold);
+  const diff = current.detector.diffFromSaved(stable.frame, lastSaved.frame);
   if (diff < current.slide.updateThreshold) {
     note(`skip diff=${diff.toFixed(4)} < ${current.slide.updateThreshold}`);
     return;
