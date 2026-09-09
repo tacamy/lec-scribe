@@ -7,6 +7,11 @@ const segments = [
 ];
 
 describe('formatTimestamp', () => {
+  it('rounds to the millisecond first so second boundaries carry over', () => {
+    expect(formatTimestamp(59.9996)).toBe('00:01:00,000');
+    expect(formatTimestamp(0.9999)).toBe('00:00:01,000');
+    expect(formatTimestamp(3599.9995, '.')).toBe('01:00:00.000');
+  });
   it('formats SRT and VTT timestamps', () => {
     expect(formatTimestamp(0)).toBe('00:00:00,000');
     expect(formatTimestamp(8.5)).toBe('00:00:08,500');

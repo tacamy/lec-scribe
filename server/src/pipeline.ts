@@ -90,7 +90,7 @@ export async function writeStatus(dir: string, status: PipelineStatus): Promise<
 export class Pipeline {
   private queue: Promise<unknown> = Promise.resolve();
   /** 待機中・実行中のセッション。cancel() で中断できる */
-  private readonly jobs = new Map<string, { controller: AbortController; task: Promise<PipelineStatus> }>();
+  private readonly jobs = new Map<string, { controller: AbortController; task: Promise<PipelineStatus>; started: boolean }>();
   private readonly config: ServerConfig;
   private readonly log: (message: string) => void;
 
@@ -111,20 +111,32 @@ export class Pipeline {
   /** キューに積んで即座に戻る。結果は pipeline.json に書かれる */
   enqueue(dir: string): Promise<PipelineStatus> {
     const controller = new AbortController();
-    const task = this.queue
-      .then(() => (controller.signal.aborted ? this.writeCancelled(dir) : this.process(dir, controller.signal)))
+    const job: { controller: AbortController; task: Promise<PipelineStatus>; started: boolean } = {
+      controller,
+      task: Promise.resolve({ stage: 'queued', outputDir: dir, updatedAt: '' }),
+      started: false,
+    };
+    job.task = this.queue
+      .then(() => {
+        if (controller.signal.aborted) return this.writeCancelled(dir);
+        job.started = true;
+        return this.process(dir, controller.signal);
+      })
       .finally(() => this.jobs.delete(dir));
-    this.jobs.set(dir, { controller, task });
-    this.queue = task.catch(() => undefined);
-    return task;
+    this.jobs.set(dir, job);
+    this.queue = job.task.catch(() => undefined);
+    return job.task;
   }
 
-  /** 待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める */
+  /**
+   * 待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。
+   * 待機中の分は前の処理が終わるのを待たずに戻る（順番が来たときに cancelled が書かれる）
+   */
   async cancel(dir: string): Promise<boolean> {
     const job = this.jobs.get(dir);
     if (!job) return false;
     job.controller.abort();
-    await job.task.catch(() => undefined);
+    if (job.started) await job.task.catch(() => undefined);
     return true;
   }
 
@@ -176,9 +188,11 @@ export class Pipeline {
 
   private async writeCancelled(dir: string): Promise<PipelineStatus> {
     this.log(`cancelled: ${dir}`);
-    return writeStatus(dir, { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }).catch(
-      () => ({ stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() }) as PipelineStatus,
-    );
+    const status: PipelineStatus = { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() };
+    // 中止と同時に削除されたフォルダを作り直さない
+    const exists = await stat(dir).then(() => true).catch(() => false);
+    if (!exists) return status;
+    return writeStatus(dir, status).catch(() => status);
   }
 
   private async process(dir: string, signal: AbortSignal): Promise<PipelineStatus> {
@@ -204,12 +218,14 @@ export class Pipeline {
       const reportDir = workPath(dir, 'whisperkit');
 
       // 同じ音声を同じモデルで文字起こし済みなら whisperkit を飛ばす（「やり直す」でノートだけ作り直すとき）
+      // 記録（status.transcript）は文字起こしが成功してから付ける。先に付けると ffmpeg で失敗した回の
+      // 記録が残り、次回に存在しない report を再利用しようとして永遠に失敗する
       const audioBytes = (await stat(audioWebm)).size;
       const previousReport =
         previous?.transcript && previous.transcript.model === this.config.model && previous.transcript.audioBytes === audioBytes
           ? await findReport(reportDir)
           : null;
-      status.transcript = { model: this.config.model, audioBytes, ...(previousReport ? { reused: true } : {}) };
+      status.transcript = undefined;
 
       const segments = previousReport
         ? await (async () => {
@@ -219,6 +235,7 @@ export class Pipeline {
             return parsed;
           })()
         : await this.transcribe(dir, audioWebm, audioWav, reportDir, step, signal);
+      status.transcript = { model: this.config.model, audioBytes, ...(previousReport ? { reused: true } : {}) };
 
       const result = await step('merging', async () => {
         const timeline = await readJson(workPath(dir, 'timeline.json'));
@@ -327,7 +344,7 @@ export class Pipeline {
 }
 
 async function findReport(reportDir: string): Promise<string | null> {
-  const files = (await readdir(reportDir, { recursive: true })).filter((f) => f.endsWith('.json'));
+  const files = (await readdir(reportDir, { recursive: true }).catch(() => [] as string[])).filter((f) => f.endsWith('.json'));
   if (files.length === 0) return null;
   files.sort();
   return path.join(reportDir, files[0]!);

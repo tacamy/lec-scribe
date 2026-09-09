@@ -25,7 +25,8 @@ if ! command -v brew >/dev/null 2>&1; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
   else
     say "Homebrew を入れます（Mac のパスワードを聞かれます）"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    # curl | bash で動いているときは stdin がパイプなので、Homebrew のインストーラーが対話できるよう端末を渡す
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
     eval "$(/opt/homebrew/bin/brew shellenv)"
   fi
 fi
@@ -55,8 +56,7 @@ node_major="$(node -p 'process.versions.node.split(".")[0]')"
 if [ -d "$APP_DIR/.git" ]; then
   say "既にあるので更新します: $APP_DIR"
   git -C "$APP_DIR" fetch --quiet origin "$BRANCH"
-  git -C "$APP_DIR" checkout --quiet "$BRANCH"
-  git -C "$APP_DIR" pull --ff-only --quiet origin "$BRANCH"
+  git -C "$APP_DIR" checkout --quiet -B "$BRANCH" FETCH_HEAD
 else
   say "取得します: $REPO → $APP_DIR"
   git clone --quiet --branch "$BRANCH" --depth 1 "$REPO" "$APP_DIR"

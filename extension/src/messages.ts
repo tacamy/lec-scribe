@@ -11,7 +11,7 @@ export type ServerTarget = { port: number; token: string; paired: boolean };
 
 /** サーバーの GET /sessions/:id/status と同じ形 */
 export type ServerStatus = {
-  stage: ProcessingProgress['stage'] | 'uploaded';
+  stage: ProcessingProgress['stage'] | 'uploaded' | 'cancelled';
   outputDir?: string;
   error?: string;
   result?: { segments: number; durationSec: number; hasTimeline: boolean };

@@ -305,9 +305,9 @@ function startPolling(
       stop();
       await patchStatus(dir, { stage: 'done', transcribedAt: new Date().toISOString(), outputDir: status.outputDir ?? outputDir });
       report({ stage: 'done', outputDir: status.outputDir ?? outputDir });
-    } else if (status.stage === 'error') {
+    } else if (status.stage === 'error' || status.stage === 'cancelled') {
       stop();
-      report({ stage: 'error', error: status.error ?? '文字起こしに失敗しました。', outputDir });
+      report({ stage: 'error', error: status.error ?? (status.stage === 'cancelled' ? 'サーバー側で処理が中止されました。' : '文字起こしに失敗しました。'), outputDir });
     } else {
       report({ stage: status.stage === 'uploaded' ? 'queued' : status.stage, outputDir });
     }
@@ -389,7 +389,9 @@ async function startFromStream(stream: MediaStream, config: Config, meta: Sessio
   try {
     dir = await sessionDir(meta.sessionId, true);
     const mimeType = MediaRecorder.isTypeSupported(RECORDER_MIME) ? RECORDER_MIME : '';
-    await writeJson(dir, SESSION_FILE, { ...meta, config, mimeType: mimeType || 'default' });
+    // session.json はサーバーにも送られ、出力フォルダにも残るので、接続情報（トークン）は書かない
+    const { server: _server, ...configWithoutServer } = config;
+    await writeJson(dir, SESSION_FILE, { ...meta, config: configWithoutServer, mimeType: mimeType || 'default' });
     await writeJson(dir, STATUS_FILE, { stage: 'capturing' } satisfies SessionStatus);
 
     writer = new AudioFileWriter();
@@ -461,14 +463,27 @@ function sampleLevel(current: Capture): void {
   if (rms > NOISE_FLOOR) current.lastLoudAt = Date.now();
 }
 
+/** 直近の停止処理。トラック終了などで先に停止が始まっていたとき、CAPTURE_STOP はその結果を待って返す */
+let finishing: Promise<CaptureStopResult> | null = null;
+
 async function stopCapture(): Promise<CaptureStopResult> {
   const current = capture;
-  if (!current) return { audioBytes: 0, durationMs: 0 };
+  if (!current) {
+    // 自前で止まった直後（タブを閉じた等）: 0 B ではなく、その停止処理の結果を返す
+    if (finishing) return finishing.catch(() => ({ audioBytes: 0, durationMs: 0 }));
+    return { audioBytes: 0, durationMs: 0 };
+  }
   return finishCapture(current, undefined);
 }
 
-async function finishCapture(current: Capture, error: string | undefined): Promise<CaptureStopResult> {
+function finishCapture(current: Capture, error: string | undefined): Promise<CaptureStopResult> {
   if (current.stopping) throw new LecError('BUSY', '停止処理中です。');
+  const task = finishCaptureInner(current, error);
+  finishing = task;
+  return task;
+}
+
+async function finishCaptureInner(current: Capture, error: string | undefined): Promise<CaptureStopResult> {
   current.stopping = true;
   capture = null;
   window.clearInterval(current.levelTimer);
@@ -564,7 +579,8 @@ async function saveSlide(msg: Extract<ToOffscreen, { type: 'SLIDE' }>): Promise<
   }
   const seq = current.slides.length + 1;
   const filename = `slide_${String(seq).padStart(3, '0')}.${msg.mime === 'image/jpeg' ? 'jpg' : 'png'}`;
-  const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0));
+  // base64 の復号はブラウザに任せる（atob + 1 バイトずつのコールバックは 1 MB の画像で百万回呼ぶことになる）
+  const bytes = await (await fetch(`data:${msg.mime};base64,${msg.dataBase64}`)).blob();
   try {
     current.slidesDir ??= await current.dir.getDirectoryHandle(SLIDES_DIR, { create: true });
     const file = await current.slidesDir.getFileHandle(filename, { create: true });
@@ -581,13 +597,13 @@ async function saveSlide(msg: Extract<ToOffscreen, { type: 'SLIDE' }>): Promise<
       height: msg.height,
       source: 'direct',
       reason: msg.reason,
-      bytes: bytes.byteLength,
+      bytes: bytes.size,
     });
     await writeJson(current.dir, SLIDES_FILE, current.slides);
   } catch (e) {
     throw new LecError('STORAGE_FAILED', `スライド画像を保存できません: ${toErrorInfo(e).message}`);
   }
-  return { seq, filename, bytes: bytes.byteLength };
+  return { seq, filename, bytes: bytes.size };
 }
 
 /** Creates blob: URLs for the session files; the worker downloads them (SPEC §11.2). */

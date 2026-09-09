@@ -272,6 +272,19 @@ async function onTabNavigated(tabId: number): Promise<void> {
   // frameId は残す: SPA 内の遷移で content script が生きていれば次の報告で復帰する
   const warnings: WarningCode[] = [...current.warnings.filter((w) => w !== 'NAVIGATED'), 'NAVIGATED'];
   await writeState({ ...current, video: undefined, frameSource: 'none', warnings });
+  // 検知スクリプトが消えるので、timeline に「ここで動画は止まった」を残す。残さないと最後の
+  // playing のまま動画時刻が伸び続け、以後の文字起こしが存在しない時刻に割り当てられる
+  if (current.sessionId && current.startedAt && current.video) {
+    await sendToOffscreen
+      .timelineEvent(current.sessionId, {
+        t: (Date.now() - Date.parse(current.startedAt)) / 1000,
+        videoTime: current.video.currentTime,
+        rate: current.video.playbackRate,
+        state: 'paused',
+        type: 'pause',
+      })
+      .catch(() => undefined);
+  }
 }
 
 async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
@@ -292,7 +305,7 @@ async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
     stopError = toErrorInfo(e);
   }
 
-  const durationMs = result?.durationMs ?? (current.startedAt ? Date.now() - Date.parse(current.startedAt) : 0);
+  const durationMs = result?.durationMs || (current.startedAt ? Date.now() - Date.parse(current.startedAt) : 0);
   const summary: SessionSummary | undefined = current.sessionId
     ? { sessionId: current.sessionId, startedAt: current.startedAt, durationMs, audioBytes: result?.audioBytes ?? 0, endedBy }
     : undefined;
@@ -528,10 +541,12 @@ async function discardSession(sessionId: string): Promise<SessionState> {
     await writeState(current);
     throw e;
   }
+  // 直前のセッションを捨てるときだけ IDLE に戻す。別のセッションを録音中なら、その録音の状態は触らない
+  const isLast = current.lastSession?.sessionId === sessionId;
   const next: SessionState =
-    current.lastSession?.sessionId === sessionId
+    isLast && !isActive(current)
       ? { ...INITIAL_STATE, title: current.title, processing: current.processing, pendingUploads: current.pendingUploads }
-      : { ...current, error: undefined };
+      : { ...current, error: undefined, lastSession: isLast ? undefined : current.lastSession };
   // 処理を中止したら、録音中でなければ「処理中」表示から抜ける（残る処理があれば upload() が state を立て直す）
   if (wasProcessing && !isActive(current)) next.state = current.lastSession ? 'COMPLETED' : 'IDLE';
   next.pendingUploads = next.pendingUploads?.filter((id) => id !== sessionId);

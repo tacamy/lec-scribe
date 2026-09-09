@@ -448,8 +448,8 @@ async function act(run: () => Promise<{ state: SessionState }>) {
     render((await run()).state);
   } catch (e) {
     const info = toErrorInfo(e);
+    render(current); // render は state.error が無いとメッセージを隠すので、描き直してから出す
     showMessage(`${info.message} (${info.code})`);
-    render(current);
   }
 }
 

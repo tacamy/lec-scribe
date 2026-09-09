@@ -7,11 +7,12 @@ export type Segment = {
 
 /** 00:00:00,000（SRT）/ 00:00:00.000（VTT） */
 export function formatTimestamp(seconds: number, separator: ',' | '.' = ','): string {
-  const total = Math.max(0, seconds);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = Math.floor(total % 60);
-  const ms = Math.round((total - Math.floor(total)) * 1000) % 1000;
+  // 先にミリ秒に丸める（秒とミリ秒を別々に丸めると 59.9996 が 00:00:59,000 になる）
+  const totalMs = Math.round(Math.max(0, seconds) * 1000);
+  const h = Math.floor(totalMs / 3_600_000);
+  const m = Math.floor((totalMs % 3_600_000) / 60_000);
+  const s = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
   const pad = (n: number, w = 2) => String(n).padStart(w, '0');
   return `${pad(h)}:${pad(m)}:${pad(s)}${separator}${pad(ms, 3)}`;
 }

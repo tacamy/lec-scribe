@@ -114,8 +114,10 @@ function area(video: HTMLVideoElement): number {
 
 /** probe が返したセレクタで探し、だめなら位置、最後は最大面積の <video> に倒す */
 function findVideo(selector: string, index: number): HTMLVideoElement | undefined {
-  const bySelector = document.querySelector(selector);
-  if (bySelector instanceof HTMLVideoElement) return bySelector;
+  // probe のセレクタが一意でない（'video' など）ときは、同じ並びの index 番目を取る
+  const matches = Array.from(document.querySelectorAll(selector)).filter((el): el is HTMLVideoElement => el instanceof HTMLVideoElement);
+  if (matches.length === 1) return matches[0];
+  if (matches[index]) return matches[index];
   const all = Array.from(document.querySelectorAll('video'));
   return all[index] ?? [...all].sort((a, b) => area(b) - area(a))[0];
 }

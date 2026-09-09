@@ -255,8 +255,8 @@ function openaiBackend(settings: LlmSettings): LlmBackend {
           response_format: { type: 'json_schema', json_schema: { name: 'lecture_notes', schema, strict: true } },
         }),
       });
-      const json = (await res.json()) as { error?: { message?: string }; choices?: Array<{ message?: { content?: string } }> };
-      if (!res.ok) throw new Error(`OpenAI API error ${res.status}: ${json.error?.message ?? ''}`);
+      if (!res.ok) throw new Error(`OpenAI API error ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
       return json.choices?.[0]?.message?.content ?? '';
     },
   };
@@ -273,8 +273,8 @@ function ollamaBackend(settings: LlmSettings): LlmBackend {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], format: schema, stream: false }),
       });
-      const json = (await res.json()) as { error?: string; message?: { content?: string } };
-      if (!res.ok) throw new Error(`Ollama error ${res.status}: ${json.error ?? ''}`);
+      if (!res.ok) throw new Error(`Ollama error ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const json = (await res.json()) as { message?: { content?: string } };
       return json.message?.content ?? '';
     },
   };

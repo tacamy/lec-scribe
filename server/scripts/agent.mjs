@@ -62,7 +62,11 @@ function writeAppBundle() {
     appExecutable,
     `#!/bin/sh
 # LecScribe Server: launchd から起動される。サーバー本体は Node で動く
-exec "${process.execPath}" "${path.join(repoRoot, 'server', 'src', 'index.ts')}"
+# node は PATH（plist に書いた登録時の PATH）から探す。登録時の実体パス（Homebrew の Cellar など）は
+# brew upgrade で消えることがあるので、見つからないときの予備にだけ使う
+NODE="$(command -v node 2>/dev/null || true)"
+[ -x "$NODE" ] || NODE="${process.execPath}"
+exec "$NODE" --experimental-strip-types "${path.join(repoRoot, 'server', 'src', 'index.ts')}"
 `,
     { mode: 0o755 },
   );
@@ -131,7 +135,7 @@ async function install() {
   mkdirSync(path.dirname(plistPath), { recursive: true });
   mkdirSync(logDir, { recursive: true });
   writeAppBundle();
-  writeFileSync(plistPath, plistXml());
+  writeFileSync(plistPath, plistXml(), { mode: 0o600 }); // OPENAI_API_KEY などを含むので本人だけ読める
   if (isLoaded()) run('launchctl', ['bootout', `${domain}/${LABEL}`]);
   const boot = run('launchctl', ['bootstrap', domain, plistPath]);
   if (boot.status !== 0) {

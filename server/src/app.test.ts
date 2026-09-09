@@ -1,4 +1,5 @@
 import { chmod, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -297,6 +298,33 @@ describe('local server', () => {
     // 承認済みなら再度 pair してもダイアログは出ず、同じトークンが返る
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
     expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+  });
+
+  it('keeps a finished session folder when a cancel asks to delete it', async () => {
+    // 処理済み（notes.md あり）のセッションに対する cancel+delete は、フォルダを消さない
+    const sessionId = '20260908-103005-ab12';
+    const dir = path.join(config.outDir, `${sessionId}_テスト_動画_1`);
+    expect(await readdir(dir)).toContain('notes.md');
+    const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: true }),
+    });
+    expect(await res.json()).toMatchObject({ ok: true, cancelled: false, deleted: false });
+    expect(await readdir(dir)).toContain('notes.md');
+  });
+
+  it('rejects requests whose Host is not loopback', async () => {
+    // fetch は Host ヘッダーを上書きできないので http.request で送る
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(`${base}/health`, { headers: { host: 'attacker.example' } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(403);
   });
 
   it('refuses finalize before the audio arrived', async () => {

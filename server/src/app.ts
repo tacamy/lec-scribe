@@ -18,7 +18,7 @@ type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?
 
 const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
 /** PUT /sessions/:id/files/<name> で受け付けるファイル */
-const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|slides\/slide_[0-9]{3}\.(png|jpg))$/;
+const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|slides\/slide_[0-9]{3,}\.(png|jpg))$/;
 const MAX_JSON_BODY = 5 * 1024 * 1024;
 
 export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
@@ -79,6 +79,12 @@ export function createApp(
       res.end();
       return;
     }
+    // DNS リバインディング対策: Host は 127.0.0.1 / localhost だけ受け付ける（SPEC §12.3）
+    const host = (req.headers.host ?? '').replace(/:\d+$/, '');
+    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') {
+      sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_HOST', message: `host not allowed: ${req.headers.host ?? ''}` } });
+      return;
+    }
     // Web ページからの呼び出しは拒否する。Origin がない（curl 等）場合はトークンだけで判断する
     if (origin && !origin.startsWith('chrome-extension://')) {
       sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: `origin not allowed: ${origin}` } });
@@ -119,10 +125,10 @@ export function createApp(
         sendJson(res, 429, { ok: false, error: { code: 'BUSY', message: '承認ダイアログを表示中です。Mac の画面で「許可」を押してください。' } });
         return;
       }
-      const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
-      const name = sanitizeName(body.name) || 'Chrome 拡張';
-      pairing = true;
+      pairing = true; // body を読む間に別の要求が来ても 2 つ目のダイアログを出さない
       try {
+        const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
+        const name = sanitizeName(body.name) || 'Chrome 拡張';
         log(`pair request from ${id} (${name})`);
         const allowed = await askPermission(
           config.osascriptBin,
@@ -231,10 +237,16 @@ export function createApp(
       const cancelled = await pipeline.cancel(dir);
       let deleted = false;
       if (body.delete === true) {
-        await rm(dir, { recursive: true, force: true });
-        dirCache.delete(sessionId);
-        deleted = true;
-        log(`deleted ${sessionId} (${dir})`);
+        // 成果物（notes.md）が既にあるフォルダは消さない。「やり直す」待ちの破棄で完成済みのノートを失わないため
+        const hasNotes = await stat(path.join(dir, NOTES_FILE)).then(() => true).catch(() => false);
+        if (hasNotes) {
+          log(`cancel ${sessionId}: notes.md があるので削除しない`);
+        } else {
+          await rm(dir, { recursive: true, force: true });
+          dirCache.delete(sessionId);
+          deleted = true;
+          log(`deleted ${sessionId} (${dir})`);
+        }
       } else if (cancelled) {
         log(`cancelled ${sessionId}`);
       }

@@ -552,7 +552,7 @@ sessions/<sessionId>/
 ### 11.3 破棄・保持
 
 - 「破棄」で OPFS のセッションディレクトリを削除する。エクスポート済みのファイル（`~/Downloads/LecScribe/`）やサーバーの出力（`~/LecScribe/`）は削除しない。確認ダイアログにその旨を明記する。
-- 例外として、文字起こし中・送信待ちのセッションを「破棄」したときは、サーバーに `POST /sessions/:id/cancel { delete: true }` を送って処理（ffmpeg / whisperkit / codex）を止め、`~/LecScribe/` のフォルダごと削除する（まだ成果物になっていないため。時間と LLM のトークンを無駄にしない）。送信待ちが残っていれば次を始める。
+- 例外として、文字起こし中・送信待ちのセッションを「破棄」したときは、サーバーに `POST /sessions/:id/cancel { delete: true }` を送って処理（ffmpeg / whisperkit / codex）を止め、`~/LecScribe/` のフォルダごと削除する（まだ成果物になっていないため。時間と LLM のトークンを無駄にしない）。ただし既に `notes.md` があるフォルダ（「やり直す」中の破棄）は削除しない。送信待ちが残っていれば次を始める。
 - サーバー処理が `done` になった後も既定では OPFS に残し、パネル の「破棄」で削除する（`storage.autoDeleteAfterDone` で自動削除可）。
 - 過去セッションの一覧と操作は パネル の「履歴」で行う（MVP では直近 1 件のみでも可）。
 
@@ -597,6 +597,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 
 ### 12.3 認証・通信
 
+- `Host` が `127.0.0.1` / `localhost` 以外なら 403（DNS リバインディング対策。2026-09-09 に実装）。
 - `Authorization: Bearer <token>` 必須。共有トークン（`~/.lec-scribe/token`）か、`POST /pair` で承認時に発行した拡張ごとのトークン（`trusted.json`）のどちらかに一致しなければ 401。
 - `Origin` が `chrome-extension://` で始まらない、または `Host` が `127.0.0.1:<port>` でない場合は 403。
 - CORS / Private Network Access: 拡張ページからの fetch は `host_permissions` があれば CORS の対象外の見込みだが、念のため preflight に `Access-Control-Allow-Origin: <Origin>` と `Access-Control-Allow-Private-Network: true` を返す ⚠️（Phase 7 で確認）。
@@ -857,6 +858,11 @@ audio.webm
 
 - timeline による時刻変換、スライド対応付け、TXT / SRT / VTT / `lecture.md`、パネル の完了表示
 - 完了条件: 実際の動画 1 本で `lecture.md` が生成され、スライドと本文の対応が目視で妥当
+
+### Phase 9: ノート作成（notes.md）✅
+
+- LLM（`codex exec` / OpenAI API / Ollama）で話し言葉を整え、全体の要点と話題ごとの見出し・要点を付けた `notes.md`（§13.5）
+- 完了条件: 実際の動画 1 本で `notes.md` ができ、内容が改変されていない（Phase 9 の実機確認は CHECKS.md）
 
 ### 将来
 
