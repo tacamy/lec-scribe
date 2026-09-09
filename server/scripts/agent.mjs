@@ -149,7 +149,8 @@ async function waitAndReport() {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
-      if (existsSync(tokenPath)) console.log(`トークン: ${readFileSync(tokenPath, 'utf8').trim()}`);
+      console.log('拡張の設定画面で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');
+      if (existsSync(tokenPath)) console.log(`（トークンで繋ぐ場合: ${readFileSync(tokenPath, 'utf8').trim()}）`);
       return;
     }
     await new Promise((r) => setTimeout(r, 500));

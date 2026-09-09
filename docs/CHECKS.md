@@ -136,14 +136,14 @@ chrome.storage.local.set({ config: { audio: { passthrough: false } } });
 
 ```sh
 brew install whisperkit-cli ffmpeg
-pnpm --filter @lec-scribe/server start      # 表示されるトークンを控える
+pnpm --filter @lec-scribe/server start
 ```
 
 初回は `large-v3` モデル（数 GB）のダウンロードに時間がかかる。サーバーはターミナルを開いたままにするか、`pnpm --filter @lec-scribe/server agent:install` で常駐させる（README「サーバーの常駐化」）。常駐後にサーバーのコードを更新したら `agent:restart`。
 
 | # | 操作 | 期待 |
 |---|---|---|
-| 1 | サイドパネルの「設定」→ トークンを貼り付け → 保存 → 接続テスト | 「サーバー v0.1.0 に接続できました / トークン: OK / whisperkit-cli: あり / ffmpeg: あり」 |
+| 1 | 拡張の設定画面 → 「このMacと接続」→ Mac に出るダイアログで「許可」→ 接続テスト | ダイアログに拡張名と ID が出る。「接続しました」と出て、接続テストは「承認: 済み / whisperkit-cli: あり / ffmpeg: あり」。`~/.lec-scribe/trusted.json` に拡張 ID とトークンが書かれる |
 | 2 | 講義を 2〜3 分録音して `Stop` | 状態が `Uploading` → `Transcribing` と進み（末尾の点が 1 文字ずつ増える）、Server 行に「送信中 xx%」→「文字起こし中 · 経過時間」 |
 | 3 | 待つ | 状態が `● Done`、Server 行が「完了 · /Users/…/LecScribe/…」。サーバーのターミナルにも進捗が出る |
 | 4 | 出力フォルダを開く | 見えるのは `notes.md` と `slides/` だけ。Finder で Cmd+Shift+. を押すと `.lecscribe/` が見え、中に `audio.webm`、`transcript.json` / `.srt` / `.vtt` / `.txt`、`lecture.md`、`slides.json`、`timeline.json`、`session.json`、`pipeline.json` |
@@ -198,6 +198,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 
 | # | 確認すること | 手順 | 必要な準備 |
 |---|---|---|---|
+| N | 「このMacと接続」で Mac のダイアログが出て、「許可」で接続済みになる。「許可しない」だと未接続のまま。承認後は録音 → Stop で送信できる | Phase 7 の手順 1 | `agent:restart` 済み、拡張 ↻ |
 | K | サイドパネルが録音を始めたタブにだけ出る。別のタブに移るとパネルが消え、戻ると再び出る。別のタブでアイコンを押すとポップアップに録音中の行（Audio / Video / Slides / Tab）が出る | ポップアップで Start → 別タブへ → 戻る | 拡張 ↻ |
 | L | 講義タブで次の動画に移動（ページ遷移）したあともパネルが残るか。消える場合は次の Start で開き直せばよい | 録音を Stop したあと同じタブで別のページへ | — |
 | M | 待機中のポップアップ / サイドパネルに Audio / Video / Slides / Tab の行が出ず、Server 行と Start と一覧だけ。録音完了直後は Audio 行に長さとサイズが残る | 待機中と Stop 直後に見る | 拡張 ↻ |

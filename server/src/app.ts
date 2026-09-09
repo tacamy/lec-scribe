@@ -9,6 +9,7 @@ import { slugify } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
+import { askPermission, extensionIdFromOrigin, sanitizeName, saveTrusted, trustedByToken, type Trusted } from './pairing.ts';
 
 export const VERSION = '0.1.0';
 
@@ -22,8 +23,20 @@ const MAX_JSON_BODY = 5 * 1024 * 1024;
 
 export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
 
-export function createApp(config: ServerConfig, token: string, log: (message: string) => void = () => undefined): App {
+export function createApp(
+  config: ServerConfig,
+  token: string,
+  log: (message: string) => void = () => undefined,
+  trusted: Trusted = { entries: new Map(), file: config.trustedFile },
+): App {
   const pipeline = new Pipeline(config, log);
+  /** 承認ダイアログは同時に 1 つだけ */
+  let pairing = false;
+
+  /** 共有トークンか、承認時に発行した拡張ごとのトークンが合えば通す */
+  function authorized(req: IncomingMessage): boolean {
+    return isAuthorized(req.headers.authorization, token) || trustedByToken(trusted, req.headers.authorization) !== null;
+  }
   const dirCache = new Map<string, string>();
 
   async function findSessionDir(sessionId: string): Promise<string | null> {
@@ -82,14 +95,55 @@ export function createApp(config: ServerConfig, token: string, log: (message: st
         outDir: config.outDir,
         ffmpeg: (await resolveBin(config.ffmpegBin)) !== null,
         whisperkit: (await resolveBin(config.whisperkitBin)) !== null,
-        authorized: isAuthorized(req.headers.authorization, token),
+        authorized: authorized(req),
+        paired: trustedByToken(trusted, req.headers.authorization) !== null,
         processing: pipeline.activeCount(),
       });
       return;
     }
 
-    if (!isAuthorized(req.headers.authorization, token)) {
-      sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: 'トークンが一致しません。' } });
+    // POST /pair { name? } — 拡張からの接続を macOS のダイアログで承認し、その拡張 ID を記憶する
+    if (req.method === 'POST' && url.pathname === '/pair') {
+      const id = extensionIdFromOrigin(origin);
+      if (!id) {
+        sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: '拡張機能からの要求ではありません。' } });
+        return;
+      }
+      const known = trusted.entries.get(id);
+      if (known) {
+        // 承認済み。Origin はブラウザが付けるので、この拡張だけがトークンを受け取れる
+        sendJson(res, 200, { ok: true, paired: true, already: true, token: known.token });
+        return;
+      }
+      if (pairing) {
+        sendJson(res, 429, { ok: false, error: { code: 'BUSY', message: '承認ダイアログを表示中です。Mac の画面で「許可」を押してください。' } });
+        return;
+      }
+      const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
+      const name = sanitizeName(body.name) || 'Chrome 拡張';
+      pairing = true;
+      try {
+        log(`pair request from ${id} (${name})`);
+        const allowed = await askPermission(
+          config.osascriptBin,
+          `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。\n\n許可すると、この拡張は録音を送って文字起こしを始めたり、${config.outDir} のフォルダを開いたり消したりできます。`,
+        );
+        if (!allowed) {
+          log(`pair denied: ${id}`);
+          sendJson(res, 403, { ok: false, paired: false, error: { code: 'DENIED', message: '接続が許可されませんでした。' } });
+          return;
+        }
+        const entry = await saveTrusted(trusted, id, name);
+        log(`paired: ${id} (${name}) → ${trusted.file}`);
+        sendJson(res, 200, { ok: true, paired: true, token: entry.token });
+      } finally {
+        pairing = false;
+      }
+      return;
+    }
+
+    if (!authorized(req)) {
+      sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: '接続が承認されていません。拡張の設定画面で「このMacと接続」を押してください。' } });
       return;
     }
 

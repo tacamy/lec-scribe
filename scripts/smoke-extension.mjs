@@ -43,11 +43,12 @@ const whisperkitStub = stub(
   `if [ -f "${slowMarker}" ]; then sleep 30; fi; ` +
     'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0.5,"end":2.0,"text":"スモークテストの文字起こし"},{"start":2.0,"end":4.0,"text":"二つ目の区間"}]}\' > "$dir/audio.json"',
 );
+const osascriptStub = stub('osascript', 'echo allowed');
 writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
 const serverOut = path.join(serverTmp, 'out');
 const localServer = spawn(
   process.execPath,
-  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub'],
+  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json')],
   { stdio: 'ignore' },
 );
 await new Promise((r) => setTimeout(r, 1200));
@@ -469,6 +470,20 @@ try {
   assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);
   console.log(`server: transcribed via ${outDir} (${produced.length} files)`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
+
+  // 接続承認: 拡張ページから POST /pair →（osascript スタブが「許可」）→ 以後はトークンなしで通る
+  const paired = await popup.evaluate(async (port) => {
+    const res = await fetch(`http://127.0.0.1:${port}/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'smoke' }) });
+    const body = await res.json();
+    // 承認時に発行されたトークンで /health を呼ぶと authorized / paired になる（Origin は GET に付かない）
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`, { headers: { authorization: `Bearer ${body.token}` } })).json();
+    return { status: res.status, body, health };
+  }, SERVER_PORT);
+  assert.equal(paired.status, 200, JSON.stringify(paired));
+  assert.equal(paired.body.paired, true, JSON.stringify(paired));
+  assert.equal(paired.health.authorized, true, JSON.stringify(paired.health));
+  assert.equal(paired.health.paired, true, JSON.stringify(paired.health));
+  console.log('pairing: approved via dialog stub, issued token authorizes /health');
 
   // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
   // サーバー側の処理が止まってフォルダが消え、拡張内のセッションも消えること。

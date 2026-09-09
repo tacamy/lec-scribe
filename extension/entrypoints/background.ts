@@ -1,5 +1,5 @@
 import { defineBackground } from 'wxt/utils/define-background';
-import { loadConfig, type Config } from '../src/config';
+import { authHeaders, loadConfig, serverEnabled, type Config } from '../src/config';
 import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
 import { makeSessionId } from '../src/format';
 import {
@@ -298,7 +298,7 @@ async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
   const completed = !failure && !!summary && !!current.startedAt;
   const config = await loadConfig();
   // 送る候補: 先に待っていた分 → 今回の分
-  const queue = [...(current.pendingUploads ?? []), ...(completed && config.server.token ? [summary!.sessionId] : [])];
+  const queue = [...(current.pendingUploads ?? []), ...(completed && serverEnabled(config) ? [summary!.sessionId] : [])];
 
   const next: SessionState = {
     ...INITIAL_STATE,
@@ -337,8 +337,8 @@ async function upload(sessionId: string, pending: string[] = []): Promise<Sessio
   const current = await readState();
   if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
   const config = await loadConfig();
-  if (!config.server.token) {
-    throw new LecError('SERVER_REJECTED', 'ローカルサーバーのトークンが未設定です。設定画面で貼り付けてください。');
+  if (!serverEnabled(config)) {
+    throw new LecError('SERVER_REJECTED', 'ローカルサーバーと接続されていません。設定画面で「このMacと接続」を押してください。');
   }
   // 別のセッションを処理中なら送信待ちに並べる。処理が終わり次第 onProcessStatus が順に送る
   if (current.processing) {
@@ -550,12 +550,12 @@ async function discardSession(sessionId: string): Promise<SessionState> {
 }
 
 /** サーバーに処理の中止（と削除）を頼む。繋がらなくても破棄は続ける */
-async function cancelOnServer(sessionId: string, server: { port: number; token: string }, remove: boolean): Promise<void> {
-  if (!server.token) return;
+async function cancelOnServer(sessionId: string, server: Config['server'], remove: boolean): Promise<void> {
+  if (!server.paired && !server.token) return;
   try {
     await fetch(`http://127.0.0.1:${server.port}/sessions/${sessionId}/cancel`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
+      headers: { ...authHeaders(server), 'content-type': 'application/json' },
       body: JSON.stringify({ delete: remove }),
     });
   } catch {

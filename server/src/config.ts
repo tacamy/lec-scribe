@@ -11,6 +11,10 @@ export type ServerConfig = {
   model: string;
   language: string;
   tokenFile: string;
+  /** 承認済みの拡張 ID を置くファイル（POST /pair で追加） */
+  trustedFile: string;
+  /** 接続承認のダイアログを出すコマンド（macOS の osascript） */
+  osascriptBin: string;
   whisperkitBin: string;
   ffmpegBin: string;
   /** 出力フォルダを Finder で開くコマンド（macOS の open） */
@@ -39,6 +43,8 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     model: pick('model', 'LEC_SCRIBE_MODEL', 'large-v3'),
     language: pick('language', 'LEC_SCRIBE_LANGUAGE', 'ja'),
     tokenFile: expandHome(pick('token-file', 'LEC_SCRIBE_TOKEN_FILE', path.join(home, '.lec-scribe', 'token'))),
+    trustedFile: expandHome(pick('trusted-file', 'LEC_SCRIBE_TRUSTED_FILE', path.join(home, '.lec-scribe', 'trusted.json'))),
+    osascriptBin: pick('osascript', 'LEC_SCRIBE_OSASCRIPT', 'osascript'),
     whisperkitBin: pick('whisperkit', 'LEC_SCRIBE_WHISPERKIT', 'whisperkit-cli'),
     ffmpegBin: pick('ffmpeg', 'LEC_SCRIBE_FFMPEG', 'ffmpeg'),
     openBin: pick('open', 'LEC_SCRIBE_OPEN', 'open'),

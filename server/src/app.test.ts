@@ -39,6 +39,8 @@ beforeAll(async () => {
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
+  // osascript スタブ: pair-answer.txt の中身（allowed / denied）を返す
+  const osascript = await writeStub('osascript', `cat "${path.join(tmp, 'pair-answer.txt')}"`);
   // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
@@ -58,6 +60,8 @@ beforeAll(async () => {
     whisperkitBin: whisperkit,
     ffmpegBin: ffmpeg,
     openBin: open,
+    osascriptBin: osascript,
+    trustedFile: path.join(tmp, 'trusted.json'),
     keepWav: true,
     llm: 'codex',
     llmModel: '',
@@ -261,6 +265,38 @@ describe('local server', () => {
     } finally {
       await new Promise<void>((resolve) => slowServer.close(() => resolve()));
     }
+  });
+
+  it('pairs an extension through the confirmation dialog and then accepts it without a token', async () => {
+    const other = 'chrome-extension://ppppppppppppppppppppppppppppppp';
+    const noToken = { origin: ORIGIN };
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: noToken })).status).toBe(401);
+    // Web ページや ID の形が違う Origin は承認できない
+    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { origin: 'https://example.com' } })).status).toBe(403);
+    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { origin: other } })).status).toBe(403);
+    // 「許可しない」
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
+    const denied = await fetch(`${base}/pair`, { method: 'POST', headers: { ...noToken, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'LecScribe' }) });
+    expect(denied.status).toBe(403);
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: noToken })).status).toBe(401);
+    // 「許可」→ 拡張専用のトークンが発行され、それで通る。/health も paired を返す
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'allowed\n');
+    const allowed = await fetch(`${base}/pair`, { method: 'POST', headers: { ...noToken, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'LecScribe\u0000<x>' }) });
+    expect(allowed.status).toBe(200);
+    const issued = (await allowed.json()) as { ok: boolean; paired: boolean; token: string };
+    expect(issued).toMatchObject({ ok: true, paired: true });
+    expect(issued.token.length).toBeGreaterThanOrEqual(32);
+    const withIssued = { authorization: `Bearer ${issued.token}` };
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: withIssued })).status).toBe(200);
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: noToken })).status).toBe(401);
+    expect(await (await fetch(`${base}/health`, { headers: withIssued })).json()).toMatchObject({ authorized: true, paired: true });
+    expect(await (await fetch(`${base}/health`, { headers })).json()).toMatchObject({ authorized: true, paired: false });
+    expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ authorized: false, paired: false });
+    const saved = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ id: string; name: string; token: string }> };
+    expect(saved.extensions).toMatchObject([{ id: ORIGIN.slice('chrome-extension://'.length), name: 'LecScribe<x>', token: issued.token }]);
+    // 承認済みなら再度 pair してもダイアログは出ず、同じトークンが返る
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
+    expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
   });
 
   it('refuses finalize before the audio arrived', async () => {

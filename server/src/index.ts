@@ -13,6 +13,7 @@ import { recoverInterrupted } from './pipeline.ts';
 import { loadConfig } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
+import { loadTrusted } from './pairing.ts';
 
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
@@ -24,7 +25,8 @@ const missing: string[] = [];
 if (!(await resolveBin(config.ffmpegBin))) missing.push(`ffmpeg（${config.ffmpegBin}）`);
 if (!(await resolveBin(config.whisperkitBin))) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
 
-const { server } = createApp(config, token, log);
+const trusted = await loadTrusted(config.trustedFile);
+const { server } = createApp(config, token, log, trusted);
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
   console.log(`LecScribe server v${VERSION}`);
@@ -32,10 +34,11 @@ server.listen(config.port, config.host, () => {
   console.log(`  output    : ${config.outDir}`);
   console.log(`  model     : ${config.model} (${config.language})`);
   console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
+  console.log(`  trusted   : ${trusted.entries.size} 件の拡張を承認済み（${config.trustedFile}）`);
   console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
   console.log('');
-  console.log('  拡張機能の設定（オプション）に次のトークンを貼り付けてください:');
-  console.log(`  ${token}`);
+  console.log('  拡張機能の設定（オプション）で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');
+  console.log(`  トークンで繋ぐ場合は次を貼り付けます: ${token}`);
   console.log('');
   if (missing.length > 0) {
     console.log(`  ⚠ 見つからないコマンド: ${missing.join(', ')}`);

@@ -7,7 +7,7 @@ import type { ProcessingProgress, SessionState } from './state';
 import type { TimelineEvent } from './timeline';
 
 /** サーバーへの接続情報（Config['server'] と同じ） */
-export type ServerTarget = { port: number; token: string };
+export type ServerTarget = { port: number; token: string; paired: boolean };
 
 /** サーバーの GET /sessions/:id/status と同じ形 */
 export type ServerStatus = {

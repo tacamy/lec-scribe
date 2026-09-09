@@ -1,4 +1,4 @@
-import { loadConfig } from '../../src/config';
+import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
@@ -77,14 +77,14 @@ const WARNING_TEXT: Record<WarningCode, string> = {
 
 let current: SessionState = INITIAL_STATE;
 let statsTimer: number | undefined;
-/** サーバーのトークンが設定されているか（送信ボタンの表示に使う） */
+/** サーバーに送れる状態か（承認済みかトークンあり。送信ボタンの表示に使う） */
 let serverConfigured = false;
-let serverTarget = { port: 47321, token: '' };
+let serverTarget = { port: 47321, token: '', paired: false };
 
 async function refreshConfig() {
   const config = await loadConfig();
   serverTarget = config.server;
-  serverConfigured = config.server.token.length > 0;
+  serverConfigured = serverEnabled(config);
 }
 
 /** サーバーに頼んで出力フォルダ（または lecture.md）を Finder / 既定のアプリで開く */
@@ -92,7 +92,7 @@ async function openOutput(sessionId: string, target: 'folder' | 'lecture', fallb
   try {
     const res = await fetch(`http://127.0.0.1:${serverTarget.port}/sessions/${sessionId}/open`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${serverTarget.token}`, 'content-type': 'application/json' },
+      headers: { ...authHeaders(serverTarget), 'content-type': 'application/json' },
       body: JSON.stringify({ target }),
     });
     if (!res.ok) {
@@ -202,7 +202,7 @@ function describeServer(state: SessionState): string {
   }
   if (pending) return `待機中${pending}`;
   if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${shortPath(state.lastSession.outputDir)}`;
-  return serverConfigured ? '待機中' : '未設定';
+  return serverConfigured ? '待機中' : '未接続（設定画面で「このMacと接続」）';
 }
 
 /** /Users/<name>/… を ~/… にして短く見せる */

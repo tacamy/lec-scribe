@@ -175,6 +175,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 - 原案（拡張がトークンを生成してサーバーへ渡す）では、他の Web サイトも同じ手順を踏めるため防御にならない。
 - サーバーが初回起動時にランダムトークンを生成して `~/.lec-scribe/token` に保存し、端末に表示する。ユーザーが拡張の Options に 1 回貼り付ける。
 - サーバーは `Authorization: Bearer <token>` と `Origin: chrome-extension://…` を検査し、`127.0.0.1` のみで listen する。
+- 貼り付けをなくす承認フロー（2026-09-09）: 拡張の設定画面の「このMacと接続」が `POST /pair` を送ると、サーバーが macOS のダイアログ（osascript）で「Chrome 拡張 xxx が接続を求めています」と確認し、「許可」なら拡張専用のトークンを発行して返す。拡張はそれを保存し、以後 Bearer で送る（承認済みの拡張 ID とトークンは `~/.lec-scribe/trusted.json`）。`/pair` は `Origin` が `chrome-extension://<id>` の要求だけ受け付けるので、Web ページや別の拡張はトークンを受け取れない（Origin はブラウザが付ける）。トークンで認可するのは、host_permissions のある拡張ページからの GET には Origin が付かないため。共有トークンの手貼りも引き続き使える。
 
 ### D-11 技術スタック
 
@@ -582,6 +583,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 | PUT | `/sessions/:id/slides.json`, `/sessions/:id/timeline.json` | メタデータ |
 | POST | `/sessions/:id/finalize` | パイプライン開始（非同期、キューは同時 1 件） |
 | GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }` |
+| POST | `/pair` | `{ name? }`。認証不要だが `Origin: chrome-extension://<id>` 必須。macOS のダイアログで承認されると `{ paired: true, token }`（承認済みなら同じトークンを返す）。拒否は 403、ダイアログ表示中は 429 |
 | POST | `/sessions/:id/cancel` | `{ delete?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（拡張の「破棄」が処理中のセッションに対して使う） |
 | POST | `/sessions/:id/open` | `{ target?: 'folder' \| 'lecture' }`。出力フォルダまたは `notes.md` を macOS の `open` で開く |
 
@@ -589,7 +591,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 
 ### 12.3 認証・通信
 
-- `Authorization: Bearer <token>` 必須。不一致は 401。
+- `Authorization: Bearer <token>` 必須。共有トークン（`~/.lec-scribe/token`）か、`POST /pair` で承認時に発行した拡張ごとのトークン（`trusted.json`）のどちらかに一致しなければ 401。
 - `Origin` が `chrome-extension://` で始まらない、または `Host` が `127.0.0.1:<port>` でない場合は 403。
 - CORS / Private Network Access: 拡張ページからの fetch は `host_permissions` があれば CORS の対象外の見込みだが、念のため preflight に `Access-Control-Allow-Origin: <Origin>` と `Access-Control-Allow-Private-Network: true` を返す ⚠️（Phase 7 で確認）。
 - 外部ネットワークへの接続はしない。
@@ -755,7 +757,7 @@ audio.webm
 
 ### 15.2 options
 
-サーバー（port、token、接続テスト）、音声（bitrate、passthrough）、検知パラメータ（§9.1）、保存（形式、上限幅、自動削除）。
+サーバー（「このMacと接続」で承認、接続テスト。詳細設定に port と token）。音声・検知・保存の項目は置かない（2026-09-09。既定のままで困らないため。config には残す）。
 
 ---
 

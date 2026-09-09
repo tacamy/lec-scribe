@@ -1,4 +1,4 @@
-import type { Config } from '../../src/config';
+import { authHeaders, type Config } from '../../src/config';
 import { LecError, toErrorInfo } from '../../src/errors';
 import {
   hasTarget,
@@ -173,7 +173,7 @@ type ServerApi = (method: string, path: string, body?: BodyInit, contentType?: s
 function serverApi(server: ServerTarget, signal?: AbortSignal): ServerApi {
   const base = `http://127.0.0.1:${server.port}`;
   return async (method, path, body, contentType) => {
-    const headers: Record<string, string> = { authorization: `Bearer ${server.token}` };
+    const headers: Record<string, string> = { ...authHeaders(server) };
     if (contentType) headers['content-type'] = contentType;
     const init: RequestInit = { method, headers, signal };
     if (body !== undefined) init.body = body;
@@ -220,7 +220,7 @@ async function uploadWith(sessionId: string, dir: FileSystemDirectoryHandle, ser
   // 接続とトークンの確認（/health は認証不要で、トークンの正否だけ返す）
   const health = await withTimeout(api('GET', '/health'), HEALTH_TIMEOUT_MS, server.port);
   if (health['authorized'] !== true) {
-    throw new LecError('SERVER_REJECTED', 'トークンが一致しません。サーバー起動時に表示されたトークンを拡張の設定に貼り付けてください。');
+    throw new LecError('SERVER_REJECTED', 'サーバーがこの拡張を承認していません。設定画面で「このMacと接続」を押してください。');
   }
 
   const meta = (await readJson<SessionMeta>(dir, SESSION_FILE)) ?? { sessionId, startedAt: new Date().toISOString() };

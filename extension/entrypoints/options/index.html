@@ -24,6 +24,8 @@
       .result.ng { color: var(--danger); }
       code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
       p { margin: 0; color: var(--muted); font-size: 13px; }
+      details { display: grid; gap: 10px; }
+      summary { cursor: pointer; color: var(--muted); font-size: 13px; }
     </style>
   </head>
   <body>
@@ -33,22 +35,26 @@
       <section>
         <h2>ローカルサーバー</h2>
         <p>
-          Mac 上のサーバーが録音を受け取り、WhisperKit で文字起こしします。ターミナルで
-          <code>pnpm --filter @lec-scribe/server start</code> を実行すると表示されるトークンを貼り付けてください。
-          トークンが空のときは送信せず、録音とスライドの保存だけを行います。
+          Mac 上のサーバーが録音を受け取り、WhisperKit で文字起こしします。サーバーを起動した状態で
+          「このMacと接続」を押すと Mac に確認ダイアログが出るので、「許可」を押してください。
+          接続していないときは送信せず、録音とスライドの保存だけを行います。
         </p>
-        <label>ポート <input id="port" type="number" min="1024" max="65535" /></label>
-        <label>トークン <input id="token" type="text" autocomplete="off" spellcheck="false" /></label>
         <div class="row">
-          <button id="save" class="primary" type="button">保存</button>
+          <button id="pair" class="primary" type="button">このMacと接続</button>
+          <span id="pairStatus" class="result"></span>
+        </div>
+        <details>
+          <summary>詳細設定（ポート / トークン）</summary>
+          <label>ポート <input id="port" type="number" min="1024" max="65535" /></label>
+          <label>トークン（「このMacと接続」で自動で入ります。<code>~/.lec-scribe/token</code> の値を手で貼ることもできます） <input id="token" type="text" autocomplete="off" spellcheck="false" /></label>
+          <div class="row">
+            <button id="save" class="secondary" type="button">保存</button>
+          </div>
+        </details>
+        <div class="row">
           <button id="test" class="secondary" type="button">接続テスト</button>
           <span id="result" class="result"></span>
         </div>
-      </section>
-
-      <section>
-        <h2>音声</h2>
-        <label><input id="passthrough" type="checkbox" style="width: auto" /> キャプチャ中もスピーカー / AirPods へ音声を流す（通常は ON）</label>
       </section>
     </main>
     <script type="module" src="./main.ts"></script>
