@@ -111,8 +111,10 @@ export type SceneDecision = {
   shown: boolean;
   /** 載せない場合、代わりに載っている画像 */
   sameSceneAs?: string;
-  /** 外した理由: 中身が同じ / 見た目が同じ（Vision） / 同じ場面（色の分布） */
-  reason?: 'identical' | 'vision' | 'same-scene';
+  /** 外した理由: 中身が同じ / 見た目が同じ（Vision） / 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った */
+  reason?: 'identical' | 'vision' | 'same-scene' | 'superseded';
+  /** 載せる画像が、同じ場面の最初の画像の代わりであるとき、その最初の画像。発話の割り当てにはこちらの時刻を使う */
+  standsFor?: string;
   /** 最後に載せた画像との見た目の距離（Vision。0 に近いほど似ている） */
   vision?: number;
   /** 最後に載せた画像との色の一致（判定の材料） */
@@ -131,6 +133,8 @@ export function pickShownSlides(
   thumbs: ReadonlyMap<string, Uint8Array>,
   threshold: number,
   vision?: VisionOptions,
+  /** 同じ場面が続いたとき、最初と最後のどちらの画像を載せるか。既定は最後（切り替わる直前の状態） */
+  keep: 'first' | 'last' = 'last',
 ): SceneDecision[] {
   const decisions: SceneDecision[] = [];
   let lastShown: { slide: SlideEntry; index: number } | null = null;
@@ -184,7 +188,47 @@ export function pickShownSlides(
     }
     lastShown = { slide, index };
   });
+  return keep === 'last' ? preferLast(decisions) : decisions;
+}
+
+/**
+ * 同じ場面のまとまりごとに、最初の画像（比較の基準）ではなく最後の画像を載せる。
+ * 発話の割り当ては最初の画像の時刻で行うので、載せる画像に standsFor を付けて基準を指す
+ */
+function preferLast(decisions: SceneDecision[]): SceneDecision[] {
+  const byName = new Map(decisions.map((d) => [d.filename, d]));
+  const lastMember = new Map<string, SceneDecision>();
+  for (const d of decisions) {
+    if (!d.shown && d.sameSceneAs && byName.get(d.sameSceneAs)?.shown) lastMember.set(d.sameSceneAs, d);
+  }
+  for (const [anchorName, last] of lastMember) {
+    const anchor = byName.get(anchorName)!;
+    anchor.shown = false;
+    anchor.reason = 'superseded';
+    anchor.sameSceneAs = last.filename;
+    last.shown = true;
+    last.standsFor = anchorName;
+    delete last.reason;
+    delete last.sameSceneAs;
+  }
   return decisions;
+}
+
+/**
+ * 載せる画像の並び。最後の画像を載せる場合は、その画像に最初の画像の時刻・理由を持たせる
+ * （発話は「そのスライドが映り始めた時刻」で割り当てるため）
+ */
+export function shownSlides(slides: readonly SlideEntry[], decisions: readonly SceneDecision[]): SlideEntry[] {
+  const byName = new Map(slides.map((s) => [s.filename, s]));
+  const out: SlideEntry[] = [];
+  for (const d of decisions) {
+    if (!d.shown) continue;
+    const self = byName.get(d.filename);
+    if (!self) continue;
+    const anchor = d.standsFor ? byName.get(d.standsFor) : undefined;
+    out.push(anchor ? { ...anchor, filename: self.filename, seq: self.seq, width: self.width, height: self.height } : self);
+  }
+  return out;
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;

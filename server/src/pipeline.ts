@@ -7,7 +7,7 @@ import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, readNotesCache, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
-import { pickShownSlides, readThumbnail } from './scenes.ts';
+import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
@@ -164,16 +164,15 @@ export class Pipeline {
    * 映像中心の画面で同じ場面が続く画像を notes.md から外す。サムネイルは ffmpeg で作る。
    * 取れなければ何も外さない。判断は .lecscribe/scenes.json に残す
    */
-  private async pickScenes(dir: string, slides: SlideEntry[]): Promise<Set<string>> {
-    const shown = new Set(slides.map((s) => s.filename));
+  private async pickScenes(dir: string, slides: SlideEntry[]): Promise<SlideEntry[]> {
     // sceneColor が 0 でも、中身が同じ画像を外す判定は残す（scenes.ts）
-    if (slides.length < 2) return shown;
+    if (slides.length < 2) return [...slides];
     const thumbs = new Map<string, Uint8Array>();
     for (const s of slides) {
       const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename));
       if (thumb) thumbs.set(s.filename, thumb);
     }
-    if (thumbs.size === 0) return shown;
+    if (thumbs.size === 0) return [...slides];
     // 見た目の距離（macOS の Vision）。用意できなければ色と画素だけで判定する
     const distance =
       this.config.sceneVision > 0 || this.config.sceneVisionPhoto > 0
@@ -184,6 +183,7 @@ export class Pipeline {
       thumbs,
       this.config.sceneColor,
       distance ? { distance, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined,
+      this.config.sceneKeep,
     );
     await writeFile(
       workPath(dir, 'scenes.json'),
@@ -191,7 +191,7 @@ export class Pipeline {
     ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
     if (hidden.length > 0) this.log(`同じ場面として notes.md から外した画像: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
-    return new Set(decisions.filter((d) => d.shown).map((d) => d.filename));
+    return shownSlides(slides, decisions);
   }
 
   /** audio.webm → wav → whisperkit-cli。report の区間を返す */
@@ -294,8 +294,7 @@ export class Pipeline {
         const slidesJson = await readJson(workPath(dir, 'slides.json'));
         const allSlides = isSlideList(slidesJson) ? slidesJson : [];
         // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
-        const shown = await this.pickScenes(dir, allSlides);
-        const slides = allSlides.filter((s) => shown.has(s.filename));
+        const slides = await this.pickScenes(dir, allSlides);
         const session = (await readJson(workPath(dir, 'session.json'))) as
           | { title?: string; url?: string; startedAt?: string }
           | undefined;

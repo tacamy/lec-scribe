@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveBin, run } from './exec.ts';
 import type { SlideEntry } from './merge.ts';
-import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, shownSlides, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
 
@@ -48,7 +48,7 @@ describe('pickShownSlides', () => {
 
   it('映像中心の画面では、最後に載せた画像と同じ場面の画像を外す', () => {
     const slides = [1, 2, 3, 4, 5].map((n) => slide(n, 0.1));
-    const d = pickShownSlides(slides, thumbs, 0.65);
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
     expect(d.map((x) => x.shown)).toEqual([true, false, false, true, false]);
     expect(d[1]!.sameSceneAs).toBe('slide_001.png');
     expect(d[4]!.sameSceneAs).toBe('slide_004.png');
@@ -56,7 +56,7 @@ describe('pickShownSlides', () => {
 
   it('スライド中心の画面（静止部分が半分以上）や、記録のない画像は外さない', () => {
     const slides = [slide(1, 0.9), slide(2, 0.9), slide(3), slide(4, 0.1), slide(5, 0.1)];
-    const d = pickShownSlides(slides, thumbs, 0.65);
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
     // 1〜3 は対象外。4 は 3（載っている）と別の場面。5 は 4 と同じ場面
     expect(d.map((x) => x.shown)).toEqual([true, true, true, true, false]);
   });
@@ -65,7 +65,7 @@ describe('pickShownSlides', () => {
     const same = new Map(thumbs);
     same.set('slide_003.png', footage(2, 60)); // 2 とまったく同じ
     const slides = [slide(1, 0.9), slide(2, 0.9), slide(3, 0.9)]; // スライド扱い
-    const d = pickShownSlides(slides, same, 0.65);
+    const d = pickShownSlides(slides, same, 0.65, undefined, 'first');
     expect(d.map((x) => x.shown)).toEqual([true, true, false]);
     expect(d[2]!.reason).toBe('identical');
   });
@@ -136,18 +136,18 @@ describe('Vision の見た目の距離', () => {
 
   it('距離が小さければどんな画面でも外し、写真同士なら少し離れていても外す', () => {
     // 1→2: スライド同士で 0.3（テンプレートが同じだけ）→ 残す。3→4: 写真同士で 0.4 → 外す
-    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.3, '1-2': 0.9, '2-3': 0.4 }));
+    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.3, '1-2': 0.9, '2-3': 0.4 }), 'first');
     expect(d.map((x) => x.shown)).toEqual([true, true, true, false]);
     expect(d[3]!.reason).toBe('vision');
     expect(d[1]!.vision).toBe(0.3);
     // スライド同士でも 0.15（メニューを開いただけ）なら外す
-    const e = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.15, '1-2': 0.9, '2-3': 0.9 }));
+    const e = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.15, '1-2': 0.9, '2-3': 0.9 }), 'first');
     expect(e.map((x) => x.shown)).toEqual([true, false, true, true]);
   });
 
   it('比較の相手は「最後に載せた画像」', () => {
     // 2 を外したら、3 は 1 と比べる
-    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.1, '0-2': 0.1, '1-2': 0.9, '2-3': 0.9 }));
+    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.1, '0-2': 0.1, '1-2': 0.9, '2-3': 0.9 }), 'first');
     expect(d.map((x) => x.shown)).toEqual([true, false, false, true]);
     expect(d[2]!.sameSceneAs).toBe('slide_001.png');
   });
@@ -156,5 +156,35 @@ describe('Vision の見た目の距離', () => {
     const d = pickShownSlides(slides, thumbs, 0.65, withDistances({}));
     expect(d.every((x) => x.shown)).toBe(true);
     expect(pickShownSlides(slides, thumbs, 0.65).every((x) => x.shown)).toBe(true);
+  });
+});
+
+describe('同じ場面の最後の画像を載せる（既定）', () => {
+  const thumbs = new Map<string, Uint8Array>([
+    ['slide_001.png', footage(1, 60)],
+    ['slide_002.png', footage(2, 60)],
+    ['slide_003.png', footage(3, 60)],
+    ['slide_004.png', footage(4, 220)],
+  ]);
+  const slides = [1, 2, 3, 4].map((n) => ({ ...slide(n, 0.1), reason: n === 1 ? 'initial' : 'change' }));
+
+  it('まとまりの最後の画像を載せ、最初の画像は「譲った」として外す', () => {
+    const d = pickShownSlides(slides, thumbs, 0.65);
+    expect(d.map((x) => [x.filename.slice(6, 9), x.shown, x.reason ?? ''])).toEqual([
+      ['001', false, 'superseded'],
+      ['002', false, 'same-scene'],
+      ['003', true, ''],
+      ['004', true, ''],
+    ]);
+    expect(d[2]!.standsFor).toBe('slide_001.png');
+    expect(d[0]!.sameSceneAs).toBe('slide_003.png');
+  });
+
+  it('載せる画像には、まとまりの最初の画像の時刻と理由を持たせる（発話の割り当てのため）', () => {
+    const out = shownSlides(slides, pickShownSlides(slides, thumbs, 0.65));
+    expect(out.map((s) => [s.filename, s.videoTime, s.reason, s.seq])).toEqual([
+      ['slide_003.png', 10, 'initial', 3],
+      ['slide_004.png', 40, 'change', 4],
+    ]);
   });
 });
