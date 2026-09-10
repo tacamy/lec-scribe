@@ -5,7 +5,7 @@ import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
-import { cacheKey, readNotesCache, writeNotesCache } from './notes-cache.ts';
+import { cacheKey, deriveFromCache, readNotesCache, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
 import { visionDistances } from './vision.ts';
@@ -378,21 +378,38 @@ export class Pipeline {
             errors = cached.errors ?? [];
             reused = true;
           } else {
-            const result = await polish(inputs, backend, llmSettings, this.log);
-            polished = result.results;
-            errors = result.errors;
-            if (signal.aborted) throw new Error('cancelled');
+            // 節の区切りだけが変わった（載せる画像を選び直した）なら、前回の結果を組み替えて使う。
+            // 一致しない節だけ LLM に頼む
+            const previous = await readNotesCache(dir, null);
+            const derived = previous ? deriveFromCache(previous, inputs) : { polished: new Map<string, PolishOutput>(), unmatched: inputs.map((s) => s.id) };
+            const todo = inputs.filter((s) => derived.unmatched.includes(s.id));
+            polished = derived.polished;
+            errors = [];
+            if (todo.length > 0) {
+              if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
+              const result = await polish(todo, backend, llmSettings, this.log);
+              for (const [id, out] of result.results) polished.set(id, out);
+              errors = result.errors;
+              if (signal.aborted) throw new Error('cancelled');
+            }
             if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
-            // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
-            const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
-            const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
-            if (signal.aborted) throw new Error('cancelled');
-            topics = made;
-            if (outlineError) errors.push(outlineError);
+            if (todo.length === 0 && derived.outline) {
+              this.log(`前回のノートを組み替えて使い回します（${previous!.backend}, ${previous!.generatedAt}）`);
+              topics = derived.outline;
+              reused = true;
+            } else {
+              // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
+              const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
+              const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+              if (signal.aborted) throw new Error('cancelled');
+              topics = made;
+              if (outlineError) errors.push(outlineError);
+            }
             await writeNotesCache(dir, {
               key,
               generatedAt: now(),
               backend: backend.name,
+              inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],
               ...(topics ? { outline: topics } : {}),
               ...(errors.length > 0 ? { errors } : {}),

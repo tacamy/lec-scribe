@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workPath } from './layout.ts';
-import { cacheKey, NOTES_CACHE_FILE, readNotesCache, writeNotesCache } from './notes-cache.ts';
+import { cacheKey, deriveFromCache, NOTES_CACHE_FILE, readNotesCache, writeNotesCache } from './notes-cache.ts';
 
 const sections = [
   { id: 'intro', text: '今日は色の話です。' },
@@ -53,5 +53,71 @@ describe('readNotesCache', () => {
     await mkdir(workPath(dir), { recursive: true });
     await writeFile(workPath(dir, NOTES_CACHE_FILE), '{ 壊れた JSON');
     expect(await readNotesCache(dir, cache.key)).toBeNull();
+  });
+});
+
+describe('deriveFromCache（節の区切りだけ変わったときの組み替え）', () => {
+  const cache = {
+    key: 'old',
+    generatedAt: '2026-09-10T00:00:00.000Z',
+    backend: 'codex',
+    inputs: [
+      { id: 'intro', text: 'はじめに。' },
+      { id: 'slide_001', text: '一枚目。' },
+      { id: 'slide_002', text: '二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '四枚目。' },
+    ],
+    polished: [
+      { id: 'intro', text: '整えた はじめに。' },
+      { id: 'slide_001', text: '整えた 一枚目。' },
+      { id: 'slide_002', text: '整えた 二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '整えた 四枚目。' },
+    ],
+    outline: {
+      overview: ['全体'],
+      topics: [
+        { heading: '導入', summary: ['a'], startId: 'intro' },
+        { heading: '本題', summary: ['b'], startId: 'slide_002' },
+        { heading: '終わり', summary: ['c'], startId: 'slide_004' },
+      ],
+    },
+  };
+
+  it('画像を外して節がつながったら、整えた本文もつなぎ、話題の区切りを付け替える', () => {
+    // slide_002 を載せなくなり、その発話が slide_001 に続いた。slide_003（無音）はそのまま
+    const inputs = [
+      { id: 'intro', text: 'はじめに。' },
+      { id: 'slide_001', text: '一枚目。二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '四枚目。' },
+    ];
+    const d = deriveFromCache(cache, inputs);
+    expect(d.unmatched).toEqual([]);
+    expect(d.polished.get('slide_001')?.text).toBe('整えた 一枚目。\n\n整えた 二枚目。');
+    expect(d.polished.get('slide_003')?.text).toBe('');
+    // slide_002 で始まっていた話題は slide_001 に付け替わるが、導入と同じ節になるので 1 つに減る… ではなく別の節なので残る
+    expect(d.outline?.topics.map((t) => t.startId)).toEqual(['intro', 'slide_001', 'slide_004']);
+  });
+
+  it('本文が変わった節は組み替えられず、呼び出し側に任せる', () => {
+    const inputs = [
+      { id: 'intro', text: 'はじめに。' },
+      { id: 'slide_001', text: '一枚目（言い直し）。' },
+      { id: 'slide_002', text: '二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '四枚目。' },
+    ];
+    const d = deriveFromCache(cache, inputs);
+    expect(d.unmatched).toEqual(['slide_001']);
+    expect(d.polished.has('intro')).toBe(true);
+    expect(d.polished.has('slide_004')).toBe(true);
+    expect(d.outline).toBeUndefined(); // 一部でも作り直すなら話題の区切りも作り直す
+  });
+
+  it('前回の入力が残っていない古いキャッシュからは何も組み替えない', () => {
+    const d = deriveFromCache({ ...cache, inputs: undefined }, [{ id: 'intro', text: 'はじめに。' }]);
+    expect(d.unmatched).toEqual(['intro']);
   });
 });

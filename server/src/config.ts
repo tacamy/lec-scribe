@@ -65,7 +65,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '12000')),
     sceneColor: Number(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65')),
     sceneVision: Number(pick('scene-vision', 'LEC_SCRIBE_SCENE_VISION', '0.2')),
-    sceneVisionPhoto: Number(pick('scene-vision-photo', 'LEC_SCRIBE_SCENE_VISION_PHOTO', '0.55')),
+    sceneVisionPhoto: Number(pick('scene-vision-photo', 'LEC_SCRIBE_SCENE_VISION_PHOTO', '0.45')),
     sceneKeep: pick('scene-keep', 'LEC_SCRIBE_SCENE_KEEP', 'last') === 'first' ? 'first' : 'last',
   };
 }
