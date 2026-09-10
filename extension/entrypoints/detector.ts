@@ -52,6 +52,8 @@ type Session = {
   lastVerdict: Verdict | null;
   /** 直近の判定履歴（診断用。DETECT_STOP の応答で返す） */
   verdicts: VerdictLog[];
+  /** 切り替えを検知した瞬間の判定（保存時の記録に使う。保存時点では安定後なので差は 0 に近い） */
+  switchVerdict: Verdict | null;
   /** 直近の「静止していた」フレーム。切り替わりを検知したときに、前のスライドの最終状態として使う */
   stable: { frame: Frame; videoTime: number; t: number; at: number } | null;
   /** そのフレームのフル解像度（stable と同時に描く） */
@@ -157,6 +159,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     tickTimer: 0,
     lastVerdict: null,
     verdicts: [],
+    switchVerdict: null,
     stable: null,
     fullCanvas: null,
     lastSaved: null,
@@ -225,6 +228,7 @@ async function stopDetection(): Promise<object> {
     current.video.cancelVideoFrameCallback(current.frameCallback);
   }
   // 今映っている画面が最後のスライドの最終状態。保存済みと違えば上書きしてから止める
+  await current.grabQueue.catch(() => undefined);
   if (canSample(current)) {
     rememberStable(current, grayFrame(current));
     await finalizePrevious(current).catch(() => undefined);
@@ -321,6 +325,7 @@ function sampleOnce(current: Session): void {
   logVerdict(current, 'sample', verdict);
   if (verdict.state === 'stabilizing' && wasWatching) {
     // 切り替わりを検知した瞬間: 直前まで静止していたフレームが前のスライドの最終状態
+    current.switchVerdict = verdict;
     void finalizePrevious(current).catch(() => undefined);
   } else if (verdict.state === 'watching' && !verdict.save && verdict.diffPrev < current.detect.changeThreshold) {
     // 切り替わりではない小さな変化（ワイプの動き、文字が 1 行増えた）も含めて「同じスライドの最新の画面」として持つ
@@ -356,6 +361,8 @@ function rememberStable(current: Session, frame: Frame): void {
  * その画像を上書きする。文字が 1 行ずつ出るスライドで、全部出た状態を残すため（SPEC §9.2）
  */
 async function finalizePrevious(current: Session): Promise<void> {
+  // 保存が順番待ちのままだと lastSaved が古く、直前に撮った画像を上書きしてしまう
+  await current.grabQueue.catch(() => undefined);
   const { stable, lastSaved, fullCanvas } = current;
   const note = (why: string) => logVerdict(current, 'final', { save: false, state: 'watching', diffPrev: 0, cells: 0, stillFraction: 1 }, why);
   if (!current.slide.finalState) return;
@@ -527,10 +534,17 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, slide.jpegQuality));
     if (!blob) throw new LecError('CAPTURE_FAILED', '画像のエンコードに失敗しました。');
 
+    // 変化の大きさは「切り替えを検知した瞬間」の値を残す（保存時は安定した後なのでほぼ 0）
     const v = current.lastVerdict;
+    const sw = current.switchVerdict ?? v;
     const round = (n: number, digits = 4) => Math.round(n * 10 ** digits) / 10 ** digits;
     const trigger: SlideMeta['trigger'] = v
-      ? { diffPrev: round(v.diffPrev), ...(v.diffSaved !== undefined ? { diffSaved: round(v.diffSaved) } : {}), cells: v.cells, stillFraction: round(v.stillFraction, 3) }
+      ? {
+          diffPrev: round(sw?.diffPrev ?? 0),
+          ...(v.diffSaved !== undefined ? { diffSaved: round(v.diffSaved) } : {}),
+          cells: sw?.cells ?? 0,
+          stillFraction: round(v.stillFraction, 3),
+        }
       : undefined;
 
     const saved = await sendToOffscreen.slide({

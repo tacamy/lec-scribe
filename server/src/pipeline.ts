@@ -162,7 +162,8 @@ export class Pipeline {
    */
   private async pickScenes(dir: string, slides: SlideEntry[]): Promise<Set<string>> {
     const shown = new Set(slides.map((s) => s.filename));
-    if (this.config.sceneColor <= 0 || slides.length < 2) return shown;
+    // sceneColor が 0 でも、中身が同じ画像を外す判定は残す（scenes.ts）
+    if (slides.length < 2) return shown;
     const thumbs = new Map<string, Uint8Array>();
     for (const s of slides) {
       const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename));

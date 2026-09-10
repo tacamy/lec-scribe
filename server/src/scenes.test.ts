@@ -61,7 +61,16 @@ describe('pickShownSlides', () => {
     expect(d.map((x) => x.shown)).toEqual([true, true, true, true, false]);
   });
 
-  it('閾値 0 なら何も外さない。サムネイルがない画像も載せる', () => {
+  it('中身が同じ画像は、スライドでも映像でも外す', () => {
+    const same = new Map(thumbs);
+    same.set('slide_003.png', footage(2, 60)); // 2 とまったく同じ
+    const slides = [slide(1, 0.9), slide(2, 0.9), slide(3, 0.9)]; // スライド扱い
+    const d = pickShownSlides(slides, same, 0.65);
+    expect(d.map((x) => x.shown)).toEqual([true, true, false]);
+    expect(d[2]!.reason).toBe('identical');
+  });
+
+  it('閾値 0 なら場面のまとめはしない。サムネイルがない画像も載せる', () => {
     const slides = [1, 2, 3].map((n) => slide(n, 0.1));
     expect(pickShownSlides(slides, thumbs, 0).every((x) => x.shown)).toBe(true);
     const partial = new Map([['slide_001.png', footage(1, 60)]]);

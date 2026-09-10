@@ -17,8 +17,12 @@ import type { SlideEntry } from './merge.ts';
 export const THUMB_WIDTH = 160;
 export const THUMB_HEIGHT = 90;
 const COLOR_BINS = 8;
-/** 静止部分がこの割合を超える画像はスライドとみなし、まとめの対象にしない */
+/** 静止部分がこの割合を超える画像はスライドとみなし、色でのまとめの対象にしない */
 const FOOTAGE_MAX_STILL = 0.5;
+/** 画素がこの割合しか違わない画像は、中身が同じとみなして必ず外す（スライドでも映像でも） */
+const IDENTICAL_MAX_DIFF = 0.02;
+/** 画素を「違う」とみなすチャンネル差 */
+const PIXEL_DIFF = 24;
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string): Promise<Uint8Array | null> {
@@ -50,14 +54,33 @@ export function colorMatch(a: Uint8Array, b: Uint8Array): number {
   return shared / pixels;
 }
 
+/** 画素がどれだけ違うか（0〜1）。拡張の diffRatio と同じ計算 */
+export function pixelDiff(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  let changed = 0;
+  let pixels = 0;
+  for (let i = 0; i + 3 < n; i += 4) {
+    pixels++;
+    const dr = a[i]! - b[i]!;
+    const dg = a[i + 1]! - b[i + 1]!;
+    const db = a[i + 2]! - b[i + 2]!;
+    if (dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF) changed++;
+  }
+  return pixels === 0 ? 0 : changed / pixels;
+}
+
 export type SceneDecision = {
   filename: string;
   /** notes.md に載せるか */
   shown: boolean;
   /** 載せない場合、代わりに載っている画像 */
   sameSceneAs?: string;
+  /** 外した理由: 中身が同じ / 同じ場面 */
+  reason?: 'identical' | 'same-scene';
   /** 最後に載せた画像との色の一致（判定の材料） */
   colorMatch?: number;
+  /** 最後に載せた画像との画素の差 */
+  pixelDiff?: number;
 };
 
 /**
@@ -76,13 +99,19 @@ export function pickShownSlides(
     const thumb = thumbs.get(slide.filename);
     const lastThumb = lastShown ? thumbs.get(lastShown.filename) : undefined;
     const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
-    if (threshold > 0 && footage && thumb && lastThumb && lastShown) {
-      const match = colorMatch(thumb, lastThumb);
-      if (match >= threshold) {
-        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: lastShown.filename, colorMatch: round(match) });
+    if (thumb && lastThumb && lastShown) {
+      const diff = pixelDiff(thumb, lastThumb);
+      // 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
+      if (diff <= IDENTICAL_MAX_DIFF) {
+        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: lastShown.filename, reason: 'identical', pixelDiff: round(diff) });
         continue;
       }
-      decisions.push({ filename: slide.filename, shown: true, colorMatch: round(match) });
+      const match = threshold > 0 && footage ? colorMatch(thumb, lastThumb) : undefined;
+      if (match !== undefined && match >= threshold) {
+        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: lastShown.filename, reason: 'same-scene', colorMatch: round(match), pixelDiff: round(diff) });
+        continue;
+      }
+      decisions.push({ filename: slide.filename, shown: true, ...(match !== undefined ? { colorMatch: round(match) } : {}), pixelDiff: round(diff) });
     } else {
       decisions.push({ filename: slide.filename, shown: true });
     }
