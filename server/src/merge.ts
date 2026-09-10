@@ -138,9 +138,8 @@ export function buildLectureMarkdown(input: {
   if (input.note) lines.push(`- ${input.note}`);
   lines.push('');
 
-  // 節の見出し（時刻 + ファイル名）は付けない。スライド画像そのものが区切りになる
-  for (const [i, section] of sections.entries()) {
-    if (i > 0) lines.push('---', '');
+  // 節の見出しも区切り線も付けない。スライド画像そのものが区切りになる
+  for (const section of sections) {
     if (section.slide) lines.push(`![${section.id}](${imagePrefix}${section.slide.filename})`, '');
     // 発話がなければ画像だけを置く（「発話はありません」の注記は出さない。画面が細かく変わる動画で邪魔になるため）
     if (section.texts.length > 0) lines.push(toParagraph(section.texts), '');
@@ -173,16 +172,12 @@ export function buildNotesMarkdown(input: {
 
   // 話題の開始 id → 話題。最初の話題は先頭の節から始まる
   const topicAt = new Map((input.outline?.topics ?? []).map((t) => [t.startId, t]));
-  let first = true;
   for (const section of input.sections) {
     const topic = topicAt.get(section.id);
     if (topic) {
       lines.push(`## ${topic.heading}`, '');
       if (topic.summary.length > 0) lines.push('**要点**', '', ...topic.summary.map((s) => `- ${s}`), '');
-    } else if (!first) {
-      lines.push('---', '');
     }
-    first = false;
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない
     const polished = input.polished.get(section.id)?.text;

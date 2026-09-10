@@ -43,11 +43,12 @@ describe('buildLectureMarkdown', () => {
     expect(md).toContain('- 元ページ: https://example.test/lecture');
     expect(md).toContain('文字起こし: 3 区間\n\n冒頭です。');
     expect(md).not.toContain('## 00:');
-    expect(md).toContain('---\n\n![slide_001](slides/slide_001.png)\n\n一枚目の話。');
-    expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n二枚目の話。');
+    expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の話。');
+    expect(md).toContain('![slide_002](slides/slide_002.png)\n\n二枚目の話。');
     // 発話のないスライドは画像だけ（注記なし）。最後の節なので画像で終わる
-    expect(md.endsWith('---\n\n![slide_003](slides/slide_003.png)\n')).toBe(true);
+    expect(md.endsWith('![slide_003](slides/slide_003.png)\n')).toBe(true);
     expect(md).not.toContain('発話はありません');
+    expect(md).not.toContain('\n---\n');
   });
 
   it('works without slides and without text', () => {
@@ -74,13 +75,13 @@ describe('buildNotesMarkdown', () => {
       outline: { overview: ['全体 1'], topics: [{ heading: '導入', summary: ['導入の要点'], startId: 'slide_001' }] },
     });
     expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n**要点**\n\n- 導入の要点\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
-    expect(md).toContain('---\n\n![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
+    expect(md).toContain('![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
   });
 
   it('works without an outline', () => {
     const md = buildNotesMarkdown({ sections, polished });
     expect(md).not.toContain('## ');
-    expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n---\n\n![slide_002]');
+    expect(md).toContain('![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n![slide_002]');
   });
 
   it('falls back to the transcript when the polished text came back empty', () => {
