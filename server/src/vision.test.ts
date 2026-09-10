@@ -20,11 +20,14 @@ describe('vision', () => {
     const a = await make('a.png', 'red', '320x180');
     const b = await make('b.png', 'red', '300x170'); // ほぼ同じ
     const c = await make('c.png', 'blue', '320x180'); // 別物
-    const distance = await visionDistances([a, b, c]);
-    expect(distance).not.toBeNull();
-    const ab = distance!(0, 1)!;
-    const ac = distance!(0, 2)!;
+    const measure = await visionDistances([a, b, c]);
+    expect(measure).not.toBeNull();
+    const ab = measure!.distance(0, 1)!;
+    const ac = measure!.distance(0, 2)!;
     expect(ab).toBeLessThan(ac);
-    expect(distance!(0, 0)).toBe(0);
+    expect(measure!.distance(0, 0)).toBe(0);
+    // 文字のない画像は空文字（読めなかった場合だけ undefined）
+    expect(['string', 'undefined']).toContain(typeof measure!.text(0));
+    expect(measure!.text(0) ?? '').toBe('');
   }, 120_000);
 });

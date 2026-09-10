@@ -173,21 +173,24 @@ export class Pipeline {
       if (thumb) thumbs.set(s.filename, thumb);
     }
     if (thumbs.size === 0) return [...slides];
-    // 見た目の距離（macOS の Vision）。用意できなければ色と画素だけで判定する
-    const distance =
+    // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
+    const measure =
       this.config.sceneVision > 0 || this.config.sceneVisionPhoto > 0
         ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log)
         : null;
-    const decisions = pickShownSlides(
-      slides,
-      thumbs,
-      this.config.sceneColor,
-      distance ? { distance, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined,
-      this.config.sceneKeep,
-    );
+    const visionOptions = measure ? { distance: measure.distance, text: measure.text, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined;
+    const decisions = pickShownSlides(slides, thumbs, this.config.sceneColor, visionOptions, this.config.sceneKeep);
     await writeFile(
       workPath(dir, 'scenes.json'),
-      JSON.stringify({ threshold: this.config.sceneColor, vision: distance ? { tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : null, decisions }, null, 2),
+      JSON.stringify(
+        {
+          threshold: this.config.sceneColor,
+          vision: measure ? { tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto, text: slides.some((_, i) => measure.text(i) !== undefined) } : null,
+          decisions,
+        },
+        null,
+        2,
+      ),
     ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
     if (hidden.length > 0) this.log(`同じ場面として notes.md から外した画像: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);

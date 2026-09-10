@@ -5,13 +5,13 @@ import type { SlideEntry } from './merge.ts';
  * 同じ場面の画像を notes.md に並べない（SPEC §13.4b）。
  *
  * 映像を追っているカメラは被写体が動くだけで画素が大きく変わるので、拡張の変化検知は
- * 同じ場面を何枚も撮る。ここでは保存済みの画像を全部見たうえで、色の分布が最後に載せた
- * 画像とそろっているものを「同じ場面」として notes.md / lecture.md から外す。
- * 画像そのものは slides/ に残す。
+ * 同じ場面を何枚も撮る。ここでは保存済みの画像を全部見たうえで、最後に載せた画像と
+ * 「同じ」と判断できるものを notes.md / lecture.md から外す。画像そのものは slides/ に残す。
  *
- * 判定は拡張が記録した trigger.stillFraction（動き続けている画素を除いた静止部分の割合）が
- * 半分未満の画像＝映像中心の画面にだけ効かせる。スライド中心の画面では、同じ配色で文字だけ
- * 違うスライドが「同じ場面」に見えてしまうため。
+ * 判断の材料は、画素の差、macOS の Vision で測る見た目の距離、写っている文字（文字認識）、
+ * 色の分布。色の分布は拡張が記録した trigger.stillFraction（動き続けている画素を除いた
+ * 静止部分の割合）が半分未満の画像＝映像中心の画面にだけ効かせる。スライド中心の画面では、
+ * 同じ配色で文字だけ違うスライドが「同じ場面」に見えてしまうため。
  */
 
 export const THUMB_WIDTH = 160;
@@ -28,6 +28,15 @@ const IDENTICAL_MAX_DIFF = 0.05;
 const PIXEL_DIFF = 24;
 /** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
 const PHOTO_ENTROPY_BITS = 3.0;
+/** 文字のそろい具合がこれ以上なら同じ文字とみなす（文字認識の読み違いを許す） */
+const SAME_TEXT_SIM = 0.8;
+/** 短い方の文字のこの割合が、順序を保って長い方に含まれていれば「含まれる」 */
+const CONTAINED_MIN = 0.9;
+/**
+ * 画素の差がこの割合以下で、文字が同じか一方に含まれるなら、同じスライドの途中の状態とみなす
+ * （箇条書きが 1 行増えた、字幕が出かけている）。7 章で字幕の出かけの画像が Vision では 0.70 も離れていたため
+ */
+const GROWN_MAX_DIFF = 0.1;
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string): Promise<Uint8Array | null> {
@@ -95,15 +104,56 @@ export function colorEntropy(a: Uint8Array): number {
   return bits;
 }
 
-/** macOS の Vision で測った「見た目の距離」を使うときの設定 */
+/** 文字認識の結果を比べやすくする（空白と改行を除き、1 文字ずつに分ける） */
+function normalizeText(text: string): string[] {
+  return [...text.replace(/\s+/g, '')];
+}
+
+function editDistance(a: readonly string[], b: readonly string[]): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur.push(Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)));
+    }
+    prev = cur;
+  }
+  return prev[b.length]!;
+}
+
+/** 文字のそろい具合（0〜1）。読み違いを許すため編集距離で測る。両方に文字がなければ undefined（比べられない） */
+export function textSimilarity(a: string, b: string): number | undefined {
+  const x = normalizeText(a);
+  const y = normalizeText(b);
+  if (x.length === 0 && y.length === 0) return undefined;
+  if (x.length === 0 || y.length === 0) return 0;
+  return 1 - editDistance(x, y) / Math.max(x.length, y.length);
+}
+
+/** 短い方の文字が、順序を保って長い方にほぼ含まれるか（字幕の一部だけ読めた、箇条書きが 1 行増えた） */
+export function textContained(a: string, b: string): boolean {
+  const x = normalizeText(a);
+  const y = normalizeText(b);
+  if (x.length === 0 || y.length === 0) return false;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  let i = 0;
+  for (const ch of long) if (i < short.length && ch === short[i]) i++;
+  return i / short.length >= CONTAINED_MIN;
+}
+
+/** macOS の Vision で測った「見た目の距離」と「写っている文字」を使うときの設定 */
 export type VisionOptions = {
   /** 画像の並び順（index）で距離を返す。測れない組は undefined */
   distance: (a: number, b: number) => number | undefined;
   /** これ以下なら、どんな画面でも同じとみなす（メニューを開いた・少しスクロールした程度） */
   tight: number;
-  /** 両方が写真・映像なら、これ以下でも同じ場面とみなす（被写体が動いた程度） */
+  /** 両方が写真・映像なら、これ以下でも同じ場面とみなす（被写体が動いた程度）。文字が同じ画像同士もこの距離まで */
   photo: number;
+  /** 画像に写っている文字（字幕・見出し）。読めなかった画像は undefined */
+  text?: (index: number) => string | undefined;
 };
+
+export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'same-scene' | 'superseded';
 
 export type SceneDecision = {
   filename: string;
@@ -111,21 +161,31 @@ export type SceneDecision = {
   shown: boolean;
   /** 載せない場合、代わりに載っている画像 */
   sameSceneAs?: string;
-  /** 外した理由: 中身が同じ / 見た目が同じ（Vision） / 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った */
-  reason?: 'identical' | 'vision' | 'same-scene' | 'superseded';
+  /**
+   * 外した理由: 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い / 同じスライドの途中の状態 /
+   * 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った
+   */
+  reason?: SceneReason;
+  /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
+  via?: string;
   /** 載せる画像が、同じ場面の最初の画像の代わりであるとき、その最初の画像。発話の割り当てにはこちらの時刻を使う */
   standsFor?: string;
-  /** 最後に載せた画像との見た目の距離（Vision。0 に近いほど似ている） */
+  /** 比べた画像との見た目の距離（Vision。0 に近いほど似ている） */
   vision?: number;
-  /** 最後に載せた画像との色の一致（判定の材料） */
+  /** 比べた画像との色の一致（判定の材料） */
   colorMatch?: number;
-  /** 最後に載せた画像との画素の差 */
+  /** 比べた画像との画素の差 */
   pixelDiff?: number;
+  /** 比べた画像との文字のそろい具合（0〜1）。両方に文字がなければ付かない */
+  textSim?: number;
 };
 
+type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim'>;
+type Verdict = { reason?: SceneReason; metrics: Metrics };
+
 /**
- * 順に見て、最後に載せた画像と「同じ場面」なら載せない。
- * 映像中心の画面（trigger.stillFraction が半分未満）で、色の一致が threshold 以上のときだけ。
+ * 順に見て、最後に載せた画像と「同じ」なら載せない。基準の画像とは離れてしまっても、
+ * 直前の（外した）画像と強い根拠で同じなら、場面が少しずつ変わっているだけとみなして外す。
  * サムネイルが取れなかった画像は載せる。
  */
 export function pickShownSlides(
@@ -147,42 +207,68 @@ export function pickShownSlides(
     }
     return e;
   };
-  slides.forEach((slide, index) => {
+  /**
+   * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
+   * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する
+   */
+  const compare = (index: number, against: number, strongOnly: boolean): Verdict | null => {
+    const slide = slides[index]!;
+    const other = slides[against]!;
     const thumb = thumbs.get(slide.filename);
-    const lastThumb = lastShown ? thumbs.get(lastShown.slide.filename) : undefined;
-    const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
-    if (thumb && lastThumb && lastShown) {
-      const last = lastShown;
-      const diff = pixelDiff(thumb, lastThumb);
-      const base = { filename: slide.filename, sameSceneAs: last.slide.filename, pixelDiff: round(diff) };
-      // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
-      if (diff <= IDENTICAL_MAX_DIFF) {
-        decisions.push({ ...base, shown: false, reason: 'identical' });
-        return;
+    const otherThumb = thumbs.get(other.filename);
+    if (!thumb || !otherThumb) return null;
+    const diff = pixelDiff(thumb, otherThumb);
+    const d = vision?.distance(index, against);
+    const text = vision?.text?.(index);
+    const otherText = vision?.text?.(against);
+    const hasText = text !== undefined && otherText !== undefined;
+    const textSim = hasText ? textSimilarity(text, otherText) : undefined;
+    const metrics: Metrics = { pixelDiff: round(diff), ...(d !== undefined ? { vision: round(d) } : {}), ...(textSim !== undefined ? { textSim: round(textSim) } : {}) };
+    // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
+    if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
+    if (vision && d !== undefined) {
+      // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ
+      if (vision.tight > 0 && d <= vision.tight) return { reason: 'vision', metrics };
+      if (vision.photo > 0 && d <= vision.photo) {
+        // 3. 字幕や見出しの文字が同じ（両方に文字がない場合も含む）で見た目も近ければ、同じ場面。
+        //    同じテンプレートで文字だけ違うスライドはここで残る
+        if (hasText && (textSim === undefined || textSim >= SAME_TEXT_SIM)) return { reason: 'text', metrics };
+        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす
+        const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
+        if (!strongOnly && bothPhoto) return { reason: 'vision', metrics };
       }
-      // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ。
-      //    写真や映像なら、被写体が動いた程度までを同じ場面とみなす
-      const d = vision?.distance(index, last.index);
-      if (vision && d !== undefined) {
-        const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(last.slide.filename, lastThumb) >= PHOTO_ENTROPY_BITS;
-        if ((vision.tight > 0 && d <= vision.tight) || (vision.photo > 0 && bothPhoto && d <= vision.photo)) {
-          decisions.push({ ...base, shown: false, reason: 'vision', vision: round(d) });
-          return;
+    }
+    // 5. 画素がほとんど同じで文字が同じか一方に含まれるなら、同じスライドの途中の状態
+    if (diff <= GROWN_MAX_DIFF && hasText && text && otherText && (textSim! >= SAME_TEXT_SIM || textContained(text, otherText))) {
+      return { reason: 'grown', metrics };
+    }
+    if (strongOnly) return { metrics };
+    // 6. 映像中心の画面では、色の分布が同じなら同じ場面
+    const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
+    if (threshold > 0 && footage) {
+      const match = colorMatch(thumb, otherThumb);
+      metrics.colorMatch = round(match);
+      if (match >= threshold) return { reason: 'same-scene', metrics };
+    }
+    return { metrics };
+  };
+  slides.forEach((slide, index) => {
+    if (lastShown) {
+      const last = lastShown;
+      let verdict = compare(index, last.index, false);
+      let via: string | undefined;
+      if (verdict && !verdict.reason && index - 1 !== last.index) {
+        const previous = compare(index, index - 1, true);
+        if (previous?.reason) {
+          verdict = previous;
+          via = slides[index - 1]!.filename;
         }
       }
-      // 3. 映像中心の画面では、色の分布が同じなら同じ場面
-      const match = threshold > 0 && footage ? colorMatch(thumb, lastThumb) : undefined;
-      if (match !== undefined && match >= threshold) {
-        decisions.push({ ...base, shown: false, reason: 'same-scene', colorMatch: round(match) });
+      if (verdict?.reason) {
+        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
         return;
       }
-      decisions.push({
-        filename: slide.filename,
-        shown: true,
-        ...(match !== undefined ? { colorMatch: round(match) } : {}),
-        ...(d !== undefined ? { vision: round(d) } : {}),
-        pixelDiff: round(diff),
-      });
+      decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
     } else {
       decisions.push({ filename: slide.filename, shown: true });
     }

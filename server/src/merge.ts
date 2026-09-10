@@ -34,21 +34,85 @@ export function slideStart(slide: SlideEntry, leadSec = CHANGE_LEAD_SEC): number
   return slide.reason === 'change' ? Math.max(0, slide.videoTime - leadSec) : slide.videoTime;
 }
 
-/** 各区間に、開始時点で表示中のスライド（videoTime <= videoStart の最後）を割り当てる */
-export function assignSlides<T extends { videoStart: number }>(
+/**
+ * 区間の終わりが文末らしいか（SPEC §13.4）。
+ * WhisperKit の区間は文の途中で切れることが多く、句点も付かないことがあるので、
+ * 句点のほかに「です・ます・ました・でしょう」などの述語の終わりも文末とみなす。
+ * 「〜が」「〜て」「〜、」で終わる区間は次の区間と同じ文とみなす
+ */
+const SENTENCE_END = /(?:[。．！？!?]|(?:です|ます|ません|でした|ました|ましょう|でしょう|ください|である|だ|ない|た)(?:ね|よ|よね|か)?)[」』）)]*$/;
+/** 区間の間がこれ以上空いていれば、句点がなくても文が切れたとみなす（秒） */
+export const SENTENCE_GAP_SEC = 2;
+
+export function endsSentence(text: string): boolean {
+  const t = text.trim();
+  return t === '' || SENTENCE_END.test(t);
+}
+
+/** 区間を文ごとにまとめた index の範囲 [from, to) の並び。本文がなければ区間ごと */
+export function sentenceUnits<T extends { videoStart: number; videoEnd?: number; text?: string }>(segments: readonly T[]): Array<[number, number]> {
+  const units: Array<[number, number]> = [];
+  let from = 0;
+  for (let i = 1; i <= segments.length; i++) {
+    const prev = segments[i - 1]!;
+    const next = segments[i];
+    const gap = next && prev.videoEnd !== undefined ? next.videoStart - prev.videoEnd : 0;
+    if (!next || endsSentence(prev.text ?? '') || gap >= SENTENCE_GAP_SEC) {
+      units.push([from, i]);
+      from = i;
+    }
+  }
+  return units;
+}
+
+/**
+ * 各区間に表示中のスライドを割り当てる。
+ * 1 つの文（sentenceUnits）は同じスライドに付ける。文の途中でスライドが変わっていたら、
+ * その文の間に長く映っていた方のスライドに文ごと付ける（画像が文の途中に挟まらないように）
+ */
+export function assignSlides<T extends { videoStart: number; videoEnd?: number; text?: string }>(
   segments: readonly T[],
   slides: readonly SlideEntry[],
   leadSec = CHANGE_LEAD_SEC,
 ): Array<T & { slide?: string }> {
   const ordered = [...slides].sort((a, b) => slideStart(a, leadSec) - slideStart(b, leadSec));
-  return segments.map((segment) => {
+  const starts = ordered.map((s) => slideStart(s, leadSec));
+  const shownAt = (t: number): SlideEntry | undefined => {
     let current: SlideEntry | undefined;
-    for (const slide of ordered) {
-      if (slideStart(slide, leadSec) <= segment.videoStart) current = slide;
+    for (let i = 0; i < ordered.length; i++) {
+      if (starts[i]! <= t) current = ordered[i];
       else break;
     }
-    return current ? { ...segment, slide: current.filename } : { ...segment };
-  });
+    return current;
+  };
+  const out: Array<T & { slide?: string }> = segments.map((segment) => ({ ...segment }));
+  for (const [from, to] of sentenceUnits(segments)) {
+    const first = segments[from]!;
+    const last = segments[to - 1]!;
+    const unitStart = first.videoStart;
+    const unitEnd = Math.max(unitStart, last.videoEnd ?? last.videoStart);
+    // 文の間を、映っていたスライドごとの区間に分け、いちばん長い区間のスライドを選ぶ（同じ長さなら先のもの）
+    let best = shownAt(unitStart);
+    let bestCover = -1;
+    let current = best;
+    let at = unitStart;
+    for (let i = 0; i < ordered.length; i++) {
+      const start = starts[i]!;
+      if (start <= unitStart) continue;
+      if (start >= unitEnd) break;
+      if (start - at > bestCover) {
+        bestCover = start - at;
+        best = current;
+      }
+      at = start;
+      current = ordered[i];
+    }
+    if (unitEnd - at > bestCover) best = current;
+    for (let i = from; i < to; i++) {
+      if (best) out[i]!.slide = best.filename;
+    }
+  }
+  return out;
 }
 
 export function isSlideList(value: unknown): value is SlideEntry[] {

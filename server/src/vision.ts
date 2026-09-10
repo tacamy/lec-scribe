@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveBin, run } from './exec.ts';
 
 /**
- * macOS の Vision で画像の「見た目の距離」を測る（SPEC §13.4b）。
+ * macOS の Vision で画像の「見た目の距離」を測り、写っている文字を読む（SPEC §13.4b）。
  * Swift の小さな補助コマンド（tools/imagefp.swift）を初回に swiftc でビルドして使う。
  * swiftc がない（Command Line Tools 未導入）ときは null を返し、呼び出し側は Vision なしで進める。
  */
@@ -50,15 +50,24 @@ async function build(log: (message: string) => void): Promise<string | null> {
   return bin;
 }
 
-/** 画像同士の距離（0 に近いほど似ている）。測れない組は undefined。補助コマンドがなければ null */
+export type VisionMeasure = {
+  /** 画像同士の距離（0 に近いほど似ている）。測れない組は undefined */
+  distance: (a: number, b: number) => number | undefined;
+  /** 画像に写っている文字（行を改行でつないだもの）。読めなかった画像は undefined */
+  text: (index: number) => string | undefined;
+};
+
+type HelperOutput = { distances: Array<Array<number | null>>; texts?: Array<string | null> };
+
+/** 画像同士の距離と、画像に写っている文字。補助コマンドがなければ null */
 export async function visionDistances(
   files: readonly string[],
   log: (message: string) => void = () => undefined,
-): Promise<((a: number, b: number) => number | undefined) | null> {
+): Promise<VisionMeasure | null> {
   if (files.length < 2) return null;
   const bin = await ensureVisionHelper(log);
   if (!bin) return null;
-  const matrix = await new Promise<Array<Array<number | null>> | null>((resolve) => {
+  const output = await new Promise<HelperOutput | null>((resolve) => {
     const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
@@ -74,16 +83,23 @@ export async function visionDistances(
         return;
       }
       try {
-        resolve((JSON.parse(out) as { distances: Array<Array<number | null>> }).distances);
+        resolve(JSON.parse(out) as HelperOutput);
       } catch {
         resolve(null);
       }
     });
     child.stdin.end(files.join('\n') + '\n');
   });
-  if (!matrix) return null;
-  return (a, b) => {
-    const v = matrix[a]?.[b];
-    return typeof v === 'number' ? v : undefined;
+  if (!output || !Array.isArray(output.distances)) return null;
+  const { distances, texts } = output;
+  return {
+    distance: (a, b) => {
+      const v = distances[a]?.[b];
+      return typeof v === 'number' ? v : undefined;
+    },
+    text: (index) => {
+      const t = texts?.[index];
+      return typeof t === 'string' ? t : undefined;
+    },
   };
 }

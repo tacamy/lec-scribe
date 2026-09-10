@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveBin, run } from './exec.ts';
 import type { SlideEntry } from './merge.ts';
-import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, shownSlides, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, shownSlides, textContained, textSimilarity, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
 
@@ -156,6 +156,111 @@ describe('Vision の見た目の距離', () => {
     const d = pickShownSlides(slides, thumbs, 0.65, withDistances({}));
     expect(d.every((x) => x.shown)).toBe(true);
     expect(pickShownSlides(slides, thumbs, 0.65).every((x) => x.shown)).toBe(true);
+  });
+});
+
+describe('写っている文字（Vision の文字認識）', () => {
+  /** 白地に文字のスライド風。shade で文字の濃さを変える */
+  const slideLike = (shade: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let p = 0; p < PIXELS; p += 7) {
+      f[p * 4] = shade;
+      f[p * 4 + 1] = shade;
+      f[p * 4 + 2] = shade;
+    }
+    return f;
+  };
+  /** base の画素の 8% だけ変えた画像（箇条書きが 1 行増えた程度） */
+  const grownFrom = (base: Uint8Array) => {
+    const f = new Uint8Array(base);
+    for (let p = 0; p < PIXELS * 0.08; p++) {
+      f[p * 4] = 0;
+      f[p * 4 + 1] = 0;
+      f[p * 4 + 2] = 0;
+    }
+    return f;
+  };
+  const photo = (seed: number) => {
+    const f = new Uint8Array(PIXELS * 4);
+    let x = seed;
+    for (let i = 0; i < PIXELS * 4; i++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      f[i] = i % 4 === 3 ? 255 : (x >> 16) & 0xff;
+    }
+    return f;
+  };
+  const thumbs = new Map<string, Uint8Array>([
+    ['slide_001.png', slideLike(20)],
+    ['slide_002.png', slideLike(80)],
+    ['slide_003.png', grownFrom(slideLike(80))],
+    ['slide_004.png', photo(1)],
+    ['slide_005.png', photo(2)],
+  ]);
+  const slides = [1, 2, 3, 4, 5].map((n) => slide(n, 0.9));
+  const withVision = (distances: Record<string, number>, texts: Array<string | undefined>) => ({
+    distance: (a: number, b: number) => distances[`${Math.min(a, b)}-${Math.max(a, b)}`],
+    text: (i: number) => texts[i],
+    tight: 0.2,
+    photo: 0.45,
+  });
+
+  it('textSimilarity は読み違いを許し、textContained は一部だけ読めた字幕や増えた箇条書きを含むとみなす', () => {
+    expect(textSimilarity('ネジレバネの幼虫は自分で歩いて寄生する', 'ネジレバネの幼虫は自分で歩いて寄生する')).toBe(1);
+    expect(textSimilarity('ネジレバネの幼虫は自分で歩いて寄生する', 'ネジレバネの幼虫は自分で歩いて奇生する')).toBeGreaterThan(0.9);
+    expect(textSimilarity('カメラ本体', '粗微動ユニット')).toBeLessThan(0.3);
+    expect(textSimilarity('', '')).toBeUndefined();
+    expect(textSimilarity('カメラ本体', '')).toBe(0);
+    expect(textContained('カメラ本体\nカメラレンズ', 'カメラ本体\nベローズ\nカメラレンズ')).toBe(true);
+    expect(textContained('ネジレバネの幼虫は自分で歩い\n幼虫に寄生す', 'ネジレバネの幼虫は自分で歩いてカメムシの幼虫に寄生する')).toBe(true);
+    expect(textContained('カメラ本体', '粗微動ユニット')).toBe(false);
+    expect(textContained('', 'カメラ本体')).toBe(false);
+  });
+
+  it('文字が同じ（または両方にない）で見た目も近ければ、スライド風の画面でも外す', () => {
+    // 1→2: 距離 0.3。同じ字幕なら外す、字幕が違えば残す、両方に文字がなくても外す、読めていなければ残す
+    const same = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.3 }, ['ネジレバネの幼虫', 'ネジレバネの幼虫']), 'first');
+    expect(same.map((x) => x.shown)).toEqual([true, false]);
+    expect(same[1]!.reason).toBe('text');
+    expect(same[1]!.textSim).toBe(1);
+    const differ = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.3 }, ['カメラ本体', '粗微動ユニット']), 'first');
+    expect(differ.map((x) => x.shown)).toEqual([true, true]);
+    const none = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.3 }, ['', '']), 'first');
+    expect(none.map((x) => x.shown)).toEqual([true, false]);
+    const unread = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.3 }, [undefined, undefined]), 'first');
+    expect(unread.map((x) => x.shown)).toEqual([true, true]);
+    // 距離が photo より大きければ文字が同じでも残す
+    const far = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.6 }, ['ネジレバネの幼虫', 'ネジレバネの幼虫']), 'first');
+    expect(far.map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('画素がほとんど同じで文字が一方に含まれるなら、途中の状態として外す（見た目の距離が離れていても）', () => {
+    // 2→3: 画素の差 8%。字幕が出かけ（一部だけ読めた）で Vision の距離は 0.7
+    const d = pickShownSlides(slides.slice(1, 3), thumbs, 0.65, withVision({ '0-1': 0.7 }, ['ネジレバネの幼虫は自分で歩い', 'ネジレバネの幼虫は自分で歩いて寄生する']), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false]);
+    expect(d[1]!.reason).toBe('grown');
+    // 文字が別物なら残す
+    const e = pickShownSlides(slides.slice(1, 3), thumbs, 0.65, withVision({ '0-1': 0.7 }, ['カメラ本体', '粗微動ユニット']), 'first');
+    expect(e.map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('基準の画像とは離れても、直前の画像と文字が同じで近ければ外す（場面が少しずつ変わる）', () => {
+    // 1→2: 0.3 で同じ字幕 → 外す。3 は 1 とは 0.6 だが 2 とは 0.3 → 外す（via は 2）
+    const texts = ['同じ字幕', '同じ字幕', '同じ字幕'];
+    const d = pickShownSlides(slides.slice(0, 3), thumbs, 0.65, withVision({ '0-1': 0.3, '0-2': 0.6, '1-2': 0.3 }, texts), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, false]);
+    expect(d[2]!.sameSceneAs).toBe('slide_001.png');
+    expect(d[2]!.via).toBe('slide_002.png');
+    expect(d[2]!.vision).toBe(0.3);
+  });
+
+  it('直前の画像とは、写真同士の広い判定は使わない', () => {
+    // 写真 3 枚（文字は読めていない）。5 は 4 と 0.4 → 写真同士の判定で外す。
+    // 6 は 4（基準）とは 0.6 で別物、5（直前）とは 0.4 だが、直前との比較に写真同士の広い判定は使わないので載る
+    const withThird = new Map(thumbs);
+    withThird.set('slide_006.png', photo(3));
+    const six = [4, 5, 6].map((n) => slide(n, 0.9));
+    const d = pickShownSlides(six, withThird, 0.65, withVision({ '0-1': 0.4, '0-2': 0.6, '1-2': 0.4 }, [undefined, undefined, undefined]), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, true]);
   });
 });
 

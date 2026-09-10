@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -17,10 +17,62 @@ describe('slideStart', () => {
   });
 });
 
+describe('endsSentence', () => {
+  it('句点か、です・ます・でしょう などの述語で終われば文末', () => {
+    for (const t of ['お話しします。', '説明してきました', '見てみましょう', '脳があるのでしょうか', 'いっぱいです」', 'ですね', '珍しいことです！', '']) {
+      expect(endsSentence(t), t).toBe(true);
+    }
+  });
+  it('助詞や「〜て」「、」で終われば文の途中', () => {
+    for (const t of ['産むというのが', '珍しいため撮影も難しく', '成長段階がある昆虫であること、', 'できないので', '近くにいるカメムシを見つけて']) {
+      expect(endsSentence(t), t).toBe(false);
+    }
+  });
+});
+
+describe('sentenceUnits', () => {
+  it('文の途中で切れた区間を次の区間とまとめ、2 秒以上空けば句点がなくても切る', () => {
+    const segments = [seg(0, 'メスが直接幼虫を産むというのが'), seg(2, 'イメージしにくいかもしれません'), seg(4, '次はねじれ羽の生活サイクルについて'), seg(9, 'お話しします'), seg(11, '次の動画もお楽しみに')];
+    expect(sentenceUnits(segments)).toEqual([
+      [0, 2],
+      [2, 3],
+      [3, 4],
+      [4, 5],
+    ]);
+  });
+  it('本文のない区間は区間ごと', () => {
+    expect(sentenceUnits([{ videoStart: 0 }, { videoStart: 1 }])).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+  });
+});
+
 describe('assignSlides', () => {
   it('assigns each segment to the slide shown at its start (D-14)', () => {
-    const out = assignSlides([seg(5, 'before'), seg(10, 'first'), seg(59.9, 'still first'), seg(60, 'second'), seg(119, 'second too'), seg(500, 'third')], slides);
+    const out = assignSlides([seg(5, '冒頭。'), seg(10, '一枚目。'), seg(57.9, 'まだ一枚目。'), seg(60, '二枚目。'), seg(119, 'まだ二枚目。'), seg(500, '三枚目。')], slides);
     expect(out.map((s) => s.slide)).toEqual([undefined, 'slide_001.png', 'slide_001.png', 'slide_002.png', 'slide_002.png', 'slide_003.png']);
+  });
+
+  it('文の途中でスライドが変わったら、長く映っていた方のスライドに文ごと付ける', () => {
+    // 58.5〜62.5 秒の 1 文。切り替えは 60 秒: slide_001 に 1.5 秒、slide_002 に 2.5 秒
+    const later = assignSlides([seg(58.5, 'メスが直接幼虫を産むというのが'), seg(60.5, 'イメージしにくいかもしれません'), seg(62.5, 'ここではその映像を見てみましょう')], slides);
+    expect(later.map((s) => s.slide)).toEqual(['slide_002.png', 'slide_002.png', 'slide_002.png']);
+    // 55〜61 秒の 1 文。slide_001 に 5 秒、slide_002 に 1 秒
+    const earlier = assignSlides([seg(55, 'メスが直接幼虫を産むというのが'), seg(57, 'とても'), seg(59, 'イメージしにくいかもしれません'), seg(61, '映像を見てみましょう')], slides);
+    expect(earlier.map((s) => s.slide)).toEqual(['slide_001.png', 'slide_001.png', 'slide_001.png', 'slide_002.png']);
+  });
+
+  it('1 つの区間の中で切り替わったときも、長く映っていた方に付ける', () => {
+    const out = assignSlides([{ ...seg(59, '二枚目の話です。'), videoEnd: 64 }], slides);
+    expect(out[0]!.slide).toBe('slide_002.png');
+  });
+});
+
+describe('groupSections', () => {
+  it('画像が文の途中に入らない', () => {
+    const sections = groupSections([seg(50, '一枚目の話です。'), seg(58.5, 'メスが直接幼虫を産むというのが'), seg(60.5, 'イメージしにくいかもしれません'), seg(62.5, 'ここではその映像を見てみましょう')], slides);
+    expect(sections.map((s) => s.texts)).toEqual([['一枚目の話です。'], ['メスが直接幼虫を産むというのが', 'イメージしにくいかもしれません', 'ここではその映像を見てみましょう'], []]);
   });
 });
 
