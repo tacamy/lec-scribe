@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveBin, run } from './exec.ts';
 import type { SlideEntry } from './merge.ts';
-import { colorMatch, pickShownSlides, readThumbnail, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
 
@@ -92,5 +92,69 @@ describe('readThumbnail', () => {
     const broken = path.join(dir, 'broken.png');
     await writeFile(broken, 'not a png');
     expect(await readThumbnail(ffmpeg, broken)).toBeNull();
+  });
+});
+
+describe('Vision の見た目の距離', () => {
+  /** 白地に文字のスライド風（色の多様さが小さい）。shade で文字の濃さを変える */
+  const slideLike = (shade: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let p = 0; p < PIXELS; p += 7) {
+      f[p * 4] = shade;
+      f[p * 4 + 1] = shade;
+      f[p * 4 + 2] = shade;
+    }
+    return f;
+  };
+  /** 写真風（RGB がそれぞれ独立に散らばる = 色の多様さが大きい） */
+  const photo = (seed: number) => {
+    const f = new Uint8Array(PIXELS * 4);
+    let x = seed;
+    for (let i = 0; i < PIXELS * 4; i++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      f[i] = i % 4 === 3 ? 255 : (x >> 16) & 0xff;
+    }
+    return f;
+  };
+  const thumbs = new Map<string, Uint8Array>([
+    ['slide_001.png', slideLike(20)],
+    ['slide_002.png', slideLike(80)],
+    ['slide_003.png', photo(1)],
+    ['slide_004.png', photo(2)],
+  ]);
+  const slides = [1, 2, 3, 4].map((n) => slide(n, 0.9)); // スライド扱い（色の分布の判定は効かない）
+  const withDistances = (table: Record<string, number>) => ({
+    distance: (a: number, b: number) => table[`${Math.min(a, b)}-${Math.max(a, b)}`],
+    tight: 0.2,
+    photo: 0.55,
+  });
+
+  it('写真かどうかは色の多様さで見分ける', () => {
+    expect(colorEntropy(slideLike(20))).toBeLessThan(3);
+    expect(colorEntropy(photo(1))).toBeGreaterThan(3);
+  });
+
+  it('距離が小さければどんな画面でも外し、写真同士なら少し離れていても外す', () => {
+    // 1→2: スライド同士で 0.3（テンプレートが同じだけ）→ 残す。3→4: 写真同士で 0.4 → 外す
+    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.3, '1-2': 0.9, '2-3': 0.4 }));
+    expect(d.map((x) => x.shown)).toEqual([true, true, true, false]);
+    expect(d[3]!.reason).toBe('vision');
+    expect(d[1]!.vision).toBe(0.3);
+    // スライド同士でも 0.15（メニューを開いただけ）なら外す
+    const e = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.15, '1-2': 0.9, '2-3': 0.9 }));
+    expect(e.map((x) => x.shown)).toEqual([true, false, true, true]);
+  });
+
+  it('比較の相手は「最後に載せた画像」', () => {
+    // 2 を外したら、3 は 1 と比べる
+    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({ '0-1': 0.1, '0-2': 0.1, '1-2': 0.9, '2-3': 0.9 }));
+    expect(d.map((x) => x.shown)).toEqual([true, false, false, true]);
+    expect(d[2]!.sameSceneAs).toBe('slide_001.png');
+  });
+
+  it('距離が測れない組や Vision なしでは、色と画素の判定だけになる', () => {
+    const d = pickShownSlides(slides, thumbs, 0.65, withDistances({}));
+    expect(d.every((x) => x.shown)).toBe(true);
+    expect(pickShownSlides(slides, thumbs, 0.65).every((x) => x.shown)).toBe(true);
   });
 });

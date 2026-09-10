@@ -71,6 +71,8 @@ beforeAll(async () => {
     ollamaUrl: 'http://127.0.0.1:1',
     llmCharsPerCall: 4000,
     sceneColor: 0, // ffmpeg のスタブではサムネイルが作れないので、場面の判定は切る
+    sceneVision: 0,
+    sceneVisionPhoto: 0,
   };
   const { server } = createApp(config, TOKEN);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

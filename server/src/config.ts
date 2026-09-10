@@ -30,6 +30,10 @@ export type ServerConfig = {
   llmCharsPerCall: number;
   /** 同じ場面の画像を notes.md から外す色の一致の閾値（0〜1）。0 で無効（SPEC §13.4b） */
   sceneColor: number;
+  /** Vision の見た目の距離がこれ以下なら同じ画面（メニュー・スクロール程度）。0 で Vision を使わない */
+  sceneVision: number;
+  /** 両方が写真・映像なら、見た目の距離がこれ以下で同じ場面 */
+  sceneVisionPhoto: number;
 };
 
 export const DEFAULT_PORT = 47321;
@@ -58,6 +62,8 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
     llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '12000')),
     sceneColor: Number(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65')),
+    sceneVision: Number(pick('scene-vision', 'LEC_SCRIBE_SCENE_VISION', '0.2')),
+    sceneVisionPhoto: Number(pick('scene-vision-photo', 'LEC_SCRIBE_SCENE_VISION_PHOTO', '0.55')),
   };
 }
 

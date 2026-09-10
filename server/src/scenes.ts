@@ -26,6 +26,8 @@ const FOOTAGE_MAX_STILL = 0.5;
 const IDENTICAL_MAX_DIFF = 0.05;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
+/** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
+const PHOTO_ENTROPY_BITS = 3.0;
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string): Promise<Uint8Array | null> {
@@ -72,14 +74,47 @@ export function pixelDiff(a: Uint8Array, b: Uint8Array): number {
   return pixels === 0 ? 0 : changed / pixels;
 }
 
+/** 色の分布の多様さ（ビット）。白地に文字のスライドは小さく、写真や映像は大きい */
+export function colorEntropy(a: Uint8Array): number {
+  const bins = COLOR_BINS ** 3;
+  const step = Math.ceil(256 / COLOR_BINS);
+  const h = new Float64Array(bins);
+  let pixels = 0;
+  for (let i = 0; i + 3 < a.length; i += 4) {
+    h[Math.floor(a[i]! / step) * COLOR_BINS * COLOR_BINS + Math.floor(a[i + 1]! / step) * COLOR_BINS + Math.floor(a[i + 2]! / step)]!++;
+    pixels++;
+  }
+  if (pixels === 0) return 0;
+  let bits = 0;
+  for (let k = 0; k < bins; k++) {
+    if (h[k]! > 0) {
+      const p = h[k]! / pixels;
+      bits -= p * Math.log2(p);
+    }
+  }
+  return bits;
+}
+
+/** macOS の Vision で測った「見た目の距離」を使うときの設定 */
+export type VisionOptions = {
+  /** 画像の並び順（index）で距離を返す。測れない組は undefined */
+  distance: (a: number, b: number) => number | undefined;
+  /** これ以下なら、どんな画面でも同じとみなす（メニューを開いた・少しスクロールした程度） */
+  tight: number;
+  /** 両方が写真・映像なら、これ以下でも同じ場面とみなす（被写体が動いた程度） */
+  photo: number;
+};
+
 export type SceneDecision = {
   filename: string;
   /** notes.md に載せるか */
   shown: boolean;
   /** 載せない場合、代わりに載っている画像 */
   sameSceneAs?: string;
-  /** 外した理由: 中身が同じ / 同じ場面 */
-  reason?: 'identical' | 'same-scene';
+  /** 外した理由: 中身が同じ / 見た目が同じ（Vision） / 同じ場面（色の分布） */
+  reason?: 'identical' | 'vision' | 'same-scene';
+  /** 最後に載せた画像との見た目の距離（Vision。0 に近いほど似ている） */
+  vision?: number;
   /** 最後に載せた画像との色の一致（判定の材料） */
   colorMatch?: number;
   /** 最後に載せた画像との画素の差 */
@@ -95,31 +130,60 @@ export function pickShownSlides(
   slides: readonly SlideEntry[],
   thumbs: ReadonlyMap<string, Uint8Array>,
   threshold: number,
+  vision?: VisionOptions,
 ): SceneDecision[] {
   const decisions: SceneDecision[] = [];
-  let lastShown: SlideEntry | null = null;
-  for (const slide of slides) {
+  let lastShown: { slide: SlideEntry; index: number } | null = null;
+  const entropyOf = new Map<string, number>();
+  const entropy = (filename: string, thumb: Uint8Array) => {
+    let e = entropyOf.get(filename);
+    if (e === undefined) {
+      e = colorEntropy(thumb);
+      entropyOf.set(filename, e);
+    }
+    return e;
+  };
+  slides.forEach((slide, index) => {
     const thumb = thumbs.get(slide.filename);
-    const lastThumb = lastShown ? thumbs.get(lastShown.filename) : undefined;
+    const lastThumb = lastShown ? thumbs.get(lastShown.slide.filename) : undefined;
     const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
     if (thumb && lastThumb && lastShown) {
+      const last = lastShown;
       const diff = pixelDiff(thumb, lastThumb);
-      // 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
+      const base = { filename: slide.filename, sameSceneAs: last.slide.filename, pixelDiff: round(diff) };
+      // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
       if (diff <= IDENTICAL_MAX_DIFF) {
-        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: lastShown.filename, reason: 'identical', pixelDiff: round(diff) });
-        continue;
+        decisions.push({ ...base, shown: false, reason: 'identical' });
+        return;
       }
+      // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ。
+      //    写真や映像なら、被写体が動いた程度までを同じ場面とみなす
+      const d = vision?.distance(index, last.index);
+      if (vision && d !== undefined) {
+        const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(last.slide.filename, lastThumb) >= PHOTO_ENTROPY_BITS;
+        if ((vision.tight > 0 && d <= vision.tight) || (vision.photo > 0 && bothPhoto && d <= vision.photo)) {
+          decisions.push({ ...base, shown: false, reason: 'vision', vision: round(d) });
+          return;
+        }
+      }
+      // 3. 映像中心の画面では、色の分布が同じなら同じ場面
       const match = threshold > 0 && footage ? colorMatch(thumb, lastThumb) : undefined;
       if (match !== undefined && match >= threshold) {
-        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: lastShown.filename, reason: 'same-scene', colorMatch: round(match), pixelDiff: round(diff) });
-        continue;
+        decisions.push({ ...base, shown: false, reason: 'same-scene', colorMatch: round(match) });
+        return;
       }
-      decisions.push({ filename: slide.filename, shown: true, ...(match !== undefined ? { colorMatch: round(match) } : {}), pixelDiff: round(diff) });
+      decisions.push({
+        filename: slide.filename,
+        shown: true,
+        ...(match !== undefined ? { colorMatch: round(match) } : {}),
+        ...(d !== undefined ? { vision: round(d) } : {}),
+        pixelDiff: round(diff),
+      });
     } else {
       decisions.push({ filename: slide.filename, shown: true });
     }
-    lastShown = slide;
-  }
+    lastShown = { slide, index };
+  });
   return decisions;
 }
 

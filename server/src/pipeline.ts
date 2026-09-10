@@ -8,6 +8,7 @@ import { createBackend, outline, polish, type Outline, type PolishOutput } from 
 import { cacheKey, readNotesCache, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail } from './scenes.ts';
+import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
@@ -173,8 +174,21 @@ export class Pipeline {
       if (thumb) thumbs.set(s.filename, thumb);
     }
     if (thumbs.size === 0) return shown;
-    const decisions = pickShownSlides(slides, thumbs, this.config.sceneColor);
-    await writeFile(workPath(dir, 'scenes.json'), JSON.stringify({ threshold: this.config.sceneColor, decisions }, null, 2)).catch(() => undefined);
+    // 見た目の距離（macOS の Vision）。用意できなければ色と画素だけで判定する
+    const distance =
+      this.config.sceneVision > 0 || this.config.sceneVisionPhoto > 0
+        ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log)
+        : null;
+    const decisions = pickShownSlides(
+      slides,
+      thumbs,
+      this.config.sceneColor,
+      distance ? { distance, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined,
+    );
+    await writeFile(
+      workPath(dir, 'scenes.json'),
+      JSON.stringify({ threshold: this.config.sceneColor, vision: distance ? { tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : null, decisions }, null, 2),
+    ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
     if (hidden.length > 0) this.log(`同じ場面として notes.md から外した画像: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
     return new Set(decisions.filter((d) => d.shown).map((d) => d.filename));
