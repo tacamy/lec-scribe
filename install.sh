@@ -66,6 +66,11 @@ fi
 say "サーバーを登録します"
 node "$APP_DIR/server/scripts/agent.mjs" install
 
+# 5. 見た目が同じ画像をまとめる補助コマンド（macOS の Vision を使う小さな Swift プログラム）を先に作っておく。
+#    初回の文字起こしで作ると数十秒待たせるのと、失敗するならここで分かるようにするため
+say "画像の比較に使う補助コマンドを作ります（数十秒）"
+node --experimental-strip-types -e "import('$APP_DIR/server/src/vision.ts').then((m) => m.ensureVisionHelper((line) => console.log('  ' + line))).then((bin) => console.log(bin ? '  作りました: ' + bin : '  作れませんでした（見た目の判定なしで動きます）'))" || true
+
 say "✓ LecScribe サーバーの準備ができました"
 cat <<MSG
   Chrome のツールバーの LecScribe アイコンを押して「このMacと接続」→ Mac の画面で「許可」を押してください。
