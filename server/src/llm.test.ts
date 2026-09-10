@@ -53,7 +53,7 @@ describe('polish', () => {
     expect(calls).toBe(3);
     expect([...results.keys()]).toEqual(['intro', 'slide_002']);
     expect(results.get('intro')).toEqual({ id: 'intro', text: 'intro の本文' });
-    expect(errors).toEqual(['batch 2: rate limited']);
+    expect(errors).toEqual(['batch 2/3: rate limited']);
   });
 });
 
@@ -95,5 +95,53 @@ describe('outline', () => {
     expect(await outline(parts, failing, settings)).toEqual({ error: 'outline: boom' });
     const ok = { name: 'fake', complete: async () => JSON.stringify({ overview: ['要点'], topics: [] }) };
     expect(await outline(parts, ok, settings)).toEqual({ outline: { overview: ['要点'], topics: [] } });
+  });
+});
+
+describe('polish の分割リトライ', () => {
+  const three: PolishInput[] = [
+    { id: 'a', heading: 'a', text: 'あ'.repeat(10) },
+    { id: 'b', heading: 'b', text: 'い'.repeat(10) },
+    { id: 'c', heading: 'c', text: 'う'.repeat(10) },
+  ];
+  const big: LlmSettings = { ...settings, charsPerCall: 1000 }; // 3 節を 1 回で送る
+
+  it('まとめて送って失敗したら、半分に分けてやり直す', async () => {
+    const seen: number[][] = [];
+    const backend = {
+      name: 'fake',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]!);
+        seen.push([ids.length]);
+        if (ids.length === 3) throw new Error('too long'); // まとめて送ると壊れる
+        return JSON.stringify({ sections: ids.map((id) => ({ id, text: `${id} の本文` })) });
+      },
+    };
+    const { results, errors } = await polish(three, backend, big);
+    expect(seen.map((s) => s[0])).toEqual([3, 2, 1]); // 3 → 2 + 1
+    expect([...results.keys()]).toEqual(['a', 'b', 'c']);
+    expect(errors).toEqual([]);
+  });
+
+  it('分けても直らなければ、その分だけ諦めて記録する', async () => {
+    const backend = { name: 'fake', complete: async () => { throw new Error('rate limited'); } };
+    const { results, errors } = await polish(three, backend, big);
+    expect(results.size).toBe(0);
+    expect(errors).toEqual(['batch 1/1a: rate limited', 'batch 1/1b: rate limited']);
+  });
+
+  it('返答に一部の節が入っていなければ、それも失敗として分け直す', async () => {
+    const backend = {
+      name: 'fake',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]!);
+        // まとめて送ると最後の節を落とす
+        const answered = ids.length === 3 ? ids.slice(0, 2) : ids;
+        return JSON.stringify({ sections: answered.map((id) => ({ id, text: `${id} の本文` })) });
+      },
+    };
+    const { results, errors } = await polish(three, backend, big);
+    expect([...results.keys()].sort()).toEqual(['a', 'b', 'c']);
+    expect(errors).toEqual([]);
   });
 });

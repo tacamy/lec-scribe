@@ -290,21 +290,42 @@ export async function polish(
   const results = new Map<string, PolishOutput>();
   const errors: string[] = [];
   const batches = batchSections(sections, settings.charsPerCall);
+
+  /**
+   * 1 回分を送る。返答が壊れた・足りないときは半分に分けて 1 度だけやり直す。
+   * まとめて送るほど呼び出し回数は減るが、返答が長いほど途中で切れやすいので、その受け皿
+   */
+  const send = async (batch: PolishInput[], label: string, canSplit: boolean): Promise<void> => {
+    if (settings.signal?.aborted) return;
+    const ids = batch.map((s) => s.id);
+    const chars = batch.reduce((n, s) => n + s.text.length, 0);
+    log(`${backend.name}: ${label} (${ids.length} sections, ${chars} chars)`);
+    let failure: string | null = null;
+    try {
+      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA);
+      for (const out of parseResponse(raw, ids)) results.set(out.id, out);
+      const missing = ids.filter((id) => !results.has(id));
+      if (missing.length > 0) failure = `no result for ${missing.join(', ')}`;
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    if (!failure) return;
+    if (canSplit && batch.length > 1 && !settings.signal?.aborted) {
+      log(`${backend.name}: ${label} が失敗（${failure}）。半分に分けてやり直します`);
+      const half = Math.ceil(batch.length / 2);
+      await send(batch.slice(0, half), `${label}a`, false);
+      await send(batch.slice(half), `${label}b`, false);
+      return;
+    }
+    errors.push(`${label}: ${failure}`);
+  };
+
   for (const [i, batch] of batches.entries()) {
     if (settings.signal?.aborted) {
       errors.push('cancelled');
       break;
     }
-    const ids = batch.map((s) => s.id);
-    log(`${backend.name}: batch ${i + 1}/${batches.length} (${ids.length} sections, ${batch.reduce((n, s) => n + s.text.length, 0)} chars)`);
-    try {
-      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA);
-      for (const out of parseResponse(raw, ids)) results.set(out.id, out);
-      const missing = ids.filter((id) => !results.has(id));
-      if (missing.length > 0) errors.push(`batch ${i + 1}: no result for ${missing.join(', ')}`);
-    } catch (e) {
-      errors.push(`batch ${i + 1}: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    await send(batch, `batch ${i + 1}/${batches.length}`, true);
   }
   return { results, errors };
 }

@@ -56,7 +56,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     codexBin: pick('codex', 'LEC_SCRIBE_CODEX', 'codex'),
     openaiApiKey: env['OPENAI_API_KEY'] ?? '',
     ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
-    llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '4000')),
+    llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '12000')),
     sceneColor: Number(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65')),
   };
 }
