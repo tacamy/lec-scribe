@@ -4,7 +4,8 @@ import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { createBackend, outline, polish } from './llm.ts';
+import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
+import { cacheKey, readNotesCache, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail } from './scenes.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -28,6 +29,8 @@ export type PipelineStatus = {
     /** notes.md を作れたか。ノート作成が無効なら undefined */
     notes?: boolean;
     notesError?: string;
+    /** 前回の LLM の結果を使い回したか（§13.5b） */
+    notesReused?: boolean;
   };
   /** 各段階にかかった秒 */
   timings?: Partial<Record<'converting' | 'transcribing' | 'merging' | 'polishing', number>>;
@@ -334,7 +337,7 @@ export class Pipeline {
       });
 
       // ノート作成（任意）。失敗しても文字起こしまでは done にする
-      let notes: { notes?: boolean; notesError?: string } = {};
+      let notes: { notes?: boolean; notesError?: string; notesReused?: boolean } = {};
       const llmSettings = {
         kind: this.config.llm,
         model: this.config.llmModel,
@@ -348,14 +351,41 @@ export class Pipeline {
       if (backend) {
         notes = await step('polishing', async () => {
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
-          const { results: polished, errors } = await polish(inputs, backend, llmSettings, this.log);
-          if (signal.aborted) throw new Error('cancelled');
+          // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
+          const key = cacheKey(inputs, { kind: llmSettings.kind, model: llmSettings.model, charsPerCall: llmSettings.charsPerCall });
+          const cached = await readNotesCache(dir, key);
+          let polished: Map<string, PolishOutput>;
+          let topics: Outline | undefined;
+          let errors: string[];
+          let reused = false;
+          if (cached) {
+            this.log(`前回のノートを使い回します（${cached.backend}, ${cached.generatedAt}）`);
+            polished = new Map(cached.polished.map((p) => [p.id, p]));
+            topics = cached.outline;
+            errors = cached.errors ?? [];
+            reused = true;
+          } else {
+            const result = await polish(inputs, backend, llmSettings, this.log);
+            polished = result.results;
+            errors = result.errors;
+            if (signal.aborted) throw new Error('cancelled');
+            if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
+            // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
+            const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
+            const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+            if (signal.aborted) throw new Error('cancelled');
+            topics = made;
+            if (outlineError) errors.push(outlineError);
+            await writeNotesCache(dir, {
+              key,
+              generatedAt: now(),
+              backend: backend.name,
+              polished: [...polished.values()],
+              ...(topics ? { outline: topics } : {}),
+              ...(errors.length > 0 ? { errors } : {}),
+            });
+          }
           if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
-          // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
-          const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
-          const { outline: topics, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
-          if (signal.aborted) throw new Error('cancelled');
-          if (outlineError) errors.push(outlineError);
           await writeFile(
             path.join(dir, NOTES_FILE),
             buildNotesMarkdown({
@@ -367,7 +397,11 @@ export class Pipeline {
               outline: topics,
             }),
           );
-          return errors.length > 0 ? { notes: true, notesError: errors.join(' / ') } : { notes: true };
+          return {
+            notes: true,
+            ...(errors.length > 0 ? { notesError: errors.join(' / ') } : {}),
+            ...(reused ? { notesReused: true } : {}),
+          };
         }).catch((e: unknown) => ({ notes: false, notesError: e instanceof Error ? e.message : String(e) }));
       }
 
