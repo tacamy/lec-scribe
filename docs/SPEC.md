@@ -660,6 +660,7 @@ sessions/<sessionId>/
 **`listen` する前に済ませる。** これが設計の要。まだ誰も繋がっていないので、処理中の待ち合わせも、「更新中です」を拡張に伝える仕組みも、入れ替えたあと古いコードで応答し続ける時間も要らない。入れ替えたら `process.exit(0)` し、launchd の `KeepAlive` が新しいコードで起動し直す。利用者から見ると起動が数秒遅いだけで、サーバーが動き出したときにはもう新しい。
 
 - 手順: `git rev-parse`（作業ツリーか、今のブランチ）→ `git status --porcelain`（手元に変更が無いか）→ `git fetch origin <branch>`（20 秒で打ち切り）→ `git rev-list --count HEAD..FETCH_HEAD` → 進んでいれば `git merge --ff-only FETCH_HEAD` → 終了。確認は毎回の起動時（ログイン、落ちたあと、`agent restart`）だけで、定期的には見に行かない。
+- ネットワークが死んでいると `git fetch` の打ち切り（20 秒）ぶん `listen` が遅れる（実測 21 秒）。`agent.mjs install` / `restart` の起動待ちはこれより長くとる（45 秒）。短いと、更新そのものは成功しているのに `install.sh` / `update.sh` が最後の行で失敗する。
 - **何が起きても投げない。** `run()` は子プロセスの失敗や打ち切りで reject するので、握らないとプロセスが落ち、launchd が起動し直して同じところで落ちる無限ループになる（ネットワークが悪いだけで永久に使えなくなる）。`selfUpdate` は全体を try/catch で囲み、「今回は見送る」と記録して普通に起動する。
 - **既定は launchd で常駐しているときだけ有効。** `agent.mjs install` が plist に `LEC_SCRIBE_MANAGED=1` を書き、サーバーはそれがあるときだけ既定で自動更新する。手で起動したサーバー（`pnpm start`）や `scripts/smoke-extension.mjs` は開発者の作業ツリーを勝手に書き換えない。`--auto-update on/off`（`LEC_SCRIBE_AUTO_UPDATE`）で明示できる。綴りは `1` / `true` / `on` / `yes` を有効として扱う（`0` だけを無効とみなす形だと、`false` と書いたときに黙って有効のままになる）。
 - 開発機を壊さないため、次のどれかなら何もしない: git の作業ツリーでない、ブランチが `--branch`（`LEC_SCRIBE_BRANCH`、既定 `main`。install.sh と同じ）でない、手元に変更がある。fast-forward できなければ記録して古いまま起動する。

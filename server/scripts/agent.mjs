@@ -209,8 +209,15 @@ async function install() {
   await waitAndReport();
 }
 
+/**
+ * 起動を待つ時間。自動更新（SPEC §12.1b）が listen より前に走り、ネットワークが死んでいると
+ * git fetch の打ち切り 20 秒ぶん丸ごと待つ（実測 21 秒）。10 秒で諦めていたので、
+ * 更新そのものは成功しているのに install.sh / update.sh（set -e）が最後の行で失敗していた
+ */
+const WAIT_FOR_SERVER_MS = 45_000;
+
 async function waitAndReport() {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < WAIT_FOR_SERVER_MS / 500; i++) {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
@@ -221,7 +228,7 @@ async function waitAndReport() {
     }
     await new Promise((r) => setTimeout(r, 500));
   }
-  console.error(`サーバーが応答しません。ログを確認してください: ${logPath}`);
+  console.error(`サーバーが ${WAIT_FOR_SERVER_MS / 1000} 秒たっても応答しません。ログを確認してください: ${logPath}`);
   process.exit(1);
 }
 
