@@ -357,7 +357,7 @@ async function renderSessions() {
   let sessions: StoredSession[] = [];
   try {
     const activeId = isActive(current) ? current.sessionId : undefined;
-    sessions = (await listSessions()).filter((s) => s.sessionId !== activeId).slice(0, 5);
+    sessions = (await listSessions()).filter((s) => s.sessionId !== activeId);
   } catch {
     // OPFS unavailable; nothing to list.
   }
