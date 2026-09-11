@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
+import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, type Health } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
@@ -51,12 +51,16 @@ let notesGeneration = 0;
  * そもそも繋がらない場合は「分からない」扱いにして、有効化の案内は出さない
  * （古いサーバーには enable-notes.sh がまだ無く、実行しても失敗するため）
  */
-function renderNotes(llm: string | undefined, reachable = true) {
+/** ノート作成の状態。health が null なら繋がらなかったとき */
+function renderNotes(health: Health | null) {
+  const llm = health?.llm;
   const enabled = !!llm && llm !== 'none';
-  const unknown = !reachable || llm === undefined;
-  notesStatus.textContent = !reachable
+  // 「古いサーバーか」は api で判断する（§12.1c）。llm を返すかどうかで見分けるのはやめた（#7）
+  const outdated = !!health && serverOutdated(health);
+  const unknown = !health || outdated;
+  notesStatus.textContent = !health
     ? 'サーバーに接続できないため分かりません'
-    : llm === undefined
+    : outdated
       ? `サーバーが古いため分かりません。ターミナルで ${UPDATE_COMMAND} を実行して更新してください`
       : enabled
         ? `有効（${LLM_LABEL[llm] ?? llm}）`
@@ -69,10 +73,10 @@ function renderNotes(llm: string | undefined, reachable = true) {
 const initialCheck = ++notesGeneration;
 void fetchHealth(config.server)
   .then((body) => {
-    if (initialCheck === notesGeneration) renderNotes(body.llm);
+    if (initialCheck === notesGeneration) renderNotes(body);
   })
   .catch(() => {
-    if (initialCheck === notesGeneration) renderNotes(undefined, false);
+    if (initialCheck === notesGeneration) renderNotes(null);
   });
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
@@ -109,7 +113,7 @@ $('test').addEventListener('click', async () => {
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);
     notesGeneration++; // 進行中の初回チェックの結果で上書きされないようにする
-    renderNotes(body.llm);
+    renderNotes(body);
     // サーバー側の承認状態を設定にも反映する（trusted.json を消したときなど）
     if (body.paired !== undefined && body.paired !== config.server.paired) {
       config = { ...config, server: { ...config.server, paired: body.paired } };

@@ -615,6 +615,15 @@ try {
   rmSync(slowMarker, { force: true });
   console.log(`cancel: discarded while transcribing in ${cancelMs} ms, queued session started and was discarded too (${cancelTrace.join(' → ')})`);
 
+  // #7: サーバーの api が、この拡張の必要とする版を満たしていること。
+  // 片方だけ上げ忘れると（新しい項目を送るのに API_VERSION を上げなかった等）ここで落ちる
+  const requiredApi = Number(/REQUIRED_SERVER_API\s*=\s*(\d+)/.exec(readFileSync('extension/src/health.ts', 'utf8'))?.[1]);
+  assert.ok(Number.isInteger(requiredApi), 'could not read REQUIRED_SERVER_API from extension/src/health.ts');
+  const serverApi = (await (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).json()).api;
+  assert.equal(typeof serverApi, 'number', `server did not report an api version: ${serverApi}`);
+  assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
+  console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
+
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');
 } finally {
