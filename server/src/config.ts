@@ -9,6 +9,9 @@ export type ServerConfig = {
   /** 起動時に自分を更新する（§12.1b）。launchd で常駐しているときだけ既定で有効 */
   autoUpdate: boolean;
   /** サーバーのコードがある git の作業ツリー（自動更新の対象） */
+  /** launchd が常駐させているか（agent.mjs install が plist に LEC_SCRIBE_MANAGED=1 を書く）。
+   * 開発機で手で起動したサーバーが、利用者の環境向けの後始末を勝手にしないための目印 */
+  managed: boolean;
   appDir: string;
   /** 追いかけるブランチ（install.sh の LEC_SCRIBE_BRANCH と同じ） */
   branch: string;
@@ -61,11 +64,13 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
   };
+  const managed = env['LEC_SCRIBE_MANAGED'] === '1';
   return {
     host: '127.0.0.1',
     // 既定は「launchd で常駐しているときだけ有効」。手で起動したサーバーや smoke テストが
     // 開発者の作業ツリーを勝手に書き換えないようにする（LEC_SCRIBE_MANAGED は agent.mjs が plist に書く）
-    autoUpdate: flag(pick('auto-update', 'LEC_SCRIBE_AUTO_UPDATE', env['LEC_SCRIBE_MANAGED'] === '1' ? 'on' : 'off')),
+    managed,
+    autoUpdate: flag(pick('auto-update', 'LEC_SCRIBE_AUTO_UPDATE', managed ? 'on' : 'off')),
     appDir: expandHome(pick('app-dir', 'LEC_SCRIBE_APP_DIR', APP_DIR)),
     branch: pick('branch', 'LEC_SCRIBE_BRANCH', 'main'),
     gitBin: pick('git', 'LEC_SCRIBE_GIT', 'git'),
