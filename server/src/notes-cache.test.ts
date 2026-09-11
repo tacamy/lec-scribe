@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workPath } from './layout.ts';
-import { cacheKey, deriveFromCache, NOTES_CACHE_FILE, readNotesCache, writeNotesCache } from './notes-cache.ts';
+import { cacheKey, deriveFromCache, NOTES_CACHE_FILE, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 
 const sections = [
   { id: 'intro', text: '今日は色の話です。' },
@@ -37,22 +37,32 @@ describe('readNotesCache', () => {
     outline: { overview: ['色の基礎'], topics: [{ heading: '導入', summary: ['色の役割'], startId: 'intro' }] },
   };
 
-  it('鍵が合えば読み、合わなければ null', async () => {
+  it('保存したものをそのまま読める（鍵の判定は呼び出し側）', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-cache-'));
     await mkdir(workPath(dir), { recursive: true });
     await writeNotesCache(dir, cache);
-    const read = await readNotesCache(dir, cache.key);
+    const read = await readNotesCache(dir);
+    expect(read?.key).toBe(cache.key);
     expect(read?.polished).toEqual(cache.polished);
     expect(read?.outline).toEqual(cache.outline);
-    expect(await readNotesCache(dir, 'ちがう鍵')).toBeNull();
   });
 
   it('ファイルがない・壊れているときは null（呼び直しに倒す）', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-cache-'));
-    expect(await readNotesCache(dir, cache.key)).toBeNull();
+    expect(await readNotesCache(dir)).toBeNull();
     await mkdir(workPath(dir), { recursive: true });
     await writeFile(workPath(dir, NOTES_CACHE_FILE), '{ 壊れた JSON');
-    expect(await readNotesCache(dir, cache.key)).toBeNull();
+    expect(await readNotesCache(dir)).toBeNull();
+  });
+
+  it('呼び出し先・モデル・分割の大きさが変わっていれば組み替えに使わない', () => {
+    const withSettings = { ...cache, settings };
+    expect(sameSettings(withSettings, settings)).toBe(true);
+    expect(sameSettings(withSettings, { ...settings, model: 'gpt-5-mini' })).toBe(false);
+    expect(sameSettings(withSettings, { ...settings, kind: 'ollama' })).toBe(false);
+    expect(sameSettings(withSettings, { ...settings, charsPerCall: 2000 })).toBe(false);
+    // 設定を残していない古いキャッシュは使わない
+    expect(sameSettings(cache, settings)).toBe(false);
   });
 });
 

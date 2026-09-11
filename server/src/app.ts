@@ -41,7 +41,11 @@ export function createApp(
 
   async function findSessionDir(sessionId: string): Promise<string | null> {
     const cached = dirCache.get(sessionId);
-    if (cached) return cached;
+    // Finder で消されていることがあるので、覚えていても実在を確かめる（消えていれば 404 にして拡張に「データなし」を出させる）
+    if (cached) {
+      if (await stat(cached).then((st) => st.isDirectory()).catch(() => false)) return cached;
+      dirCache.delete(sessionId);
+    }
     try {
       const entries = await readdir(config.outDir, { withFileTypes: true });
       // 現在は <タイトル>_<ID>。2026-09-11 より前に作った <ID>_<タイトル> も見つける

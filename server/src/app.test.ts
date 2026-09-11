@@ -319,8 +319,16 @@ describe('local server', () => {
   });
 
   it('deletes a finished session folder when the cancel says force（一覧の「削除」）', async () => {
-    const sessionId = '20260908-103005-ab12';
-    const dir = path.join(config.outDir, `テスト_動画_1_${sessionId}`);
+    // 他のテストと共有しないよう、このテスト専用のセッションを作る
+    const sessionId = '20260908-110000-zz99';
+    await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, title: '削除テスト' }),
+    });
+    const dir = path.join(config.outDir, `削除テスト_${sessionId}`);
+    await writeFile(path.join(dir, 'notes.md'), '# 完成したノート\n');
+    expect(await readdir(dir)).toContain('notes.md');
     const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },

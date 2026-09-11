@@ -72,6 +72,16 @@ function normalizePhrase(text: string): string {
  * 本物の発話でも言い得るので、これだけでは落とさず、窓いっぱい（15 秒以上）の区間のときだけ落とす。
  * 長い順に並べるのは、前方一致で短いほうに先に食われないようにするため
  */
+/**
+ * 日常的にも言う言い回し。幻覚として落とすには「遅すぎる」か「直前に密着している」という形の証拠が要る
+ * （話の途中というだけでは落とさない。講師が実際にお礼を言う場面があるため）
+ */
+const EVERYDAY_PHRASES = ['ありがとうございました', 'ありがとうございます'];
+
+function isEverydayPhrase(text: string): boolean {
+  return EVERYDAY_PHRASES.includes(normalizePhrase(text));
+}
+
 const KNOWN_HALLUCINATIONS = ['ご視聴ありがとうございました', 'ご視聴ありがとうございます', 'ありがとうございました', 'チャンネル登録お願いします', 'チャンネル登録をお願いします', '最後までご視聴ありがとうございました', 'おやすみなさい']
   .map(normalizePhrase)
   .sort((a, b) => b.length - a.length);
@@ -149,7 +159,10 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
     // 直前の区間の終わりにぴったり続く決まり文句は、窓の末尾に付け足された幻覚（本物の発話は VAD の区切りで少し間が空く）
     const prev = sorted[sorted.indexOf(s) - 1];
     const glued = prev !== undefined && Math.abs(s.start - prev.end) < GLUED_SEC;
-    if (!isTooSlow(s) && !midTalk && !glued) return true;
+    // 「ありがとうございました」のように本当に言うことがある短い言い回しは、話の途中というだけでは落とさない
+    // （遅すぎる・直前に密着している、という幻覚らしい形のときだけ）。「ご視聴ありがとうございました」等は途中でも落とす
+    const everyday = isEverydayPhrase(s.text);
+    if (!isTooSlow(s) && !glued && (everyday || !midTalk)) return true;
     dropped.push({ ...s, reason: 'phrase' });
     return false;
   });

@@ -44,6 +44,11 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const args = parseArgs(argv);
   const home = os.homedir();
   const pick = (flag: string, envName: string, fallback: string) => args[flag] ?? env[envName] ?? fallback;
+  /** 数値として読めない指定（打ち間違い、空文字）は既定値に戻す。NaN のまま使うと判定が黙って無効になるため */
+  const num = (value: string, fallback: number) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
   return {
     host: '127.0.0.1',
     port: Number(pick('port', 'LEC_SCRIBE_PORT', String(DEFAULT_PORT))),
@@ -62,10 +67,10 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     codexBin: pick('codex', 'LEC_SCRIBE_CODEX', 'codex'),
     openaiApiKey: env['OPENAI_API_KEY'] ?? '',
     ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
-    llmCharsPerCall: Number(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '12000')),
-    sceneColor: Number(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65')),
-    sceneVision: Number(pick('scene-vision', 'LEC_SCRIBE_SCENE_VISION', '0.2')),
-    sceneVisionPhoto: Number(pick('scene-vision-photo', 'LEC_SCRIBE_SCENE_VISION_PHOTO', '0.55')),
+    llmCharsPerCall: num(pick('llm-chars', 'LEC_SCRIBE_LLM_CHARS', '12000'), 12000),
+    sceneColor: num(pick('scene-color', 'LEC_SCRIBE_SCENE_COLOR', '0.65'), 0.65),
+    sceneVision: num(pick('scene-vision', 'LEC_SCRIBE_SCENE_VISION', '0.2'), 0.2),
+    sceneVisionPhoto: num(pick('scene-vision-photo', 'LEC_SCRIBE_SCENE_VISION_PHOTO', '0.55'), 0.55),
     sceneKeep: pick('scene-keep', 'LEC_SCRIBE_SCENE_KEEP', 'last') === 'first' ? 'first' : 'last',
   };
 }

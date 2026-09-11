@@ -270,3 +270,30 @@ describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
     expect(verdict.diffPrev).toBeGreaterThan(0.9);
   });
 });
+
+describe('画面全体が動画のとき（マスクを使わない）', () => {
+  const noise = (seed: number) => {
+    const f = new Uint8ClampedArray(PIXELS * 4);
+    let x = seed;
+    for (let i = 0; i < f.length; i += 4) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      f[i] = f[i + 1] = f[i + 2] = (x >> 16) & 0xff;
+      f[i + 3] = 255;
+    }
+    return f;
+  };
+
+  it('別の場面へのカットを拾う（マス目の判定も全画素で数える）', () => {
+    const d = new ChangeDetector(cfg);
+    let t = 0;
+    // 全画素が毎回変わる映像。マスクは「全部が動いている」と判断し、比較は全画素に戻る
+    for (let i = 0; i < 30; i++) d.sample(noise(i + 1), (t += 500));
+    const during = d.sample(noise(99), (t += 500));
+    expect(during.stillFraction).toBeLessThan(0.1);
+    // 静止部分が無くてもマス目が 0 にならず、カットを切り替えとみなせる
+    expect(during.cells).toBeGreaterThanOrEqual(4);
+    const cut = d.sample(gray(250), (t += 500));
+    expect(cut.diffPrev).toBeGreaterThan(0.5);
+    expect(cut.state).toBe('stabilizing');
+  });
+});

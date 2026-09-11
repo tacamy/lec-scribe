@@ -29,11 +29,8 @@ export type Verdict = {
   stillFraction: number;
 };
 
-/**
- * RGB のいずれかのチャンネルが threshold 以上変わった画素の割合（0〜1）。アルファは見ない。
- * counts を渡すと、変わった画素の回数を数える（動き続ける領域＝講師のワイプを見分けるため）
- */
-export function diffRatio(a: Frame, b: Frame, threshold: number, counts?: Uint8Array): number {
+/** RGB のいずれかのチャンネルが threshold 以上変わった画素の割合（0〜1）。アルファは見ない */
+export function diffRatio(a: Frame, b: Frame, threshold: number): number {
   const n = Math.min(a.length, b.length) - (Math.min(a.length, b.length) % 4);
   if (n === 0) return 0;
   let changed = 0;
@@ -50,10 +47,6 @@ export function diffRatio(a: Frame, b: Frame, threshold: number, counts?: Uint8A
       -db >= threshold
     ) {
       changed++;
-      if (counts) {
-        const p = i / 4;
-        if (counts[p]! < 255) counts[p]!++;
-      }
     }
   }
   return changed / (n / 4);
@@ -100,28 +93,38 @@ export class ChangeDetector {
    * 本文が 1 行増えたような小さな変化（全体の 1% 前後）もワイプの動き（0.4〜0.9%）と区別できる
    */
   diffFromSaved(frame: Frame, saved: Frame): number {
-    return this.compare(frame, saved, null);
+    return this.compare(frame, saved, null).ratio;
   }
 
   /**
-   * 2 枚を比べ、動き続けている画素を除いた差分率を返す。
-   * counts を渡すと、そのついでに画素ごとの変化回数を数える（マスクの材料）。
-   * まだサンプルが少ない、または静止部分がほとんどない（画面全体が動画）ときは全画素で比べる
+   * 動き続ける画素のマスクが使える状態か。使えないうちは全画素で比べているので、
+   * 呼び出し側は小さな差（ワイプの動きと同じくらい）を「変化」とみなしてはいけない
    */
-  private compare(a: Frame, b: Frame, counts: Uint8Array | null): number {
+  get maskReady(): boolean {
+    return this.motion !== null && this.motionSamples >= MOTION_MIN_SAMPLES;
+  }
+
+  /**
+   * 2 枚を比べ、動き続けている画素を除いた差分率と、変化が及んだマス目の数、静止部分の割合を返す。
+   * counts を渡すと、そのついでに画素ごとの変化回数を数える（マスクの材料）。
+   * まだサンプルが少ない、または静止部分がほとんどない（画面全体が動画）ときは全画素で比べる。
+   * そのときはマス目の数も全画素で数える（除いた先に何も残っていないと、どんなカットも 0 マスになるため）
+   */
+  private compare(a: Frame, b: Frame, counts: Uint8Array | null): { ratio: number; cells: number; stillFraction: number } {
     const threshold = this.cfg.pixelDiffThreshold;
     const motion = this.motion;
     const samples = this.motionSamples;
     const usable = motion !== null && samples >= MOTION_MIN_SAMPLES;
     const limit = Math.min(a.length, b.length);
     const n = limit - (limit % 4);
-    if (n === 0) return 0;
+    if (n === 0) return { ratio: 0, cells: 0, stillFraction: 1 };
     let changed = 0;
     let stillChanged = 0;
     let stillTotal = 0;
     const cells = GRID * GRID;
     const cellChanged = new Uint32Array(cells);
     const cellTotal = new Uint32Array(cells);
+    const cellChangedAll = new Uint32Array(cells);
     const width = Math.max(1, this.cfg.detectWidth);
     const height = Math.max(1, this.cfg.detectHeight);
     for (let i = 0; i < n; i += 4) {
@@ -137,24 +140,31 @@ export class ChangeDetector {
         changed++;
         if (counts && counts[p]! < 255) counts[p]!++;
       }
+      // 変化が画面のどこに散っているかも見る（人が動いただけなら 1 か所にまとまる）
+      const cell = Math.min(GRID - 1, Math.floor((Math.floor(p / width) * GRID) / height)) * GRID + Math.min(GRID - 1, Math.floor(((p % width) * GRID) / width));
+      if (differs) cellChangedAll[cell]!++;
       if (!moving) {
         stillTotal++;
         if (differs) stillChanged++;
-        // 変化が画面のどこに散っているかも見る（人が動いただけなら 1 か所にまとまる）
-        const cell = Math.min(GRID - 1, Math.floor((Math.floor(p / width) * GRID) / height)) * GRID + Math.min(GRID - 1, Math.floor(((p % width) * GRID) / width));
         cellTotal[cell]!++;
         if (differs) cellChanged[cell]!++;
       }
     }
+    const pixels = n / 4;
+    const perCell = pixels / cells;
+    const masked = usable && stillTotal >= pixels * MOTION_MIN_STILL;
     let hitCells = 0;
     for (let c = 0; c < cells; c++) {
-      if (cellTotal[c]! > 0 && cellChanged[c]! >= cellTotal[c]! * this.cfg.changeThreshold) hitCells++;
+      // マスクを使わないときは全画素で数える。1 マスあたりの画素数は割り切れないことがあるので概算でよい
+      const total = masked ? cellTotal[c]! : perCell;
+      const hit = masked ? cellChanged[c]! : cellChangedAll[c]!;
+      if (total > 0 && hit >= total * this.cfg.changeThreshold) hitCells++;
     }
-    this.changedCells = hitCells;
-    const pixels = n / 4;
-    this.stillFraction = stillTotal / pixels;
-    if (!usable || stillTotal < pixels * MOTION_MIN_STILL) return changed / pixels;
-    return stillTotal === 0 ? 0 : stillChanged / stillTotal;
+    return {
+      ratio: masked ? (stillTotal === 0 ? 0 : stillChanged / stillTotal) : changed / pixels,
+      cells: hitCells,
+      stillFraction: stillTotal / pixels,
+    };
   }
 
   /** 直近を重く見るため、たまに回数を半分にする（長い動画で飽和させない） */
@@ -170,7 +180,10 @@ export class ChangeDetector {
   sample(frame: Frame, now: number): Verdict {
     let diffPrev = 0;
     if (this.prev) {
-      diffPrev = this.compare(frame, this.prev, this.motionFor(frame));
+      const m = this.compare(frame, this.prev, this.motionFor(frame));
+      diffPrev = m.ratio;
+      this.changedCells = m.cells;
+      this.stillFraction = m.stillFraction;
       this.observed();
     }
     this.prev = frame;
@@ -200,7 +213,10 @@ export class ChangeDetector {
   flush(frame: Frame, now: number): Verdict {
     let diffPrev = 0;
     if (this.prev) {
-      diffPrev = this.compare(frame, this.prev, this.motionFor(frame));
+      const m = this.compare(frame, this.prev, this.motionFor(frame));
+      diffPrev = m.ratio;
+      this.changedCells = m.cells;
+      this.stillFraction = m.stillFraction;
       this.observed();
     }
     this.prev = frame;
@@ -259,7 +275,8 @@ export class ChangeDetector {
   }
 
   private decide(frame: Frame, now: number, diffPrev: number): Verdict {
-    const diffSaved = this.lastSaved ? diffRatio(frame, this.lastSaved, this.cfg.pixelDiffThreshold) : 1;
+    // 重複の判定もマスク済みで行う（ワイプが動いただけの再保存を防ぐ）
+    const diffSaved = this.lastSaved ? this.compare(frame, this.lastSaved, null).ratio : 1;
     // 映像中心の画面では、色の構成が同じなら「同じ場面」とみなして続けて撮らない
     if (this.lastSaved && this.stillFraction < FOOTAGE_MAX_STILL && this.colorMatch(frame, this.lastSaved) >= this.cfg.sameSceneColor) {
       this.state = 'watching';

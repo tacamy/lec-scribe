@@ -44,9 +44,14 @@ const VETO_MIN_CHARS = 4;
 const GROWN_MAX_DIFF = 0.1;
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
-export async function readThumbnail(ffmpegBin: string, file: string): Promise<Uint8Array | null> {
+export async function readThumbnail(ffmpegBin: string, file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
   try {
-    const r = await run(ffmpegBin, ['-v', 'error', '-i', file, '-vf', `scale=${THUMB_WIDTH}:${THUMB_HEIGHT}`, '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'], { binary: true });
+    // -frames:v 1 で 1 枚だけ受け取る（動画を指してしまっても全フレーム分が流れてこないように）
+    const r = await run(
+      ffmpegBin,
+      ['-v', 'error', '-i', file, '-frames:v', '1', '-vf', `scale=${THUMB_WIDTH}:${THUMB_HEIGHT}`, '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'],
+      { binary: true, maxBytes: THUMB_WIDTH * THUMB_HEIGHT * 4 * 4, ...(signal ? { signal } : {}) },
+    );
     if (r.code !== 0 || !r.stdoutBytes || r.stdoutBytes.length !== THUMB_WIDTH * THUMB_HEIGHT * 4) return null;
     return r.stdoutBytes;
   } catch {
@@ -245,8 +250,16 @@ export function pickShownSlides(
       if (vision.photo > 0 && d <= vision.photo) {
         // 3. 字幕や見出しの文字が同じ（両方に文字がない場合や、一方が他方に含まれる場合も）で見た目も近ければ、同じ場面。
         //    同じテンプレートで文字だけ違うスライドはここで残る
-        const contained = hasText && text !== '' && otherText !== '' && textContained(text, otherText);
-        if (hasText && (textSim === undefined || textSim >= SAME_TEXT_SIM || contained)) return { reason: 'text', metrics };
+        // 「含まれる」は短い読み取り（「図1」など）だと偶然当たるので、両方に VETO_MIN_CHARS 以上あるときだけ認める
+        const contained =
+          hasText &&
+          normalizeText(text).length >= VETO_MIN_CHARS &&
+          normalizeText(otherText).length >= VETO_MIN_CHARS &&
+          textContained(text, otherText);
+        // 両方に文字がない（textSim が undefined）だけの一致は弱い根拠なので、直前の画像との比較には使わない。
+        // 使うと、少しずつ違う無地の画像が数珠つなぎになり、基準の画像からいくらでも離れてしまう
+        const sameText = textSim === undefined ? !strongOnly : textSim >= SAME_TEXT_SIM || contained;
+        if (hasText && sameText) return { reason: 'text', metrics };
         // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。
         //    ただし両方に文字があって中身が違うなら、別のラベルが付いた別の写真なのでまとめない
         const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
@@ -285,10 +298,12 @@ export function pickShownSlides(
         return;
       }
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
+      // サムネイルが読めなかった画像を基準にすると、以後すべての比較ができなくなる。前の基準を残す
+      if (verdict) lastShown = { slide, index };
     } else {
       decisions.push({ filename: slide.filename, shown: true });
+      lastShown = { slide, index };
     }
-    lastShown = { slide, index };
   });
   return keep === 'last' ? preferLast(decisions) : decisions;
 }
@@ -305,6 +320,10 @@ function preferLast(decisions: SceneDecision[]): SceneDecision[] {
   }
   for (const [anchorName, last] of lastMember) {
     const anchor = byName.get(anchorName)!;
+    // まとまりの全員（基準・途中の画像）が、実際に載る画像を指すようにする
+    for (const d of decisions) {
+      if (!d.shown && d.sameSceneAs === anchorName && d !== last) d.sameSceneAs = last.filename;
+    }
     anchor.shown = false;
     anchor.reason = 'superseded';
     anchor.sameSceneAs = last.filename;

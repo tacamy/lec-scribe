@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access, chmod, constants, mkdir, readFile } from 'node:fs/promises';
+import { access, chmod, constants, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,10 +43,18 @@ async function build(log: (message: string) => void): Promise<string | null> {
   }
   await mkdir(BIN_DIR, { recursive: true, mode: 0o700 });
   log('Vision の補助コマンドをビルドします（初回だけ、数十秒）');
-  const args = swiftc.endsWith('xcrun') ? ['swiftc', '-O', SOURCE, '-o', bin] : ['-O', SOURCE, '-o', bin];
-  const r = await run(swiftc, args);
-  if (r.code !== 0) throw new Error(`swiftc failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-3).join(' / ')}`);
-  await chmod(bin, 0o755);
+  // 途中で止まっても壊れたコマンドが残らないよう、別名で作ってから置き換える
+  const tmp = `${bin}.tmp-${process.pid}`;
+  const args = swiftc.endsWith('xcrun') ? ['swiftc', '-O', SOURCE, '-o', tmp] : ['-O', SOURCE, '-o', tmp];
+  try {
+    const r = await run(swiftc, args);
+    if (r.code !== 0) throw new Error(`swiftc failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-3).join(' / ')}`);
+    await chmod(tmp, 0o755);
+    await rename(tmp, bin);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw e;
+  }
   return bin;
 }
 
@@ -63,12 +71,18 @@ type HelperOutput = { distances: Array<Array<number | null>>; texts?: Array<stri
 export async function visionDistances(
   files: readonly string[],
   log: (message: string) => void = () => undefined,
+  signal?: AbortSignal,
 ): Promise<VisionMeasure | null> {
   if (files.length < 2) return null;
+  // パスは 1 行 1 件で渡すので、改行を含むファイル名があると全体がずれる。そのときは使わない
+  if (files.some((f) => f.includes('\n'))) {
+    log('画像のパスに改行が含まれているため、見た目の判定は使いません');
+    return null;
+  }
   const bin = await ensureVisionHelper(log);
   if (!bin) return null;
   const output = await new Promise<HelperOutput | null>((resolve) => {
-    const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'], ...(signal ? { signal } : {}) });
     let out = '';
     let err = '';
     child.stdout.setEncoding('utf8');
@@ -88,9 +102,15 @@ export async function visionDistances(
         resolve(null);
       }
     });
+    // 補助コマンドが先に終わると EPIPE が飛ぶ。拾わないとサーバーごと落ちる
+    child.stdin.on('error', () => resolve(null));
     child.stdin.end(files.join('\n') + '\n');
   });
   if (!output || !Array.isArray(output.distances)) return null;
+  if (output.distances.length !== files.length) {
+    log(`Vision の結果の件数が合いません（${output.distances.length} / ${files.length}）。見た目の判定は使いません`);
+    return null;
+  }
   const { distances, texts } = output;
   return {
     distance: (a, b) => {

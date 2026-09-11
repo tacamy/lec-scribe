@@ -131,13 +131,16 @@ export function authHeaders(server: { token: string }): Record<string, string> {
 }
 
 /**
- * 保存するのは設定画面で編集できる項目（server）だけにする（2026-09-09）。
+ * 保存された設定を読む。ただし検知の閾値（detect）だけは無視する（2026-09-09）。
  * 以前は Config 全体を保存していたため、一度でも設定を保存すると、その時点の検知パラメータが
- * 固定され、拡張を更新しても新しい既定値が効かなかった（閾値を変えても届かなかった）
+ * 固定され、拡張を更新しても新しい既定値が効かなかった（閾値を変えても届かなかった）。
+ * 他の項目（audio / slide / storage）は docs/CHECKS.md の手順で手動上書きできるように残す
  */
 export async function loadConfig(): Promise<Config> {
-  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] as { server?: unknown } | undefined;
-  return mergeConfig(DEFAULT_CONFIG, stored ? { server: stored.server } : undefined);
+  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] as Partial<Config> | undefined;
+  if (!stored) return mergeConfig(DEFAULT_CONFIG, undefined);
+  const { detect: _ignored, ...rest } = stored;
+  return mergeConfig(DEFAULT_CONFIG, rest);
 }
 
 export async function saveConfig(config: Config): Promise<void> {

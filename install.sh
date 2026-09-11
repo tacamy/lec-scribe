@@ -69,7 +69,8 @@ node "$APP_DIR/server/scripts/agent.mjs" install
 # 5. 見た目や字幕が同じ画像をまとめる補助コマンド（macOS の Vision で画像比較と文字認識をする小さな Swift プログラム）を先に作っておく。
 #    初回の文字起こしで作ると数十秒待たせるのと、失敗するならここで分かるようにするため
 say "画像の比較に使う補助コマンドを作ります（数十秒）"
-node --experimental-strip-types -e "import('$APP_DIR/server/src/vision.ts').then((m) => m.ensureVisionHelper((line) => console.log('  ' + line))).then((bin) => console.log(bin ? '  作りました: ' + bin : '  作れませんでした（見た目の判定なしで動きます）'))" || true
+# パスは環境変数で渡す（引用符や # を含むパスでも壊れないように）
+LEC_SCRIBE_VISION_SRC="$APP_DIR/server/src/vision.ts" node --experimental-strip-types -e "import(process.env.LEC_SCRIBE_VISION_SRC).then((m) => m.ensureVisionHelper((line) => console.log('  ' + line))).then((bin) => console.log(bin ? '  作りました: ' + bin : '  作れませんでした（見た目の判定なしで動きます）'))" || true
 
 say "✓ LecScribe サーバーの準備ができました"
 cat <<MSG

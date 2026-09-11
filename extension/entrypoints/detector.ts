@@ -1,5 +1,6 @@
 import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import type { Config } from '../src/config';
+import { DEFAULT_CONFIG } from '../src/config';
 import { ChangeDetector, type Frame, type Verdict } from '../src/detect';
 import { LecError } from '../src/errors';
 import {
@@ -25,6 +26,9 @@ import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventTyp
  * 変化検知は Phase 4〜5、タイムライン記録は Phase 6 で足す。
  */
 const HEARTBEAT_MS = 5000;
+/** マスクが効いていないときに最終状態の上書きを認める差分率（ワイプの動き 0.4〜0.9% より上） */
+const UNMASKED_UPDATE_THRESHOLD = 0.012;
+
 const VIDEO_EVENTS = [
   'play',
   'pause',
@@ -153,7 +157,8 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     recorderStartEpochMs: msg.recorderStartEpochMs,
     slide: msg.slide,
     detect: msg.detect,
-    detector: new ChangeDetector(msg.detect),
+    // 既定値で補う（呼び出し側が一部しか渡さないと、閾値が undefined になり比較がすべて false になる）
+    detector: new ChangeDetector({ ...DEFAULT_CONFIG.detect, ...msg.detect }),
     smallCtx,
     sampleTimer: 0,
     tickTimer: 0,
@@ -216,8 +221,15 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
 
 async function stopDetection(): Promise<object> {
   const current = session;
-  session = null;
   if (!current) return {};
+  // 今映っている画面が最後のスライドの最終状態。保存済みと違えば上書きしてから止める。
+  // session を消したあとだと canSample が false を返して何もしないので、消す前に行う
+  await current.grabQueue.catch(() => undefined);
+  if (canSample(current)) {
+    rememberStable(current, grayFrame(current));
+    await finalizePrevious(current).catch(() => undefined);
+  }
+  session = null;
   for (const name of VIDEO_EVENTS) current.video.removeEventListener(name, current.onEvent);
   current.video.removeEventListener('loadeddata', current.onInitial);
   document.removeEventListener('visibilitychange', current.onVisibility);
@@ -226,12 +238,6 @@ async function stopDetection(): Promise<object> {
   window.clearInterval(current.tickTimer);
   if (current.frameCallback !== null && typeof current.video.cancelVideoFrameCallback === 'function') {
     current.video.cancelVideoFrameCallback(current.frameCallback);
-  }
-  // 今映っている画面が最後のスライドの最終状態。保存済みと違えば上書きしてから止める
-  await current.grabQueue.catch(() => undefined);
-  if (canSample(current)) {
-    rememberStable(current, grayFrame(current));
-    await finalizePrevious(current).catch(() => undefined);
   }
   current.toastHost?.remove();
   // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
@@ -361,8 +367,13 @@ function rememberStable(current: Session, frame: Frame): void {
  * その画像を上書きする。文字が 1 行ずつ出るスライドで、全部出た状態を残すため（SPEC §9.2）
  */
 async function finalizePrevious(current: Session): Promise<void> {
-  // 保存が順番待ちのままだと lastSaved が古く、直前に撮った画像を上書きしてしまう
-  await current.grabQueue.catch(() => undefined);
+  // 保存が順番待ちのままだと lastSaved が古く、直前に撮った画像を上書きしてしまう。
+  // 待っている間にさらに保存が積まれることがあるので、待ち行列が空になるまで繰り返す
+  for (let i = 0; i < 5; i++) {
+    const queue = current.grabQueue;
+    await queue.catch(() => undefined);
+    if (current.grabQueue === queue) break;
+  }
   const { stable, lastSaved, fullCanvas } = current;
   const note = (why: string) => logVerdict(current, 'final', { save: false, state: 'watching', diffPrev: 0, cells: 0, stillFraction: 1 }, why);
   if (!current.slide.finalState) return;
@@ -375,13 +386,18 @@ async function finalizePrevious(current: Session): Promise<void> {
     return; // 保存より前のフレームなら、保存した画像のほうが新しい
   }
   const diff = current.detector.diffFromSaved(stable.frame, lastSaved.frame);
-  if (diff < current.slide.updateThreshold) {
-    note(`skip diff=${diff.toFixed(4)} < ${current.slide.updateThreshold}`);
+  // マスクがまだ効いていない（サンプルが少ない、画面全体が動画）ときは全画素で比べているので、
+  // ワイプが動いただけでも 0.4〜0.9% 出る。その間は前の閾値（1.2%）を使う
+  const needed = current.detector.maskReady ? current.slide.updateThreshold : UNMASKED_UPDATE_THRESHOLD;
+  if (diff < needed) {
+    note(`skip diff=${diff.toFixed(4)} < ${needed}${current.detector.maskReady ? '' : ' (mask not ready)'}`);
     return;
   }
   note(`update seq=${lastSaved.seq} diff=${diff.toFixed(4)}`);
   current.finalizing = true;
   try {
+    // 上書きを作っている間に新しい画像が保存されたら、その時点で取りやめる（古いスライドの記録を巻き戻さないため）
+    const savedAtStart = current.lastSaved;
     const mime = current.slide.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
     // toBlob はこの時点の内容を写す。以後 rememberStable が描き直しても影響しない
     const blob = await new Promise<Blob | null>((resolve) => fullCanvas.toBlob(resolve, mime, current.slide.jpegQuality));
@@ -395,6 +411,10 @@ async function finalizePrevious(current: Session): Promise<void> {
       mime,
       dataBase64: await blobToBase64(blob),
     });
+    if (current.lastSaved !== savedAtStart) {
+      note(`skip newer save seq=${current.lastSaved?.seq}`);
+      return;
+    }
     current.detector.replaceSaved(stable.frame);
     current.lastSaved = { seq: saved.seq, frame: stable.frame, at: stable.at };
     current.stable = null;
@@ -534,9 +554,11 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, slide.jpegQuality));
     if (!blob) throw new LecError('CAPTURE_FAILED', '画像のエンコードに失敗しました。');
 
-    // 変化の大きさは「切り替えを検知した瞬間」の値を残す（保存時は安定した後なのでほぼ 0）
+    // 変化の大きさは「切り替えを検知した瞬間」の値を残す（保存時は安定した後なのでほぼ 0）。
+    // 使ったら消す。手動・初回の保存に、無関係な過去の切り替えの数値が残らないように
     const v = current.lastVerdict;
     const sw = current.switchVerdict ?? v;
+    current.switchVerdict = null;
     const round = (n: number, digits = 4) => Math.round(n * 10 ** digits) / 10 ** digits;
     const trigger: SlideMeta['trigger'] = v
       ? {

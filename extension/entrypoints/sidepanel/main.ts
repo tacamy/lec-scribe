@@ -96,6 +96,9 @@ function hideSessionTip(soon = true) {
 sessionTip.addEventListener('mouseenter', () => window.clearTimeout(tipHideTimer));
 sessionTip.addEventListener('mouseleave', () => hideSessionTip());
 sessionList.addEventListener('scroll', () => hideSessionTip(false));
+// サイドパネルでは一覧ではなくパネル全体が動くので、そちらのスクロールでも閉じる（位置がずれたまま残らないように）
+window.addEventListener('scroll', () => hideSessionTip(false), true);
+window.addEventListener('resize', () => hideSessionTip(false));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') hideSessionTip(false);
 });
@@ -539,10 +542,11 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     const removeBtn = button('削除', 'remove');
     removeBtn.disabled = !!current.exporting;
     removeBtn.addEventListener('click', () => {
-      const text =
-        done && !missing
-          ? `「${title}」の文字起こしの結果（~/LecScribe のフォルダ）と録音を削除します。元に戻せません。`
-          : `「${title}」の録音を削除します。送信途中のデータがあればそれも消します。`;
+      // サーバー側のフォルダは、拡張が「処理済み」と思っていなくても残っていることがある（送信後に拡張が止まった等）。
+      // 実際に消す範囲を必ず伝える
+      const text = missing
+        ? `「${title}」の録音を削除します。~/LecScribe のフォルダは見つかりませんでした。元に戻せません。`
+        : `「${title}」の録音と、~/LecScribe のフォルダ（あれば文字起こしの結果も）を削除します。元に戻せません。`;
       void askConfirm(text, '削除する').then((ok) => {
         if (ok) void act(() => sendToBackground.discard(session.sessionId, { output: 'delete' }));
       });
@@ -555,7 +559,9 @@ function sessionItem(session: StoredSession): HTMLLIElement {
       // 「非表示」は隠すだけ（データは残る）。一覧の下の「非表示のセッションを表示」で戻せる
       const hideBtn = button(hidden ? '表示' : '非表示');
       hideBtn.addEventListener('click', () => {
-        void setSessionHidden(session.sessionId, !hidden).then(() => renderSessions());
+        void setSessionHidden(session.sessionId, !hidden)
+          .catch((e: unknown) => showMessage(`表示を切り替えられませんでした: ${toErrorInfo(e).message}`))
+          .then(() => renderSessions());
       });
       btns.append(openFolderBtn, uploadBtn, hideBtn, removeBtn);
     } else {

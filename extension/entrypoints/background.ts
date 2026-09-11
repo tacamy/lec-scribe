@@ -516,11 +516,7 @@ async function onDownloadSettled(): Promise<void> {
 }
 
 /**
- * セッションを捨てる。文字起こし中・送信待ちなら処理を中止し、サーバー側のフォルダも消す
- * （まだ成果物になっていないため）。処理済みのセッションはサーバー側の出力を残す。
- */
-/**
- * 一覧の「中止」「削除」「破棄」。
+ * 一覧の「中止」「削除」。
  * - 処理中・送信待ち: 処理を止める。output が 'keep' でなければサーバー側のフォルダも消す（'delete' なら notes.md があっても）
  * - それ以外: output が 'delete' ならサーバー側のフォルダを消す
  * - keepRecording でなければ Chrome 側の録音（OPFS）を消す（やり直しの中止では残す）
@@ -605,15 +601,16 @@ async function pair(): Promise<{ state: SessionState; paired: boolean }> {
   return { state: { ...current, error: undefined, warnings: current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE') }, paired: true };
 }
 
-/** サーバーに処理の中止（と削除）を頼む。繋がらなくても破棄は続ける */
-/** サーバーの処理を止める。remove でフォルダも消す（force なら notes.md があっても） */
+/** サーバーの処理を止める。remove でフォルダも消す（force なら notes.md があっても）。繋がらなくても破棄は続ける */
 async function cancelOnServer(sessionId: string, server: Config['server'], remove: boolean, force = false): Promise<void> {
   if (!server.paired && !server.token) return;
   try {
+    // サーバーが別のセッションを処理中だと応答が遅れることがある。待ち続けると拡張のメッセージが詰まる
     await fetch(`http://127.0.0.1:${server.port}/sessions/${sessionId}/cancel`, {
       method: 'POST',
       headers: { ...authHeaders(server), 'content-type': 'application/json' },
       body: JSON.stringify({ delete: remove, force }),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     // サーバーが落ちていれば処理も止まっている

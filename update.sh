@@ -18,4 +18,8 @@ for i in $(seq 1 120); do
   [ "$i" = "1" ] && echo "文字起こし中です。終わるまで待ちます…（Ctrl+C で中断）"
   sleep 15
 done
+# 画像の比較に使う補助コマンド（imagefp.swift が変わっていれば作り直す）。
+# 次の文字起こしの途中でビルドが始まって待たせないように、ここで作っておく
+LEC_SCRIBE_VISION_SRC="$APP_DIR/server/src/vision.ts" node --experimental-strip-types -e "import(process.env.LEC_SCRIBE_VISION_SRC).then((m) => m.ensureVisionHelper((line) => console.log('  ' + line)))" || true
+
 node "$APP_DIR/server/scripts/agent.mjs" restart
