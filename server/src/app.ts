@@ -21,7 +21,13 @@ const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
 const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|slides\/slide_[0-9]{3,}\.(png|jpg))$/;
 const MAX_JSON_BODY = 5 * 1024 * 1024;
 
-export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
+export type App = {
+  server: Server;
+  pipeline: Pipeline;
+  findSessionDir(sessionId: string): Promise<string | null>;
+  /** 自分を更新している最中（§12.1b）。true の間は新しいセッションを受け付けない */
+  status: { updating: boolean };
+};
 
 export function createApp(
   config: ServerConfig,
@@ -38,6 +44,7 @@ export function createApp(
     return isAuthorized(req.headers.authorization, token) || trustedByToken(trusted, req.headers.authorization) !== null;
   }
   const dirCache = new Map<string, string>();
+  const status = { updating: false };
 
   async function findSessionDir(sessionId: string): Promise<string | null> {
     const cached = dirCache.get(sessionId);
@@ -110,6 +117,8 @@ export function createApp(
         llm: config.llm,
         authorized: authorized(req),
         paired: trustedByToken(trusted, req.headers.authorization) !== null,
+        // 自分を更新している最中。拡張はこれを見て Start を止める
+        updating: status.updating,
         processing: pipeline.activeCount(),
       });
       return;
@@ -168,6 +177,13 @@ export function createApp(
 
     // POST /sessions
     if (req.method === 'POST' && parts.length === 1) {
+      if (status.updating) {
+        sendJson(res, 503, {
+          ok: false,
+          error: { code: 'UPDATING', message: 'Mac 側のサーバーを更新しています。終わると自動で使えるようになるので、少し待ってから一覧の「文字起こしする」を押してください。' },
+        });
+        return;
+      }
       const meta = (await readJsonBody(req)) as SessionMeta | undefined;
       if (!meta || typeof meta.sessionId !== 'string' || !SESSION_ID.test(meta.sessionId)) {
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'sessionId が不正です。' } });
@@ -292,7 +308,7 @@ export function createApp(
     sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${req.method} ${url.pathname}` } });
   }
 
-  return { server, pipeline, findSessionDir };
+  return { server, pipeline, findSessionDir, status };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

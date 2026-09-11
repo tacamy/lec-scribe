@@ -1,10 +1,15 @@
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** サーバー設定（SPEC §12.1）。CLI 引数 > 環境変数 > 既定値 */
 export type ServerConfig = {
   host: string;
   port: number;
+  /** 起動時に origin/main を見て、進んでいれば入れ替えて再起動する（§12.1b）。--auto-update 0 で止める */
+  autoUpdate: boolean;
+  /** サーバーのコードがある git の作業ツリー（自動更新の対象） */
+  appDir: string;
   /** 成果物の出力先。セッションごとにサブディレクトリを作る */
   outDir: string;
   /** whisperkit-cli に渡すモデル名 */
@@ -39,6 +44,8 @@ export type ServerConfig = {
 };
 
 export const DEFAULT_PORT = 47321;
+/** このファイルから見たリポジトリの根（server/src/config.ts → ../..） */
+export const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const args = parseArgs(argv);
@@ -51,6 +58,8 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
   };
   return {
     host: '127.0.0.1',
+    autoUpdate: pick('auto-update', 'LEC_SCRIBE_AUTO_UPDATE', '1') !== '0',
+    appDir: expandHome(pick('app-dir', 'LEC_SCRIBE_APP_DIR', APP_DIR)),
     port: Number(pick('port', 'LEC_SCRIBE_PORT', String(DEFAULT_PORT))),
     outDir: expandHome(pick('out', 'LEC_SCRIBE_OUT', path.join(home, 'LecScribe'))),
     model: pick('model', 'LEC_SCRIBE_MODEL', 'large-v3'),

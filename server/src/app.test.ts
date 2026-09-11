@@ -17,6 +17,7 @@ const ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
 
 let tmp: string;
 let base: string;
+let appStatus: { updating: boolean };
 let config: ServerConfig;
 let close: () => Promise<void>;
 
@@ -74,8 +75,12 @@ beforeAll(async () => {
     sceneVision: 0,
     sceneVisionPhoto: 0,
     sceneKeep: 'last',
+    autoUpdate: false,
+    appDir: tmp,
   };
-  const { server } = createApp(config, TOKEN);
+  const app = createApp(config, TOKEN);
+  const { server } = app;
+  appStatus = app.status;
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   close = () => new Promise((resolve) => server.close(() => resolve()));
@@ -302,6 +307,23 @@ describe('local server', () => {
     // 承認済みなら再度 pair してもダイアログは出ず、同じトークンが返る
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
     expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+  });
+
+  it('自動更新の最中は新しいセッションを受け付けない（503）。/health にも出る', async () => {
+    expect(((await (await fetch(`${base}/health`, { headers })).json()) as { updating?: boolean }).updating).toBe(false);
+    appStatus.updating = true;
+    try {
+      expect(((await (await fetch(`${base}/health`, { headers })).json()) as { updating?: boolean }).updating).toBe(true);
+      const res = await fetch(`${base}/sessions`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: '20260908-120000-upd8', title: '更新中' }),
+      });
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe('UPDATING');
+    } finally {
+      appStatus.updating = false;
+    }
   });
 
   it('keeps a finished session folder when a cancel asks to delete it', async () => {

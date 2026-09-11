@@ -12,6 +12,7 @@ export type ErrorCode =
   | 'NO_VIDEO'
   | 'SERVER_UNREACHABLE'
   | 'SERVER_REJECTED'
+  | 'SERVER_UPDATING'
   | 'NOT_CAPTURING'
   | 'INTERNAL';
 
