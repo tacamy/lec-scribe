@@ -34,7 +34,11 @@ const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', .
 
 const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** ~/Applications/LecScribe Server.app を作る。中身は node でサーバーを exec するだけのスクリプト */
+/**
+ * ~/Applications/LecScribe Server.app を作る。中身はリポジトリの server/scripts/start.sh を exec するだけ。
+ * node の探し方や起動フラグのようにコードに依存するものは start.sh 側（git で届く）に置き、
+ * ここで作るものにはリポジトリの場所と予備の node しか書かない（#10）
+ */
 function writeAppBundle() {
   // 古い名前の実行ファイルが残らないように作り直す
   if (existsSync(appDir)) rmSync(appDir, { recursive: true });
@@ -61,12 +65,9 @@ function writeAppBundle() {
   writeFileSync(
     appExecutable,
     `#!/bin/sh
-# LecScribe Server: launchd から起動される。サーバー本体は Node で動く
-# node は PATH（plist に書いた登録時の PATH）から探す。登録時の実体パス（Homebrew の Cellar など）は
-# brew upgrade で消えることがあるので、見つからないときの予備にだけ使う
-NODE="$(command -v node 2>/dev/null || true)"
-[ -x "$NODE" ] || NODE="${process.execPath}"
-exec "$NODE" --experimental-strip-types "${path.join(repoRoot, 'server', 'src', 'index.ts')}"
+# LecScribe Server: launchd から起動される。起動の中身はリポジトリの start.sh にある（git の更新で変わる）。
+# 2 つ目の引数は予備の node（登録時のもの）。PATH に node が無いときだけ使われる
+exec /bin/sh "${path.join(repoRoot, 'server', 'scripts', 'start.sh')}" "${process.execPath}"
 `,
     { mode: 0o755 },
   );
