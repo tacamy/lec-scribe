@@ -55,19 +55,22 @@ export function run(
 }
 
 const resolved = new Map<string, { value: string | null; at: number }>();
-const MISS_TTL_MS = 60_000;
+/**
+ * 覚えておく時間。見つかった結果も忘れる（brew uninstall や Xcode の更新でコマンドが消えると、
+ * 覚えたままでは /health が「ある」と言い続け、文字起こしが素の ENOENT で落ちるため）。
+ * 1 分あれば、1 回の処理やパネルの表示でくり返し呼ばれる分はまとめて 1 回の探索で済む
+ */
+const TTL_MS = 60_000;
 
 /**
- * PATH（または絶対パス）でコマンドが見つかるか。見つかった場所は覚えておく
- * （プロセスが生きている間に変わらない）。/health はリクエストのたびに ffmpeg と whisperkit-cli を
- * 探していて、PATH の項目数ぶん access() が走っていた（#9）。
- * 見つからなかった結果も覚えるが、あとから入れた（brew install した）ことに気づけるよう 1 分で忘れる
+ * PATH（または絶対パス）でコマンドが見つかるか。結果は少しの間だけ覚えておく。
+ * /health はリクエストのたびに ffmpeg と whisperkit-cli を探していて、PATH の項目数ぶん
+ * access() が走っていた（#9）。時計が戻ったときは覚え直す（スリープ復帰の時刻合わせ）
  */
 export async function resolveBin(bin: string): Promise<string | null> {
   const hit = resolved.get(bin);
-  // 覚えてから経った時間。スリープ復帰の時刻合わせで時計が戻ると負になるので、そのときは覚え直す
   const age = hit ? Date.now() - hit.at : 0;
-  if (hit && (hit.value !== null || (age >= 0 && age < MISS_TTL_MS))) return hit.value;
+  if (hit && age >= 0 && age < TTL_MS) return hit.value;
   const value = await findBin(bin);
   resolved.set(bin, { value, at: Date.now() });
   return value;
