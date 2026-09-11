@@ -8,7 +8,8 @@ import { resolveBin, run } from './exec.ts';
 
 /**
  * macOS の Vision で画像の「見た目の距離」を測り、写っている文字を読む（SPEC §13.4b）。
- * Swift の小さな補助コマンド（tools/imagefp.swift）を初回に swiftc でビルドして使う。
+ * Swift の小さな補助コマンド（tools/imagefp.swift）をサーバーの起動時に swiftc でビルドして使う
+ * （間に合わなければ最初の処理で待つ。名前がソースのハッシュなので、変わっていなければ作り直さない）。
  * swiftc がない（Command Line Tools 未導入）ときは null を返し、呼び出し側は Vision なしで進める。
  */
 
@@ -51,6 +52,7 @@ async function build(log: (message: string) => void): Promise<string | null> {
     if (r.code !== 0) throw new Error(`swiftc failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-3).join(' / ')}`);
     await chmod(tmp, 0o755);
     await rename(tmp, bin);
+    log('Vision の補助コマンドを作りました');
   } catch (e) {
     await rm(tmp, { force: true }).catch(() => undefined);
     throw e;
