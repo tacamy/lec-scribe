@@ -66,8 +66,6 @@ fi
 say "サーバーを登録します"
 node "$APP_DIR/server/scripts/agent.mjs" install
 
-# 画像の比較に使う補助コマンド（Swift）は、登録したサーバーが起動時に自分で作る（server.log に出る）。ここでは作らない
-
 say "✓ LecScribe サーバーの準備ができました"
 cat <<MSG
   Chrome のツールバーの LecScribe アイコンを押して「このMacと接続」→ Mac の画面で「許可」を押してください。

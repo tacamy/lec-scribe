@@ -18,6 +18,5 @@ for i in $(seq 1 120); do
   [ "$i" = "1" ] && echo "文字起こし中です。終わるまで待ちます…（Ctrl+C で中断）"
   sleep 15
 done
-# 画像の比較に使う補助コマンドは、起動し直したサーバーが自分で作り直す（imagefp.swift が変わっていれば）。ここでは作らない
 # install は plist と launcher を作り直しつつ、今の LEC_SCRIBE_* を引き継ぐ（restart では作り直されない）
 node "$APP_DIR/server/scripts/agent.mjs" install

@@ -41,6 +41,10 @@ if (config.autoUpdate) {
 // どちらも listen の前に要るが、互いに関係ないので並べて待つ
 const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), currentCommit(config.appDir, config.gitBin)]);
 const { server } = createApp(config, token, log, trusted, { commit });
+// 更新の後始末（SPEC §12.1b、#10）。どの経路で更新しても起動は必ず通るので、ここに集める。
+// 待たない（ポートを開けるのを遅らせない）。Vision を使わない設定と、開発機で手で起動したサーバーは作らない
+if (config.managed && (config.sceneVision > 0 || config.sceneVisionPhoto > 0)) void ensureVisionHelper(log);
+
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
   console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${commit}` : ''}）`);
@@ -59,9 +63,4 @@ server.listen(config.port, config.host, () => {
     console.log('    brew install whisperkit-cli ffmpeg  で導入できます。受信はできますが文字起こしは失敗します。');
     console.log('');
   }
-  // 画像の比較に使う補助コマンド（§13.4b）。ソースが変わっていれば作り直す。
-  // 起動時に作っておけば、更新のあと最初の文字起こしの途中でビルドが始まって数十秒待たせない。
-  // update.sh でも自動更新でも起動は必ず通るので、更新の後始末はここに集める（#10）。
-  // 名前がソースのハッシュなので、変わっていなければ access 1 回。ポートはもう開いているので待たない
-  void ensureVisionHelper(log);
 });
