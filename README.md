@@ -20,6 +20,8 @@
 | 8 | スライドと文字起こしの統合（`lecture.md`） | 完了（Mac で確認済み） |
 | 9 | LLM で話し言葉を整えて要点を付けたノート（`notes.md`、任意） | 完了（`codex exec` で確認済み。OpenAI API / Ollama も選択可） |
 
+Phase 9 のあとも、検知の精度・同じ場面の画像のまとめ方・一覧の操作を実際の講義動画で詰めています。実機で未確認の項目は [docs/CHECKS.md](docs/CHECKS.md) の「残っている実機確認」にあります。
+
 | ドキュメント | 内容 |
 |---|---|
 | [docs/SPEC.md](docs/SPEC.md) | 仕様書 v0.5（現行。設計判断 D-xx と未決事項 Q-xx を含む） |
@@ -118,6 +120,7 @@ lec-scribe/
 - Chrome 安定版（116 以降）
 - Node.js 22、pnpm 10
 - `brew install whisperkit-cli ffmpeg`（Phase 7 以降）
+- Xcode Command Line Tools（`swiftc`。同じ場面の画像をまとめる判定に使います。無くても動きますが、似た画像が並びます）
 
 ## ライセンス
 

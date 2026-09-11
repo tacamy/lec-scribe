@@ -31,7 +31,7 @@ pnpm fixtures:make && pnpm fixtures:serve  # http://127.0.0.1:8787/player.html
 - permission は必要になった Phase で追加する。`<all_urls>` は要求しない
 - 拡張の状態の正本は `chrome.storage.session` と offscreen document。service worker はいつ止まってもよい前提で書く
 - service worker の状態更新は `serialized()` を通す（並行イベントで書き戻しが競合するため）
-- 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。「破棄」は OPFS の分だけ消す（例外: 文字起こし中・送信待ちのセッションは処理を中止してサーバー側のフォルダも消す。成果物になる前なので）
+- 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。一覧の操作は「削除」（OPFS と `~/LecScribe` の両方を消す）「中止」（処理中・送信待ち。初回の処理なら途中のフォルダも消し、やり直しの中止なら残す）「非表示」（`status.json` の `hidden` で一覧から隠すだけ）の 3 つ（SPEC §11.3）
 - コミットは英語、ドキュメントと UI 文言は日本語。コードコメントも日本語（Phase 2 以前の英語コメントは触ったときに直す）
 - コード変更後は `pnpm lint`（oxlint）と `pnpm typecheck` を通す
 - `scripts/smoke-extension.mjs` は fixture サーバーを自前で立てる（`fixtures/slides.webm` がなければ生成する）

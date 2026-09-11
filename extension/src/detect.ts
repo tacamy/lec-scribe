@@ -97,11 +97,12 @@ export class ChangeDetector {
   }
 
   /**
-   * 動き続ける画素のマスクが使える状態か。使えないうちは全画素で比べているので、
+   * 動き続ける画素のマスクが実際に効いているか（compare の `masked` と同じ条件）。
+   * サンプルが足りない間も、画面全体が動画で静止部分が残らないときも全画素で比べているので、
    * 呼び出し側は小さな差（ワイプの動きと同じくらい）を「変化」とみなしてはいけない
    */
   get maskReady(): boolean {
-    return this.motion !== null && this.motionSamples >= MOTION_MIN_SAMPLES;
+    return this.motion !== null && this.motionSamples >= MOTION_MIN_SAMPLES && this.stillFraction >= MOTION_MIN_STILL;
   }
 
   /**

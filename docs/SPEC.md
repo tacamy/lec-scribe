@@ -1,4 +1,4 @@
-# LecScribe 仕様書 v0.5
+# LecScribe 仕様書 v0.7
 
 ページに `<video>` で埋め込まれたスライド動画（Brightcove などの MSE / `blob:` 再生を含む HTML5 動画）を Chrome で再生しながら、音声をローカル録音し、スライドが切り替わったときだけ動画領域のスクリーンショットを保存し、視聴後に Mac 上の WhisperKit で日本語文字起こしを行い、スライドと文字起こしを時間軸で統合したノートを生成する。
 
@@ -6,6 +6,7 @@
 
 改訂履歴:
 
+- v0.7（2026-09-11）: 検知の精度（動き続ける画素のマスク §9.1b、変化の広がり §9.1、カット §9.1c、色の分布 §9.1d）。サーバー側で同じ場面の画像をまとめる（§13.4b。macOS の Vision による画像比較と文字認識）。画像を文の途中に挟まない（§13.4）。ノート作成の結果を残して使い回す（§13.5b）、1 回に送る本文を 12,000 字に（§13.5）。出力フォルダを `<タイトル>_<日時-ID>` に（§14）。一覧の「破棄」を「削除 / 中止 / 非表示」に分け、全件表示・ツールチップ・確認ダイアログを入れた（§11.3、§15.1）。
 - v0.6（2026-09-09）: キャプチャの瞬間に動画上へサムネイルのトーストを出す（§15.3）。文字が 1 行ずつ出るスライドを最終状態で上書きする（§9.2b）。`notes.md` / `lecture.md` から「（ノート）」と「（このスライドの間の発話はありません）」を削除（§13.4、§13.5）。Whisper の幻覚区間を除去（§13.2b）。承認フローと Host 検査（D-10、§12.3）、利用者向けの `install.sh`（§12.1）。
 - v0.5（2026-09-09）: 出力フォルダを `notes.md` + `slides/` だけに整理し、作業ファイルを `.lecscribe/` へ（§14）。`lecture.md` / `notes.md` の節見出しを廃止（§13.4）。文字起こし中・送信待ちのセッションを「破棄」で中止・削除できるように（§11.3、`POST /sessions/:id/cancel`）。文字起こし中も次の録音を始められ、Stop 後は送信待ちに並ぶ（§6.5）。パネルのボタン名を「フォルダを開く / やり直す / 文字起こしする / 破棄」に（§15.1。「Downloads に書き出す」は後に UI から削除）。
 - v0.4（2026-09-09）: Phase 7〜9 の実装で確定した事項を反映。`whisperkit-cli` 1.1.0 のフラグと report の形（§13.1）、モデル比較（`large-v3` を既定に維持）、スライド割り当ての 1.5 秒補正（§13.4）、LLM による `notes.md`（§13.5、`codex exec` / OpenAI API / Ollama）、launchd 常駐（README）。UI は「アイコンのポップアップで Start → サイドパネルで監視」（D-12）。
@@ -156,7 +157,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 ### D-07 最終成果物の書き出し主体は Mac ローカルサーバー
 
-- `~/LecScribe/<タイトル>_<日時>/` に集約する（2026-09-11 にタイトルを先にした。Finder で並べたときにタイトルで探せるように。それより前の `<日時>_<タイトル>` のフォルダもサーバーは見つける）。
+- `~/LecScribe/<タイトル>_<日時-ID>/` に集約する（2026-09-11 にタイトルを先にした。Finder で並べたときにタイトルで探せるように。それより前の `<日時>_<タイトル>` のフォルダもサーバーは見つける）。
 - `chrome.downloads` によるエクスポートはフォールバック兼 Phase 2 / 6 の動作確認手段。
 
 ### D-08 音声形式は WebM/Opus、サーバー側で ffmpeg により WAV 16 kHz mono へ変換 ✅
@@ -239,7 +240,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 | コンテキスト | 責務 | 寿命・注意 |
 |---|---|---|
-| side panel | Stop、状態表示、セッション一覧（フォルダを開く / やり直す / 文字起こしする / 破棄）。Start はアイコンのポップアップ（同じページを `?mode=popup` で開く） | ページ操作で閉じない。`storage.session` の変更を購読して描画する |
+| side panel | Stop、状態表示、セッション一覧（フォルダを開く / やり直す / 文字起こしする / 非表示 / 削除 / 中止。状態ごとに出し分ける。§15.1）。Start はアイコンのポップアップ（同じページを `?mode=popup` で開く） | ページ操作で閉じない。`storage.session` の変更を購読して描画する |
 | service worker | 状態機械、streamId 取得、content script 注入、offscreen 作成、メッセージ配線、タブの閉鎖・遷移監視 | 30 秒で停止しうる。状態は `storage.session` に置き、起動時に復元する |
 | offscreen document | `getUserMedia`、AudioContext パススルー、MediaRecorder、OPFS 書き込み、サーバーへのアップロードと進捗取得 | 録音の正本。使える拡張 API は `chrome.runtime` のみ |
 | content script | `<video>` 検出と probe、フレーム取得と変化検知、タイムライン記録、非表示検知 | ページ遷移で消える。動画のある frame にだけ注入する |
@@ -268,8 +269,8 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 3. service worker → offscreen: `CAPTURE_STOP`。`MediaRecorder.stop()` → 最終チャンクを書き込み → トラック停止 → `status.json` を `captured` に
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
-6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「破棄」を選べる
-7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションを「破棄」すると `POST /sessions/:id/cancel { delete: true }` で中止・削除し、次の送信待ちを始める
+6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「削除」を選べる
+7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションは「中止」で止める。初回の処理なら `POST /sessions/:id/cancel { delete: true }` で中止・削除し、やり直しの中止なら処理だけ止めて前回の結果と録音は残す（§11.3）。どちらも次の送信待ちを始める
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。
 
@@ -279,8 +280,9 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 IDLE → STARTING → CAPTURING → STOPPING → UPLOADING → PROCESSING → COMPLETED
                                               │            │
                                               └────────────┴──→ ERROR ─(文字起こしする)→ UPLOADING
-                                                     │                └─(破棄)→ IDLE
-                                                     └─(破棄: サーバーに cancel + delete)→ COMPLETED / IDLE
+                                                     │                └─(削除)→ IDLE
+                                                     ├─(中止: 初回の処理。cancel + delete)→ COMPLETED / IDLE
+                                                     └─(中止: やり直し。処理だけ止める)→ COMPLETED
 ```
 
 `UPLOADING` / `PROCESSING` の間も `Start` は押せる（録音側の状態が優先され、Server 行に処理の段階を出す）。Stop したセッションは送信待ち（`pendingUploads`）に並ぶ。
@@ -447,14 +449,20 @@ MVP では実装しない。必要になった場合は v0.2 §8.4 の設計を�
 | `sampleIntervalMs` | 500 | サンプリング間隔 |
 | `detectWidth` / `detectHeight` | 160 / 90 | 比較用の縮小サイズ |
 | `pixelDiffThreshold` | 24 | 画素差（0〜255）がこの値以上なら「変化画素」 |
-| `changeThreshold` | 0.02 | 変化画素率がこれ以上なら「変化候補」 |
+| `changeThreshold` | 0.025 | 変化画素率がこれ以上なら「変化候補」（2026-09-09 に 0.02 から。本文が 1 行増えた程度は上書きの経路に任せる） |
 | `stableThreshold` | 0.015 | 直前サンプルとの差がこれ未満なら「安定」 |
 | `stableSamples` | 2 | 連続してこの回数安定したら確定 |
 | `maxStabilizeMs` | 3000 | 安定待ちの上限。超えたら現フレームで確定 |
 | `dedupeThreshold` | 0.015 | 最後に保存した画像との差がこれ未満なら保存しない |
+| `cutThreshold` | 0.3 | 映像中心の画面（静止部分が半分未満）で切り替えとみなす変化画素率（§9.1c） |
+| `sameSceneColor` | 0.65 | 映像中心の画面で「同じ場面」とみなす色の分布の一致（§9.1d） |
 | `minShotIntervalMs` | 2000 | 保存間隔の下限 |
 | `imageFormat` / `jpegQuality` | png / 0.9 | 保存形式 |
 | `maxSlideWidth` | 0（無制限） | 保存画像の幅上限 |
+| `finalState` | true | 切り替わる直前の状態で画像を上書きする（§9.2b） |
+| `updateThreshold` | 0.004 | 上書きに必要な差分率。マスクが効く前は 0.012（§9.1b, §9.2b） |
+
+これらは `storage.local` に保存しない（`detect` は保存された値を読まない。付録 A）。
 
 ### 9.1b 動き続ける画素を除いて比べる（2026-09-09）
 
@@ -626,12 +634,16 @@ sessions/<sessionId>/
 
 `chrome.downloads.download()` で `~/Downloads/LecScribe/<sessionId>/` 配下に各ファイルを保存する（`saveAs: false`）。サーバーが使えないときの回収手段であり、Phase 2 / 6 の動作確認にも使う。
 
-### 11.3 破棄・保持
+### 11.3 削除・中止・非表示
 
-- 「破棄」で OPFS のセッションディレクトリを削除する。エクスポート済みのファイル（`~/Downloads/LecScribe/`）やサーバーの出力（`~/LecScribe/`）は削除しない。確認ダイアログにその旨を明記する。
-- 例外として、文字起こし中・送信待ちのセッションを「破棄」したときは、サーバーに `POST /sessions/:id/cancel { delete: true }` を送って処理（ffmpeg / whisperkit / codex）を止め、`~/LecScribe/` のフォルダごと削除する（まだ成果物になっていないため。時間と LLM のトークンを無駄にしない）。ただし既に `notes.md` があるフォルダは削除しない（自動の経路で完成済みのノートを失わないため）。利用者が一覧の「削除」で明示したときは `force: true` を付けて notes.md があっても消す（2026-09-11）。送信待ちが残っていれば次を始める。
-- サーバー処理が `done` になった後も既定では OPFS に残し、パネル の「破棄」で削除する（`storage.autoDeleteAfterDone` で自動削除可）。
-- 過去セッションの一覧と操作は パネル の「履歴」で行う（MVP では直近 1 件のみでも可）。
+一覧の操作は 3 つに分かれる（2026-09-11。それまでは「破棄」1 つで、何が消えるのか分かりにくかった）。確認はブラウザの `confirm()` ではなくパネル内の `<dialog>` で出す（ポップアップ・サイドパネルでは `confirm()` が表示されないまま閉じられることがあったため）。
+
+- **削除**: OPFS のセッションディレクトリと `~/LecScribe/` のフォルダの両方を消す（`cancel { delete: true, force: true }`。`notes.md` があっても消す）。元に戻せないので確認ダイアログを出し、消える範囲を文言に明記する。
+- **中止**（処理中・送信待ちだけ）: サーバーの処理を止める。初回の処理なら途中のフォルダと録音も消し、やり直しの中止なら処理だけ止めて前回の結果と録音を残す（`{ output: 'keep', keepRecording: true }`）。
+- **非表示**: 一覧から隠すだけ。OPFS の録音も `~/LecScribe/` のフォルダも残る（`status.json` の `hidden`）。一覧の下の「非表示のセッションを表示」で戻せる。
+- 文字起こし中・送信待ちのセッションを「中止」したときは、サーバーに `POST /sessions/:id/cancel { delete: true }` を送って処理（ffmpeg / whisperkit / codex）を止め、`~/LecScribe/` のフォルダごと削除する（まだ成果物になっていないため。時間と LLM のトークンを無駄にしない）。ただし既に `notes.md` があるフォルダは削除しない（自動の経路で完成済みのノートを失わないため）。利用者が一覧の「削除」で明示したときは `force: true` を付けて notes.md があっても消す（2026-09-11）。送信待ちが残っていれば次を始める。
+- サーバー処理が `done` になった後も OPFS に残す（「やり直す」に使うため）。消すのは利用者が「削除」を押したときだけ。
+- Finder で `~/LecScribe/` のフォルダを消した行には「データなし」を出し、「フォルダを開く」「やり直す」を押せなくする（`GET /sessions/:id/status` が 404。§15.1）。
 
 ---
 
@@ -639,7 +651,7 @@ sessions/<sessionId>/
 
 ### 12.1 起動と設定
 
-利用者向けの導入は `install.sh`（`curl … | bash` の 1 行。Homebrew → node / git / ffmpeg / whisperkit-cli → `~/LecScribe-app/` に取得 → `agent.mjs install`）。ノート作成（§13.5）は既定で無効で、`enable-notes.sh [codex|ollama|none]` が Codex CLI の導入とログインを済ませて `LEC_SCRIBE_LLM` 付きで登録し直す。`agent.mjs install` は既に登録されている plist の `LEC_SCRIBE_*` / `OPENAI_API_KEY` を引き継ぐので、あとから `install.sh` を流し直してもこの設定は消えない。引き継ぎをやめたい変数は空文字で渡す（`LEC_SCRIBE_LLM_MODEL= … agent:install`。`enable-notes.sh` はバックエンドを切り替えるときに前のモデル名をこれで落とす）。`GET /health` が `llm` を返し、拡張の設定画面の「ノート作成」が今の状態と有効化のコマンドを表示する（2026-09-09）。拡張は Chrome ウェブストアで配る前提で、未接続画面がサーバーを見つけられないときにこの 1 行をコピーできる形で案内する（2026-09-09）。更新は `update.sh`（処理中なら待って `agent restart`）。
+利用者向けの導入は `install.sh`（`curl … | bash` の 1 行。Xcode Command Line Tools → Homebrew → node / git / ffmpeg / whisperkit-cli → `~/LecScribe-app/` に取得 → `agent.mjs install` → 画像の比較に使う Vision の補助コマンドをビルド（§13.4b。数十秒。失敗しても続行する））。ノート作成（§13.5）は既定で無効で、`enable-notes.sh [codex|ollama|none]` が Codex CLI の導入とログインを済ませて `LEC_SCRIBE_LLM` 付きで登録し直す。`agent.mjs install` は既に登録されている plist の `LEC_SCRIBE_*` / `OPENAI_API_KEY` を引き継ぐので、あとから `install.sh` を流し直してもこの設定は消えない。引き継ぎをやめたい変数は空文字で渡す（`LEC_SCRIBE_LLM_MODEL= … agent:install`。`enable-notes.sh` はバックエンドを切り替えるときに前のモデル名をこれで落とす）。`GET /health` が `llm` を返し、拡張の設定画面の「ノート作成」が今の状態と有効化のコマンドを表示する（2026-09-09）。拡張は Chrome ウェブストアで配る前提で、未接続画面がサーバーを見つけられないときにこの 1 行をコピーできる形で案内する（2026-09-09）。更新は `update.sh`（処理中なら待ってから、Vision の補助コマンドを作り直して `agent restart`。`imagefp.swift` が変わると作り直しになるので、次の文字起こしの途中でビルドが始まって待たせないようにする）。
 
 ```text
 pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
@@ -667,7 +679,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 | POST | `/sessions/:id/finalize` | パイプライン開始（非同期、キューは同時 1 件） |
 | GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }` |
 | POST | `/pair` | `{ name? }`。認証不要だが `Origin: chrome-extension://<id>` 必須。macOS のダイアログで承認されると `{ paired: true, token }`（承認済みなら同じトークンを返す）。拒否は 403、ダイアログ表示中は 429 |
-| POST | `/sessions/:id/cancel` | `{ delete?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（拡張の「破棄」が処理中のセッションに対して使う） |
+| POST | `/sessions/:id/cancel` | `{ delete?: boolean; force?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（`notes.md` があるフォルダは残す）。`force` で `notes.md` があっても削除（一覧の「削除」。2026-09-11） |
 | POST | `/sessions/:id/open` | `{ target?: 'folder' \| 'lecture' }`。出力フォルダまたは `notes.md` を macOS の `open` で開く |
 
 `stage`: `queued → converting → transcribing → merging → done | error`
@@ -784,7 +796,7 @@ WhisperKit の VAD 分割では、30 秒の窓いっぱいに広がる区間（`
 拡張の変化検知（§9.1c, §9.1d）は先のことが分からない状態で撮るので、映像中心の動画では同じ場面が何枚も残る。サーバーは保存済みの画像を全部見たうえで選び直せるので、最終的にどの画像を `notes.md` / `lecture.md` に載せるかはここで決める。
 
 - まず、最後に載せた画像と画素が 5% しか違わない画像は、映像でもスライドでも外す（`reason: 'identical'`。160×90 の 5% は 720 画素で、見た目にはほぼ区別がつかない。当初 2% だったが 5 章で 2〜4% の組が残ったので上げた）。拡張側の取りこぼしの受け皿（4 章の録音で、最終状態の上書きと次のキャプチャが同じフレームになり、まったく同じ画像が 2 枚並んだ）。
-- 次に、**見た目の距離**（macOS の Vision、`VNGenerateImageFeaturePrintRequest`。2026-09-10）で比べる。画素や色の分布では分けられなかった「同じ写真の続き」「メニューを開いただけ」「少しスクロールしただけ」を、人の目に近い基準で拾う。Swift の小さな補助コマンド（`server/tools/imagefp.swift`）を初回に `swiftc` でビルドして `~/.lec-scribe/bin/` に置き、画像パスを渡して距離の行列を受け取る。Mac の中だけで動きトークンを使わない。`swiftc`（Xcode Command Line Tools）がなければこの判定を飛ばす。
+- 次に、**見た目の距離**（macOS の Vision、`VNGenerateImageFeaturePrintRequest`。2026-09-10）で比べる。画素や色の分布では分けられなかった「同じ写真の続き」「メニューを開いただけ」「少しスクロールしただけ」を、人の目に近い基準で拾う。Swift の小さな補助コマンド（`server/tools/imagefp.swift`）を `install.sh` / `update.sh` で先に `swiftc` でビルドして `~/.lec-scribe/bin/` に置き（無ければ初回の処理でビルドする。開発中はこちら）、画像パスを渡して距離の行列を受け取る。Mac の中だけで動きトークンを使わない。`swiftc`（Xcode Command Line Tools）がなければこの判定を飛ばす。
   - 距離が `--scene-vision`（既定 0.2）以下なら、どんな画面でも同じとみなす。5 章・13 章・14 章・15 章で確かめたところ、この範囲は「メニューやダイアログを開いた」「少しスクロールした」画面で、レイアウトが同じで中身が違うスライド（13 章「色の対比② → ③」）は 0.29 だった。
   - 両方が写真・映像（色の分布の多様さが 3.0 ビット以上。文字中心のスライドは 0〜3）なら、`--scene-vision-photo`（既定 0.55）以下でも同じ場面とみなす。5 章で「ほぼ同じ」と指定された 17 組は 0.10〜0.70、指定されなかった組は 0.59 以上（3 章では同じ場面 0.15〜0.98、別の場面 0.75 以上）。6 章で「カメラ本体」「粗微動ユニット」とラベルの付いた別の装置の写真が 0.53 で「同じ場面」にまとまり、説明ラベルが全部出た 1 枚が消えたので、いったん 0.45 に下げたが、8 章で同じ場面の続き（枝を揺すって傘に落とす映像の寄り引き 0.535、講師が資料を持ったまま顔を上げた 0.501）が漏れた。そこで 0.55 に戻し、代わりに **両方に 4 文字以上の文字があって中身が違う（そろい具合 0.8 未満で、一方が他方に含まれもしない）なら写真同士の判定ではまとめない** 歯止めを付けた（文字認識が使えるようになったため。6 章の 0.53 はこれで残る）。まとめ損ねは重複が残るだけだが、まとめ過ぎは中身が消えるので、歯止めは安全側に効かせる。副作用として、同じ映像でも字幕が変わると別の画像として残る（6 章で 3 組）。字幕が変わる＝新しい情報なので許容する。
   - **写っている文字**（macOS の Vision の文字認識 `VNRecognizeTextRequest`、日本語＋英語、2026-09-10）も同じ補助コマンドで読み、画像ごとに `texts` として受け取る。距離が `--scene-vision-photo` 以下で、字幕や見出しの文字がそろっている（行を並べ替えて空白を除き、編集距離で 0.8 以上。文字認識の読み違いと行の読まれる順の違いを許す）か、**一方が他方に含まれる**（字幕が増えた。5 章の「LEICA S9D」→「LEICA S9D＋説明」）か、**両方に文字がない**なら、写真かどうかによらず同じ場面とみなす（`reason: 'text'`）。7 章で、虫のマクロ映像に同じ字幕が付いた 7 枚（距離 0.16〜0.38。暗い映像で色の多様さが 2.7〜3.0 ビットと写真の判定に届かない）と、講師が手を動かしただけの 2 枚（0.206、文字なし）が全部載っていたため。同じテンプレートで文字だけ違うスライド（7 章の講師の場面同士は 0.17〜0.31）は文字が違うので残る。
@@ -797,7 +809,7 @@ WhisperKit の VAD 分割では、30 秒の窓いっぱいに広がる区間（`
 - 次に、`slides.json` の画像を順に見て、最後に載せた画像と **色の分布（RGB 各 8 段階のヒストグラム交差、§9.1d と同じ計算）** が `--scene-color`（`LEC_SCRIBE_SCENE_COLOR`、既定 0.65）以上そろっていれば載せない。載せなかった画像の発話は、載せた画像の節に続けて入る（`assignSlides` に載せる画像だけを渡すことで自然にそうなる）。
 - サムネイルは `ffmpeg -vf scale=160:90 -f rawvideo -pix_fmt rgba` で作る（1 枚あたり数十 ms）。取れなければ何も外さない。
 - **拡張が記録した `trigger.stillFraction` が半分未満の画像（映像中心の画面）だけ** を対象にする。スライド中心の画面では、同じ配色で文字だけ違うスライドが「同じ場面」に見えてしまう（13〜15 章の録音で試すと、隣り合うスライドの 9 割が色の一致 0.65 以上だった）。記録のない古いセッションでは何も外さない。
-- 画像そのものは `slides/` に残す。判断は `.lecscribe/scenes.json`（画像ごとに `shown` / `sameSceneAs` / `reason` / `via` / `vision` / `pixelDiff` / `textSim` / `colorMatch`）に書き、`pipeline.json` の `result.hiddenSlides` に枚数を残す。`--scene-color 0` で無効。
+- 画像そのものは `slides/` に残す。判断は `.lecscribe/scenes.json`（画像ごとに `shown` / `sameSceneAs` / `standsFor` / `reason` / `via` / `vision` / `pixelDiff` / `textSim` / `colorMatch`）に書き、`pipeline.json` の `result.hiddenSlides` に枚数を残す。`--scene-color 0` で無効。
 - 「やり直す」で再実行できるので、閾値の調整に録画のやり直しは要らない。
 
 拡張側の同じ判定（§9.1d）は撮りすぎを防ぐための粗い間引きで、サーバー側が最終的な取捨選択を担う。
@@ -906,7 +918,7 @@ WhisperKit の VAD 分割では、30 秒の窓いっぱいに広がる区間（`
 
 状態別の主ボタン: IDLE = Start（ポップアップ）、CAPTURING = Stop + 「今の画面を手動で保存」、UPLOADING / PROCESSING = Server 行に段階、COMPLETED = 「出力フォルダを開く」。
 
-セッション一覧（録音中も表示）は保存済みのセッションを新しい順に全部出す（2026-09-11。それまでは 5 件までで、3 章の録音が一覧から消えた）。サイドパネルではパネルごとスクロールし、ポップアップは縦が限られるので一覧の中だけをスクロールさせる（高さ 300px。5 件目が途中で切れて続きがあると分かる）。各行の 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数。タイトルが幅の都合で省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）とタイトル全文を出すツールチップが開き、文字は選んでコピーできる（ボタンやフォルダのパスは置かない。2026-09-11。同じ行のボタンを覆わないよう、タイトルの上（三角を含めて 6px）に出し、上に収まらないときだけ下に出す。幅は文字に合わせ、行の幅を上限にする。行の中央を指す三角付きの濃い色の吹き出しで、行のブロックと見分けられるようにする。ポップアップの幅は 360px（元は 320px。2 行目が省略されない幅）。ポップアップの外には出せない。タイトルから外れて 0.25 秒で消える。ツールチップは body 直下に置くので `.sessionTip[hidden]` で hidden を効かせる）。各行のボタン（2026-09-11 に「破棄」を状態ごとに分けた）: 処理済みなら「フォルダを開く」「やり直す」「非表示」「削除」、未処理（送る前・送信失敗）なら「文字起こしする」「削除」、処理中・送信待ちなら「中止」だけ。「非表示」は一覧から隠すだけで Chrome 側の録音も `~/LecScribe` のフォルダも残り、一覧の下の「非表示のセッションを表示」で戻せる（status.json の `hidden`）。「削除」はパネル内の確認ダイアログ（HTML の `<dialog>` を `showModal()` で出す。「削除する / キャンセル」。ブラウザの `confirm()` はポップアップ・サイドパネルで表示されずに閉じられることがあるので使わない）のあと Chrome 側の録音と `~/LecScribe` のフォルダ（notes.md があっても。`cancel { delete: true, force: true }`）を消す。「中止」も同じ形の確認（「中止する / キャンセル」）で、初回の処理なら途中のフォルダも録音も消し、やり直し中なら処理を止めるだけで前回の結果と録音は残る（`{ output: 'keep', keepRecording: true }`。やり直しでは pipeline が途中で notes.md を文字起こしそのままの版で上書きしないので、どこで中止しても前回の整えた notes.md が残る）。処理済みの行は描くときにサーバーへ `GET /sessions/:id/status` を聞き、404 なら「データなし」のタグを出して「フォルダを開く」「やり直す」を押せなくする（Finder でフォルダを消したあとの行。「削除」で片付けられる）。Start の説明文（「動画を再生した状態で Start を押してください」など状態ごとの一言）は Start ボタンの直下に置く（一覧の下では一覧が長いと見えないため）。処理中・送信待ちの行には「処理中」「送信待ち」のタグが付き、「破棄」を押すと確認のうえ処理を中止してサーバー側のフォルダも消す（§11.3）。
+セッション一覧（録音中も表示）は保存済みのセッションを新しい順に全部出す（2026-09-11。それまでは 5 件までで、3 章の録音が一覧から消えた）。サイドパネルではパネルごとスクロールし、ポップアップは縦が限られるので一覧の中だけをスクロールさせる（高さ 300px。5 件目が途中で切れて続きがあると分かる）。各行の 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数。タイトルが幅の都合で省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）とタイトル全文を出すツールチップが開き、文字は選んでコピーできる（ボタンやフォルダのパスは置かない。2026-09-11。同じ行のボタンを覆わないよう、タイトルの上（三角を含めて 6px）に出し、上に収まらないときだけ下に出す。幅は文字に合わせ、行の幅を上限にする。行の中央を指す三角付きの濃い色の吹き出しで、行のブロックと見分けられるようにする。ポップアップの幅は 360px（元は 320px。2 行目が省略されない幅）。ポップアップの外には出せない。タイトルから外れて 0.25 秒で消える。ツールチップは body 直下に置くので `.sessionTip[hidden]` で hidden を効かせる）。各行のボタン（2026-09-11 に「破棄」を状態ごとに分けた）: 処理済みなら「フォルダを開く」「やり直す」「非表示」「削除」、未処理（送る前・送信失敗）なら「文字起こしする」「削除」、処理中・送信待ちなら「中止」だけ。「非表示」は一覧から隠すだけで Chrome 側の録音も `~/LecScribe` のフォルダも残り、一覧の下の「非表示のセッションを表示」で戻せる（status.json の `hidden`）。「削除」はパネル内の確認ダイアログ（HTML の `<dialog>` を `showModal()` で出す。「削除する / キャンセル」。ブラウザの `confirm()` はポップアップ・サイドパネルで表示されずに閉じられることがあるので使わない）のあと Chrome 側の録音と `~/LecScribe` のフォルダ（notes.md があっても。`cancel { delete: true, force: true }`）を消す。「中止」も同じ形の確認（「中止する / キャンセル」）で、初回の処理なら途中のフォルダも録音も消し、やり直し中なら処理を止めるだけで前回の結果と録音は残る（`{ output: 'keep', keepRecording: true }`。やり直しでは pipeline が途中で notes.md を文字起こしそのままの版で上書きしないので、どこで中止しても前回の整えた notes.md が残る）。処理済みの行は描くときにサーバーへ `GET /sessions/:id/status` を聞き、404 なら「データなし」のタグを出して「フォルダを開く」「やり直す」を押せなくする（Finder でフォルダを消したあとの行。「削除」で片付けられる）。Start の説明文（「動画を再生した状態で Start を押してください」など状態ごとの一言）は Start ボタンの直下に置く（一覧の下では一覧が長いと見えないため）。処理中・送信待ちの行には「処理中」「送信待ち」のタグが付く。文字起こしが終わった行では、状態表示が「Done」と同じことを言うので説明文は出さない（2026-09-11）。
 
 ### 15.3 ページ上のフィードバック（2026-09-09）
 
@@ -1052,22 +1064,54 @@ WhisperKit の VAD 分割では、30 秒の窓いっぱいに広がる区間（`
 
 ## 付録 A. 設定値一覧
 
-options で変更でき、`storage.local` に保存する。
+### 拡張（`extension/src/config.ts` の `DEFAULT_CONFIG`）
 
 ```ts
 type Config = {
-  server: { port: number; token: string };                        // 47321, ''
-  audio: { bitsPerSecond: number; timesliceMs: number; passthrough: boolean };  // 64000, 10000, true
-  detect: {
-    sampleIntervalMs: number; detectWidth: number; detectHeight: number;
-    pixelDiffThreshold: number; changeThreshold: number; stableThreshold: number;
-    stableSamples: number; maxStabilizeMs: number; dedupeThreshold: number;
-    minShotIntervalMs: number; tickIntervalMs: number;
+  server: { port: number; token: string; paired: boolean };                     // 47321, '', false
+  audio: { passthrough: boolean; bitsPerSecond: number; timesliceMs: number };  // true, 64000, 10000
+  slide: {
+    imageFormat: 'png' | 'jpeg'; jpegQuality: number; maxSlideWidth: number;    // 'png', 0.9, 0（原寸）
+    finalState: boolean;      // true  切り替わる直前の状態で画像を上書きする（§9.2b）
+    updateThreshold: number;  // 0.004 上書きするのに必要な差分率。マスクが効く前は 0.012（§9.1b）
   };
-  slide: { imageFormat: 'png' | 'jpeg'; jpegQuality: number; maxSlideWidth: number };
-  storage: { autoDeleteAfterDone: boolean; lowSpaceWarnBytes: number };
+  detect: {
+    sampleIntervalMs: number; detectWidth: number; detectHeight: number;        // 500, 160, 90
+    pixelDiffThreshold: number;  // 24    画素を「違う」とみなすチャンネル差
+    changeThreshold: number;     // 0.025 切り替えとみなす差分率（§9.1）
+    stableThreshold: number;     // 0.015 安定したとみなす差分率
+    stableSamples: number; maxStabilizeMs: number;                              // 2, 3000
+    dedupeThreshold: number;     // 0.015 直前に保存した画像と同じとみなす差分率
+    cutThreshold: number;        // 0.3   映像中心の画面で切り替えとみなす差分率（§9.1c）
+    sameSceneColor: number;      // 0.65  映像中心の画面で同じ場面とみなす色の一致（§9.1d）
+    minShotIntervalMs: number; tickIntervalMs: number;                          // 2000, 10000
+  };
 };
 ```
+
+設定画面（options）で変更でき `storage.local` に保存するのは `server` だけ。**`detect` は保存された値を読まない**（2026-09-09。一度保存すると検知の閾値がその時点で固定され、拡張を更新しても新しい既定値が効かなかったため）。`audio` / `slide` は保存された値があれば読む（docs/CHECKS.md の手順で `chrome.storage.local` に直接書いて試せる）。
+
+### サーバー（`server/src/config.ts`。フラグ / 環境変数 / 既定値）
+
+| フラグ | 環境変数 | 既定 | 内容 |
+|---|---|---|---|
+| `--port` | `LEC_SCRIBE_PORT` | 47321 | 待ち受けポート（127.0.0.1 のみ） |
+| `--out` | `LEC_SCRIBE_OUT` | `~/LecScribe` | 出力先（§14） |
+| `--model` | `LEC_SCRIBE_MODEL` | `large-v3` | WhisperKit のモデル（§13.2） |
+| `--language` | `LEC_SCRIBE_LANGUAGE` | `ja` | 文字起こしの言語 |
+| `--whisperkit` / `--ffmpeg` / `--open` / `--osascript` | `LEC_SCRIBE_WHISPERKIT` など | コマンド名 | 外部コマンドの場所 |
+| `--token-file` / `--trusted-file` | `LEC_SCRIBE_TOKEN_FILE` など | `~/.lec-scribe/` の下 | トークンと承認済み拡張（§12.3） |
+| `--keep-wav` | `LEC_SCRIBE_KEEP_WAV` | false | 変換した wav を残す |
+| `--llm` | `LEC_SCRIBE_LLM` | `none` | ノート作成の呼び出し先（`codex` / `openai` / `ollama` / `none`。§13.5） |
+| `--llm-model` | `LEC_SCRIBE_LLM_MODEL` | 空 | モデル名（空なら呼び出し先ごとの既定） |
+| `--llm-chars` | `LEC_SCRIBE_LLM_CHARS` | 12000 | 1 回に送る本文の文字数（§13.5） |
+| `--codex` / `--ollama-url` | `LEC_SCRIBE_CODEX` など | `codex` / `http://127.0.0.1:11434` | 呼び出し先の設定 |
+| `--scene-color` | `LEC_SCRIBE_SCENE_COLOR` | 0.65 | 映像中心の画面で同じ場面とみなす色の一致（§13.4b）。0 で無効 |
+| `--scene-vision` | `LEC_SCRIBE_SCENE_VISION` | 0.2 | Vision の距離がこれ以下ならどんな画面でも同じ（§13.4b）。0 で無効 |
+| `--scene-vision-photo` | `LEC_SCRIBE_SCENE_VISION_PHOTO` | 0.55 | 写真・映像や、文字が同じ画像を同じ場面とみなす距離。0 で無効 |
+| `--scene-keep` | `LEC_SCRIBE_SCENE_KEEP` | `last` | 同じ場面のまとまりで残す画像（`last` / `first`） |
+
+数値として読めない指定は既定値に戻す（2026-09-11。NaN のまま使うと判定が黙って無効になるため）。まとめを全部やめるには `--scene-color 0 --scene-vision 0 --scene-vision-photo 0` の 3 つが要る。
 
 ## 付録 B. 確認済み事実と出典
 
