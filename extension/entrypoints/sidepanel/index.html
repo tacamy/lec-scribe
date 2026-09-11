@@ -72,13 +72,25 @@
         <button id="snapBtn" class="secondary" type="button" title="自動保存が拾えなかったときに使います" hidden>今の画面を手動で保存</button>
       </div>
 
+      <footer class="footer" id="footer">動画ページで動画を再生した状態で Start を押してください。</footer>
+
       <section class="sessions" id="sessions" hidden>
         <h2>保存済みセッション</h2>
         <ul id="sessionList"></ul>
+        <button type="button" class="link" id="hiddenToggle" hidden>非表示のセッションを表示</button>
       </section>
 
-      <footer class="footer" id="footer">動画ページで動画を再生した状態で Start を押してください。</footer>
     </main>
+    <!-- 削除・中止の確認。ブラウザの confirm() はポップアップ・サイドパネルで表示されないことがあるので HTML のダイアログにする -->
+    <dialog class="confirm" id="confirmDialog">
+      <form method="dialog">
+        <p id="confirmText"></p>
+        <div class="confirmBtns">
+          <button type="button" id="confirmCancel">キャンセル</button>
+          <button type="submit" class="danger" id="confirmOk" value="ok">削除する</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

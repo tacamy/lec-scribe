@@ -290,21 +290,50 @@ export async function polish(
   const results = new Map<string, PolishOutput>();
   const errors: string[] = [];
   const batches = batchSections(sections, settings.charsPerCall);
+
+  /**
+   * 1 回分を送る。返答が壊れた・足りないときは半分に分けて 1 度だけやり直す。
+   * まとめて送るほど呼び出し回数は減るが、返答が長いほど途中で切れやすいので、その受け皿
+   */
+  const send = async (batch: PolishInput[], label: string, canSplit: boolean): Promise<void> => {
+    if (settings.signal?.aborted) return;
+    const ids = batch.map((s) => s.id);
+    const chars = batch.reduce((n, s) => n + s.text.length, 0);
+    log(`${backend.name}: ${label} (${ids.length} sections, ${chars} chars)`);
+    let failure: string | null = null;
+    // この呼び出しで答えが返った節だけを数える（前の試行の結果を成功と数えないため）
+    const answered = new Set<string>();
+    try {
+      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA);
+      for (const out of parseResponse(raw, ids)) {
+        results.set(out.id, out);
+        answered.add(out.id);
+      }
+      const missing = ids.filter((id) => !answered.has(id));
+      if (missing.length > 0) failure = `no result for ${missing.join(', ')}`;
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    if (!failure) return;
+    if (canSplit && batch.length > 1 && !settings.signal?.aborted) {
+      // 答えが返らなかった節だけをやり直す。全部だめなら半分に分けて送り直す（長すぎたとき用）
+      const missing = batch.filter((s) => !answered.has(s.id));
+      const retry = missing.length > 0 && missing.length < batch.length ? [missing] : [batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))];
+      log(`${backend.name}: ${label} が失敗（${failure}）。${retry.length === 1 ? `足りない ${missing.length} 節だけ` : '半分に分けて'}やり直します`);
+      for (const [i, part] of retry.entries()) {
+        if (part.length > 0) await send(part, `${label}${retry.length === 1 ? 'r' : i === 0 ? 'a' : 'b'}`, retry.length === 1);
+      }
+      return;
+    }
+    errors.push(`${label}: ${failure}`);
+  };
+
   for (const [i, batch] of batches.entries()) {
     if (settings.signal?.aborted) {
       errors.push('cancelled');
       break;
     }
-    const ids = batch.map((s) => s.id);
-    log(`${backend.name}: batch ${i + 1}/${batches.length} (${ids.length} sections, ${batch.reduce((n, s) => n + s.text.length, 0)} chars)`);
-    try {
-      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA);
-      for (const out of parseResponse(raw, ids)) results.set(out.id, out);
-      const missing = ids.filter((id) => !results.has(id));
-      if (missing.length > 0) errors.push(`batch ${i + 1}: no result for ${missing.join(', ')}`);
-    } catch (e) {
-      errors.push(`batch ${i + 1}: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    await send(batch, `batch ${i + 1}/${batches.length}`, true);
   }
   return { results, errors };
 }

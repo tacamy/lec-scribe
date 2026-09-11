@@ -51,6 +51,16 @@ export type Config = {
     maxStabilizeMs: number;
     /** 最後に保存した画像との差がこれ未満なら保存しない */
     dedupeThreshold: number;
+    /**
+     * 映像中心の画面（静止部分が半分未満）では、1 サンプルでこれ以上変わったときだけ
+     * 「場面が切り替わった」とみなす。カメラが動いているだけの連続したショットを撮り続けないため
+     */
+    cutThreshold: number;
+    /**
+     * 映像中心の画面で、最後に保存した画像と色の分布がこの割合以上そろっていれば
+     * 「同じ場面」とみなして保存しない（0〜1）。被写体やカメラが動いても場面が同じなら色は似る
+     */
+    sameSceneColor: number;
     /** 保存間隔の下限 */
     minShotIntervalMs: number;
     /** 再生中にタイムラインへ定期的に記録する間隔（SPEC §10.1） */
@@ -74,8 +84,8 @@ export const DEFAULT_CONFIG: Config = {
     jpegQuality: 0.9,
     maxSlideWidth: 0,
     finalState: true,
-    // 講師ワイプの動きだけで 0.4〜0.9% 変わるので、それより上
-    updateThreshold: 0.012,
+    // 動き続ける領域は比較から除くので、ワイプの動き（0.4〜0.9%）より下でよい（SPEC §9.2b）
+    updateThreshold: 0.004,
   },
   // 閾値は fixture の実測から決めた（SPEC §9.3）:
   // 本文テキストだけが変わるスライドで約 3.2%、講師ワイプの動きで 0.4〜0.9%。
@@ -84,11 +94,13 @@ export const DEFAULT_CONFIG: Config = {
     detectWidth: 160,
     detectHeight: 90,
     pixelDiffThreshold: 24,
-    changeThreshold: 0.02,
+    changeThreshold: 0.025,
     stableThreshold: 0.015,
     stableSamples: 2,
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
+    cutThreshold: 0.3,
+    sameSceneColor: 0.65,
     minShotIntervalMs: 2000,
     tickIntervalMs: 10_000,
   },
@@ -118,11 +130,19 @@ export function authHeaders(server: { token: string }): Record<string, string> {
   return server.token ? { authorization: `Bearer ${server.token}` } : {};
 }
 
+/**
+ * 保存された設定を読む。ただし検知の閾値（detect）だけは無視する（2026-09-09）。
+ * 以前は Config 全体を保存していたため、一度でも設定を保存すると、その時点の検知パラメータが
+ * 固定され、拡張を更新しても新しい既定値が効かなかった（閾値を変えても届かなかった）。
+ * 他の項目（audio / slide / storage）は docs/CHECKS.md の手順で手動上書きできるように残す
+ */
 export async function loadConfig(): Promise<Config> {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  return mergeConfig(DEFAULT_CONFIG, stored[STORAGE_KEY]);
+  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] as Partial<Config> | undefined;
+  if (!stored) return mergeConfig(DEFAULT_CONFIG, undefined);
+  const { detect: _ignored, ...rest } = stored;
+  return mergeConfig(DEFAULT_CONFIG, rest);
 }
 
 export async function saveConfig(config: Config): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: config });
+  await chrome.storage.local.set({ [STORAGE_KEY]: { server: config.server } });
 }

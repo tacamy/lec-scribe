@@ -3,9 +3,12 @@ import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
-import { NOTES_FILE, migrateLayout, workPath } from './layout.ts';
-import { createBackend, outline, polish } from './llm.ts';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment } from './merge.ts';
+import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
+import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
+import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
+import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
+import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
@@ -22,9 +25,13 @@ export type PipelineStatus = {
     durationSec: number;
     hasTimeline: boolean;
     slides: number;
+    /** 同じ場面として notes.md に載せなかった画像の数（§13.4b） */
+    hiddenSlides?: number;
     /** notes.md を作れたか。ノート作成が無効なら undefined */
     notes?: boolean;
     notesError?: string;
+    /** 前回の LLM の結果を使い回したか（§13.5b） */
+    notesReused?: boolean;
   };
   /** 各段階にかかった秒 */
   timings?: Partial<Record<'converting' | 'transcribing' | 'merging' | 'polishing', number>>;
@@ -153,6 +160,44 @@ export class Pipeline {
     return kept;
   }
 
+  /**
+   * 映像中心の画面で同じ場面が続く画像を notes.md から外す。サムネイルは ffmpeg で作る。
+   * 取れなければ何も外さない。判断は .lecscribe/scenes.json に残す
+   */
+  private async pickScenes(dir: string, slides: SlideEntry[], signal?: AbortSignal): Promise<SlideEntry[]> {
+    // sceneColor が 0 でも、中身が同じ画像を外す判定は残す（scenes.ts）
+    if (slides.length < 2) return [...slides];
+    const thumbs = new Map<string, Uint8Array>();
+    for (const s of slides) {
+      if (signal?.aborted) return [...slides];
+      const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename), signal);
+      if (thumb) thumbs.set(s.filename, thumb);
+    }
+    if (thumbs.size === 0) return [...slides];
+    // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
+    const measure =
+      this.config.sceneVision > 0 || this.config.sceneVisionPhoto > 0
+        ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
+        : null;
+    const visionOptions = measure ? { distance: measure.distance, text: measure.text, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined;
+    const decisions = pickShownSlides(slides, thumbs, this.config.sceneColor, visionOptions, this.config.sceneKeep);
+    await writeFile(
+      workPath(dir, 'scenes.json'),
+      JSON.stringify(
+        {
+          threshold: this.config.sceneColor,
+          vision: measure ? { tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto, text: slides.some((_, i) => measure.text(i) !== undefined) } : null,
+          decisions,
+        },
+        null,
+        2,
+      ),
+    ).catch(() => undefined);
+    const hidden = decisions.filter((d) => !d.shown);
+    if (hidden.length > 0) this.log(`同じ場面として notes.md から外した画像: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
+    return shownSlides(slides, decisions);
+  }
+
   /** audio.webm → wav → whisperkit-cli。report の区間を返す */
   private async transcribe(
     dir: string,
@@ -251,7 +296,9 @@ export class Pipeline {
         const timeline = await readJson(workPath(dir, 'timeline.json'));
         const events = isTimeline(timeline) ? timeline : null;
         const slidesJson = await readJson(workPath(dir, 'slides.json'));
-        const slides = isSlideList(slidesJson) ? slidesJson : [];
+        const allSlides = isSlideList(slidesJson) ? slidesJson : [];
+        // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
+        const slides = await this.pickScenes(dir, allSlides, signal);
         const session = (await readJson(workPath(dir, 'session.json'))) as
           | { title?: string; url?: string; startedAt?: string }
           | undefined;
@@ -284,29 +331,39 @@ export class Pipeline {
         // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
         const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides };
         await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
-        // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする
-        await writeFile(
-          path.join(dir, NOTES_FILE),
-          buildLectureMarkdown({
-            ...lectureInput,
-            note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
-          }),
-        );
+        // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする。
+        // ただし前回の整えた notes.md が既にあるとき（やり直し）は触らない。途中で「中止」しても前回の結果が残るように。
+        // ノート作成に失敗したときは、あとでこの本文を書き込む（前回の結果が残ったままにならないように）
+        const notesFile = path.join(dir, NOTES_FILE);
+        const rawNotes = buildLectureMarkdown({
+          ...lectureInput,
+          note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
+        });
+        const hasNotes = await stat(notesFile).then(() => true).catch(() => false);
+        if (!hasNotes || this.config.llm === 'none') await writeFile(notesFile, rawNotes);
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         return {
           summary: {
             segments: mapped.length,
             durationSec: Math.round(mapped[mapped.length - 1]!.end),
             hasTimeline: events !== null,
-            slides: slides.length,
+            slides: allSlides.length,
+            ...(allSlides.length > slides.length ? { hiddenSlides: allSlides.length - slides.length } : {}),
           },
           sections: groupSections(mapped, slides),
           session,
+          rawNotes,
         };
       });
 
       // ノート作成（任意）。失敗しても文字起こしまでは done にする
-      let notes: { notes?: boolean; notesError?: string } = {};
+      let notes: { notes?: boolean; notesError?: string; notesReused?: boolean } = {};
+      /** ノート作成に失敗したら、文字起こしそのままの本文を置く（前回の内容が残ったままにならないように） */
+      const fallbackNotes = async (notesError: string) => {
+        await writeFile(path.join(dir, NOTES_FILE), result.rawNotes).catch(() => undefined);
+        this.log(`ノートを整えられませんでした（${notesError}）。文字起こしそのままの本文を置きました`);
+        return { notes: false, notesError };
+      };
       const llmSettings = {
         kind: this.config.llm,
         model: this.config.llmModel,
@@ -320,14 +377,69 @@ export class Pipeline {
       if (backend) {
         notes = await step('polishing', async () => {
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
-          const { results: polished, errors } = await polish(inputs, backend, llmSettings, this.log);
-          if (signal.aborted) throw new Error('cancelled');
-          if (polished.size === 0) return { notes: false, notesError: errors.join(' / ') || 'no output' };
-          // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
-          const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
-          const { outline: topics, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
-          if (signal.aborted) throw new Error('cancelled');
-          if (outlineError) errors.push(outlineError);
+          // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
+          const cacheSettings = { kind: llmSettings.kind, model: llmSettings.model, charsPerCall: llmSettings.charsPerCall };
+          const key = cacheKey(inputs, cacheSettings);
+          const stored = await readNotesCache(dir);
+          // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
+          const cached = stored && stored.key === key && (stored.errors ?? []).length === 0 && stored.outline ? stored : null;
+          if (stored && !cached && stored.key === key) this.log('前回のノートに失敗が残っているので作り直します');
+          let polished: Map<string, PolishOutput>;
+          let topics: Outline | undefined;
+          let errors: string[];
+          let reused = false;
+          if (cached) {
+            this.log(`前回のノートを使い回します（${cached.backend}, ${cached.generatedAt}）`);
+            polished = new Map(cached.polished.map((p) => [p.id, p]));
+            topics = cached.outline;
+            errors = cached.errors ?? [];
+            reused = true;
+          } else {
+            // 節の区切りだけが変わった（載せる画像を選び直した）なら、前回の結果を組み替えて使う。
+            // 一致しない節だけ LLM に頼む
+            // 呼び出し先・モデル・分割の大きさが変わっていたら組み替えずに作り直す（前のモデルの文章を使い回さないため）。
+            // 失敗が残っているキャッシュも組み替えの材料にしない
+            const previous = stored && sameSettings(stored, cacheSettings) && (stored.errors ?? []).length === 0 ? stored : null;
+            const derived = previous ? deriveFromCache(previous, inputs) : { polished: new Map<string, PolishOutput>(), unmatched: inputs.map((s) => s.id) };
+            const todo = inputs.filter((s) => derived.unmatched.includes(s.id));
+            polished = derived.polished;
+            errors = [];
+            if (todo.length > 0) {
+              if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
+              const result = await polish(todo, backend, llmSettings, this.log);
+              for (const [id, out] of result.results) polished.set(id, out);
+              errors = result.errors;
+              if (signal.aborted) throw new Error('cancelled');
+            }
+            // 発話のある節が 1 つも整わなかったら失敗とする（空の節はキャッシュの組み替えでも埋まるため数に入れない）
+            const hasText = inputs.some((i) => i.text !== '');
+            if (polished.size === 0 || (hasText && ![...polished.values()].some((x) => x.text !== ''))) {
+              return await fallbackNotes(errors.join(' / ') || 'no output');
+            }
+            if (todo.length === 0 && derived.outline) {
+              this.log(`前回のノートを組み替えて使い回します（${previous!.backend}, ${previous!.generatedAt}）`);
+              topics = derived.outline;
+              reused = true;
+            } else {
+              // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
+              const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
+              const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+              if (signal.aborted) throw new Error('cancelled');
+              topics = made;
+              if (outlineError) errors.push(outlineError);
+            }
+            await writeNotesCache(dir, {
+              key,
+              generatedAt: now(),
+              backend: backend.name,
+              settings: cacheSettings,
+              inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
+              polished: [...polished.values()],
+              ...(topics ? { outline: topics } : {}),
+              ...(errors.length > 0 ? { errors } : {}),
+            });
+          }
+          if (polished.size === 0) return await fallbackNotes(errors.join(' / ') || 'no output');
           await writeFile(
             path.join(dir, NOTES_FILE),
             buildNotesMarkdown({
@@ -339,8 +451,17 @@ export class Pipeline {
               outline: topics,
             }),
           );
-          return errors.length > 0 ? { notes: true, notesError: errors.join(' / ') } : { notes: true };
-        }).catch((e: unknown) => ({ notes: false, notesError: e instanceof Error ? e.message : String(e) }));
+          return {
+            notes: true,
+            ...(errors.length > 0 ? { notesError: errors.join(' / ') } : {}),
+            ...(reused ? { notesReused: true } : {}),
+          };
+        }).catch(async (e: unknown) => {
+          const message = e instanceof Error ? e.message : String(e);
+          // 「中止」のときは前回の結果を残す。それ以外の失敗では文字起こしそのままの本文に戻す
+          if (signal.aborted) return { notes: false, notesError: message };
+          return await fallbackNotes(message);
+        });
       }
 
       return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });

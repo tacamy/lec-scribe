@@ -44,7 +44,11 @@ export type ToBackground =
   /** ローカルサーバーと接続する（サーバーが Mac のダイアログで承認を求め、拡張専用トークンを返す） */
   | { target: 'sw'; type: 'PAIR' }
   | { target: 'sw'; type: 'EXPORT'; sessionId: string }
-  | { target: 'sw'; type: 'DISCARD'; sessionId: string }
+  /**
+   * 一覧の行を消す。output: 'delete' で ~/LecScribe のフォルダも消す（notes.md があっても）、'keep' で残す、
+   * 省略時は処理中・送信待ちだけ消す（成果物があれば残す）。keepRecording で Chrome 側の録音は残す（やり直しの中止）
+   */
+  | { target: 'sw'; type: 'DISCARD'; sessionId: string; output?: 'keep' | 'delete'; keepRecording?: boolean }
   /** 指定タブの <video> を調べる（Start 前の表示用） */
   | { target: 'sw'; type: 'PROBE'; tabId: number }
   /** 検知用 content script からの動画の状態 */
@@ -80,6 +84,8 @@ export type ToOffscreen =
       mime: string;
       dataBase64: string;
       reason: SlideReason;
+      /** 判定に使った数値（slides.json に残して閾値を詰めるため） */
+      trigger?: SlideMeta['trigger'];
     }
   /** 保存済みのスライド画像を、切り替わる直前の状態で上書きする（SPEC §9.2） */
   | { target: 'offscreen'; type: 'SLIDE_UPDATE'; sessionId: string; seq: number; videoTime: number; t: number; mime: string; dataBase64: string }
@@ -187,7 +193,8 @@ export const sendToBackground = {
   getState: () => send<StateReply>({ target: 'sw', type: 'GET_STATE' }),
   pair: () => send<StateReply & { paired: boolean }>({ target: 'sw', type: 'PAIR' }),
   export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
-  discard: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId }),
+  discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
+    send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
   detectStatus: (sessionId: string, status: VideoStatus) =>
     send<object>({ target: 'sw', type: 'DETECT_STATUS', sessionId, status }),

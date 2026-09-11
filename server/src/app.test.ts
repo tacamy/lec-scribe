@@ -70,6 +70,10 @@ beforeAll(async () => {
     openaiApiKey: '',
     ollamaUrl: 'http://127.0.0.1:1',
     llmCharsPerCall: 4000,
+    sceneColor: 0, // ffmpeg のスタブではサムネイルが作れないので、場面の判定は切る
+    sceneVision: 0,
+    sceneVisionPhoto: 0,
+    sceneKeep: 'last',
   };
   const { server } = createApp(config, TOKEN);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -110,7 +114,7 @@ describe('local server', () => {
     });
     expect(created.status).toBe(201);
     const { outputDir } = (await created.json()) as { outputDir: string };
-    expect(path.basename(outputDir)).toBe('20260908-103005-ab12_テスト_動画_1');
+    expect(path.basename(outputDir)).toBe('テスト_動画_1_20260908-103005-ab12');
 
     const put = (name: string, body: string | Uint8Array) =>
       fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
@@ -303,7 +307,7 @@ describe('local server', () => {
   it('keeps a finished session folder when a cancel asks to delete it', async () => {
     // 処理済み（notes.md あり）のセッションに対する cancel+delete は、フォルダを消さない
     const sessionId = '20260908-103005-ab12';
-    const dir = path.join(config.outDir, `${sessionId}_テスト_動画_1`);
+    const dir = path.join(config.outDir, `テスト_動画_1_${sessionId}`);
     expect(await readdir(dir)).toContain('notes.md');
     const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
       method: 'POST',
@@ -312,6 +316,28 @@ describe('local server', () => {
     });
     expect(await res.json()).toMatchObject({ ok: true, cancelled: false, deleted: false });
     expect(await readdir(dir)).toContain('notes.md');
+  });
+
+  it('deletes a finished session folder when the cancel says force（一覧の「削除」）', async () => {
+    // 他のテストと共有しないよう、このテスト専用のセッションを作る
+    const sessionId = '20260908-110000-zz99';
+    await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, title: '削除テスト' }),
+    });
+    const dir = path.join(config.outDir, `削除テスト_${sessionId}`);
+    await writeFile(path.join(dir, 'notes.md'), '# 完成したノート\n');
+    expect(await readdir(dir)).toContain('notes.md');
+    const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: true, force: true }),
+    });
+    expect(await res.json()).toMatchObject({ ok: true, cancelled: false, deleted: true });
+    await expect(readdir(dir)).rejects.toThrow();
+    // 消したあとは status が 404（拡張はこれで「データなし」を出す）
+    expect((await fetch(`${base}/sessions/${sessionId}/status`, { headers })).status).toBe(404);
   });
 
   it('rejects requests whose Host is not loopback', async () => {

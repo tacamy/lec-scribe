@@ -121,3 +121,179 @@ describe('ChangeDetector', () => {
     expect(detector.flush(gray(200), 2600).save).toBe(false);
   });
 });
+
+describe('同じ場面（映像中心の画面）', () => {
+  /** ざらざらした映像。seed を変えると細かい模様は変わるが、全体の明るさは同じ */
+  const noise = (seed: number, shade = 128) => {
+    const f = new Uint8ClampedArray(PIXELS * 4);
+    let x = seed;
+    for (let p = 0; p < PIXELS; p++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      const v = shade + ((x >> 16) % 60) - 30;
+      f[p * 4] = v;
+      f[p * 4 + 1] = v;
+      f[p * 4 + 2] = v;
+      f[p * 4 + 3] = 255;
+    }
+    return f;
+  };
+
+  it('被写体が動いただけの場面は、細かく見れば大きく違っても撮らない（色の構成が同じ）', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(noise(1), 0);
+    // 画面全体が動く映像なので、静止部分はほとんどない
+    for (let i = 0; i < 8; i++) detector.sample(noise(i + 2), 1000 + i * 500);
+    const verdict = detector.flush(noise(20), 9000);
+    expect(verdict.save).toBe(false);
+  });
+
+  it('場面が変われば撮る', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(noise(1, 60), 0);
+    for (let i = 0; i < 8; i++) detector.sample(noise(i + 2, 60), 1000 + i * 500);
+    // 明るさがまるごと変わる = 色の構成が変わる = 別の場面
+    detector.sample(noise(30, 220), 5000);
+    const verdict = detector.flush(noise(31, 220), 5500);
+    expect(verdict.save).toBe(true);
+  });
+});
+
+describe('変化の広がり', () => {
+  const W = 160, H = 90;
+  /** 画面の一部（cols×rows のマス目）だけを黒くしたフレーム */
+  const patch = (cols: number, rows: number) => {
+    const f = new Uint8ClampedArray(PIXELS * 4).fill(255);
+    for (let y = 0; y < (H * rows) / 4; y++) {
+      for (let x = 0; x < (W * cols) / 4; x++) {
+        const p = y * W + x;
+        f[p * 4] = 0;
+        f[p * 4 + 1] = 0;
+        f[p * 4 + 2] = 0;
+      }
+    }
+    return f;
+  };
+  const blank = () => new Uint8ClampedArray(PIXELS * 4).fill(255);
+
+  it('1 か所にまとまった変化は切り替えとみなさない（人が動いただけ）', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.sample(blank(), 0);
+    // 左上 1 マス（全体の 6%）が真っ黒になっても、変化は 1 マスに収まる
+    const verdict = detector.sample(patch(1, 1), 500);
+    expect(verdict.diffPrev).toBeGreaterThan(cfg.changeThreshold);
+    expect(verdict.state).toBe('watching');
+  });
+
+  it('広い範囲に散った変化は切り替えとみなす', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.sample(blank(), 0);
+    const verdict = detector.sample(patch(4, 2), 500); // 上半分（8 マス）
+    expect(verdict.state).toBe('stabilizing');
+  });
+});
+
+describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
+  /** 画素 [from, to) を色 rgb にする */
+  const paint = (f: Uint8ClampedArray, from: number, to: number, rgb: [number, number, number]) => {
+    for (let p = from; p < to; p++) {
+      f[p * 4] = rgb[0];
+      f[p * 4 + 1] = rgb[1];
+      f[p * 4 + 2] = rgb[2];
+      f[p * 4 + 3] = 255;
+    }
+    return f;
+  };
+  /** 白地。ワイプ（末尾 2%）はサンプルごとに色が変わり、本文の 1 行（0.9%）は最後に一度だけ増える */
+  const wipeFrom = Math.round(PIXELS * 0.98);
+  const textFrom = Math.round(PIXELS * 0.5);
+  const textTo = textFrom + Math.round(PIXELS * 0.009);
+  const slide = (wipeShade: number, withLine = false) => {
+    const f = paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]);
+    paint(f, wipeFrom, PIXELS, [wipeShade, wipeShade, wipeShade]);
+    if (withLine) paint(f, textFrom, textTo, [0, 0, 0]);
+    return f;
+  };
+
+  it('ワイプの動きは無視し、本文が 1 行増えたことは拾う', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    // 同じスライドを見ている間、ワイプだけが動く
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    const final = slide(130, true); // ワイプの色も変わっている（本物の動画と同じ状況）
+
+    // 素の比較ではワイプの 2% が乗ってしまうが、動きを除けば本文の変化だけが残る
+    expect(diffRatio(final, saved, cfg.pixelDiffThreshold)).toBeGreaterThan(0.02);
+    const masked = detector.diffFromSaved(final, saved);
+    expect(masked).toBeGreaterThan(0.004);
+    expect(masked).toBeLessThan(0.012);
+
+    // ワイプだけが動いた画面は、上書きの閾値（0.4%）に届かない
+    expect(detector.diffFromSaved(slide(130), saved)).toBeLessThan(0.004);
+  });
+
+  it('サンプルが少ないうちは全画素で比べる', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    detector.sample(slide(130), 500);
+    expect(detector.diffFromSaved(slide(130), saved)).toBeGreaterThan(0.015);
+  });
+
+  it('動きの記録はスライドをまたいで持ち越す（保存直後だけ判定がゆるくならないように）', () => {
+    const detector = new ChangeDetector(cfg);
+    const saved = slide(10);
+    detector.markSaved(saved, 0);
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    detector.markSaved(saved, 5000); // 次のスライドへ
+    expect(detector.diffFromSaved(slide(130), saved)).toBeLessThan(0.004);
+  });
+
+  it('切り替えの判定でもワイプの動きを無視する', () => {
+    const detector = new ChangeDetector(cfg);
+    detector.markSaved(slide(10), 0);
+    for (let i = 0; i < 6; i++) detector.sample(slide(10 + (i % 2) * 120), 1000 + i * 500);
+    // ワイプだけが動いた次のサンプル: 全画素で見れば 2% だが、切り替えとはみなさない
+    const wipeOnly = detector.sample(slide(200), 5000);
+    expect(wipeOnly.diffPrev).toBeLessThan(cfg.changeThreshold);
+    expect(wipeOnly.state).toBe('watching');
+    // 本文が丸ごと変わればちゃんと切り替えとみなす
+    const switched = detector.sample(paint(slide(200), 0, Math.round(PIXELS * 0.5), [0, 0, 0]), 5500);
+    expect(switched.state).toBe('stabilizing');
+  });
+
+  it('画面全体が動画のときはマスクを使わず全画素で比べる', () => {
+    const detector = new ChangeDetector(cfg);
+    // 毎サンプル全画素が変わる（風景の映像など）
+    for (let i = 0; i < 8; i++) detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [i * 30, 0, 0]), i * 500);
+    const verdict = detector.sample(paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]), 4000);
+    expect(verdict.diffPrev).toBeGreaterThan(0.9);
+  });
+});
+
+describe('画面全体が動画のとき（マスクを使わない）', () => {
+  const noise = (seed: number) => {
+    const f = new Uint8ClampedArray(PIXELS * 4);
+    let x = seed;
+    for (let i = 0; i < f.length; i += 4) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      f[i] = f[i + 1] = f[i + 2] = (x >> 16) & 0xff;
+      f[i + 3] = 255;
+    }
+    return f;
+  };
+
+  it('別の場面へのカットを拾う（マス目の判定も全画素で数える）', () => {
+    const d = new ChangeDetector(cfg);
+    let t = 0;
+    // 全画素が毎回変わる映像。マスクは「全部が動いている」と判断し、比較は全画素に戻る
+    for (let i = 0; i < 30; i++) d.sample(noise(i + 1), (t += 500));
+    const during = d.sample(noise(99), (t += 500));
+    expect(during.stillFraction).toBeLessThan(0.1);
+    // 静止部分が無くてもマス目が 0 にならず、カットを切り替えとみなせる
+    expect(during.cells).toBeGreaterThanOrEqual(4);
+    const cut = d.sample(gray(250), (t += 500));
+    expect(cut.diffPrev).toBeGreaterThan(0.5);
+    expect(cut.state).toBe('stabilizing');
+  });
+});

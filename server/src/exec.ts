@@ -2,31 +2,55 @@ import { spawn } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import path from 'node:path';
 
-export type RunResult = { code: number; stdout: string; stderr: string };
+export type RunResult = { code: number; stdout: string; stderr: string; /** binary のとき stdout をそのまま */ stdoutBytes?: Uint8Array };
 
 /** 外部コマンドを実行して終了を待つ。stdout/stderr は末尾だけ保持する */
 export function run(
   bin: string,
   args: string[],
-  options: { cwd?: string; onLine?: (line: string) => void; signal?: AbortSignal } = {},
+  options: {
+    cwd?: string;
+    onLine?: (line: string) => void;
+    signal?: AbortSignal;
+    /** stdout を文字列にせず、そのまま全部返す（画像など） */
+    binary?: boolean;
+    /** binary のときに受け取る最大バイト数（既定 8 MiB）。超えたら打ち切る */
+    maxBytes?: number;
+  } = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'], signal: options.signal });
     let stdout = '';
     let stderr = '';
+    const chunks: Buffer[] = [];
     const keepTail = (s: string) => (s.length > 20_000 ? s.slice(-20_000) : s);
-    child.stdout.setEncoding('utf8');
+    if (options.binary) {
+      // 上限を超えたら打ち切る（想定外の入力で ffmpeg が延々と出し続けることがある）
+      const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
+      let total = 0;
+      child.stdout.on('data', (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          chunks.length = 0;
+          child.kill('SIGKILL');
+          return;
+        }
+        chunks.push(chunk);
+      });
+    } else {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        stdout = keepTail(stdout + chunk);
+        if (options.onLine) for (const line of chunk.split('\n')) if (line.trim()) options.onLine(line);
+      });
+    }
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout = keepTail(stdout + chunk);
-      if (options.onLine) for (const line of chunk.split('\n')) if (line.trim()) options.onLine(line);
-    });
     child.stderr.on('data', (chunk: string) => {
       stderr = keepTail(stderr + chunk);
       if (options.onLine) for (const line of chunk.split('\n')) if (line.trim()) options.onLine(line);
     });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr, ...(options.binary ? { stdoutBytes: new Uint8Array(Buffer.concat(chunks)) } : {}) }));
   });
 }
 

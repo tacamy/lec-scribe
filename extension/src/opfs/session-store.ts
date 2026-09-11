@@ -30,6 +30,8 @@ export type SlideMeta = {
   /** 何をきっかけに保存したか（initial / manual / change） */
   reason: string;
   bytes: number;
+  /** どの数値で保存を決めたか（閾値を実データで詰めるための記録） */
+  trigger?: { diffPrev: number; diffSaved?: number; cells: number; stillFraction: number };
   /** 切り替わる直前の状態（最終状態）で画像を上書きしたか */
   updated?: boolean;
   /** 上書きした画像の動画時刻・録音時刻 */
@@ -50,6 +52,8 @@ export type SessionStatus = {
   outputDir?: string;
   /** 文字起こしが終わった時刻 */
   transcribedAt?: string;
+  /** 一覧で隠している（録音のデータは残す） */
+  hidden?: boolean;
 };
 
 export type StoredSession = {
@@ -103,6 +107,13 @@ export async function listFiles(dir: FileSystemDirectoryHandle): Promise<File[]>
     if (handle.kind === 'file') files.push(await (handle as FileSystemFileHandle).getFile());
   }
   return files.sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
+/** 一覧で隠す・戻す（status.json の hidden）。録音のデータは残す */
+export async function setSessionHidden(sessionId: string, hidden: boolean): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
+  await writeJson(dir, STATUS_FILE, { ...status, hidden });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

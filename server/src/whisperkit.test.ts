@@ -102,13 +102,24 @@ describe('dropWindowArtifacts', () => {
     expect(kept.map((s) => s.start)).toEqual([62]);
   });
 
-  it('drops a long stock phrase even without overlap', () => {
+  it('drops a stock phrase that is too long for the words it contains', () => {
     const { kept, dropped } = dropWindowArtifacts([
       { start: 0, end: 4, text: 'こんにちは' },
       { start: 10, end: 40, text: 'ご視聴ありがとうございました。' },
     ]);
     expect(dropped.map((s) => s.reason)).toEqual(['phrase']);
     expect(kept).toHaveLength(1);
+  });
+
+  it('keeps a stock phrase said at a normal speed, drops the same words stretched over a silent window', () => {
+    // 実測（3 章の録音）: 7.4 秒に「ご視聴ありがとうございました」だけ = 1 文字 0.53 秒。話し言葉は 0.15〜0.2 秒/文字
+    // 終わりの 60 秒の中で普通の速さで言った分は残し、無音の窓いっぱいに引き伸ばされた分は捨てる
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 150.0, end: 152.5, text: 'ご視聴ありがとうございました' },
+      { start: 159.4, end: 166.8, text: 'ご視聴ありがとうございました' },
+    ]);
+    expect(dropped.map((s) => s.start)).toEqual([159.4]);
+    expect(kept.map((s) => s.start)).toEqual([150.0]);
   });
 
   it('drops a repeated stock phrase (Whisper のループ)', () => {
@@ -126,5 +137,22 @@ describe('dropWindowArtifacts', () => {
     ]);
     expect(dropped).toHaveLength(0);
     expect(kept).toHaveLength(1);
+  });
+});
+
+describe('話の途中の決まり文句', () => {
+  it('話の途中に出た短い「ありがとうございました」は捨て、終わりのものは残す', () => {
+    // 実例（5 章）: 2.0 秒ちょうどの区間が話の途中に出る。最後の締めは本物なので残す
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 170.2, end: 172.0, text: '実際にやってみましょう' },
+      { start: 172.0, end: 174.0, text: 'ありがとうございました' },
+      { start: 174.5, end: 177.9, text: 'こういう風に持って' },
+      { start: 332.3, end: 334.0, text: '同じことが言えるのではないでしょうか' },
+      { start: 334.0, end: 336.0, text: 'ありがとうございました' }, // 終わり近くでも、直前にぴったり続くものは幻覚
+      { start: 349.6, end: 351.7, text: '次の動画もお楽しみに' },
+      { start: 352.0, end: 354.0, text: 'ありがとうございました' }, // 少し間を空けて言った締めは残す
+    ]);
+    expect(dropped.map((s) => s.start)).toEqual([172.0, 334.0]);
+    expect(kept.map((s) => s.start)).toEqual([170.2, 174.5, 332.3, 349.6, 352.0]);
   });
 });

@@ -35,7 +35,11 @@ const stub = (name, body) => {
   chmodSync(file, 0o755);
   return file;
 };
-const ffmpegStub = stub('ffmpeg', 'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; cp "$in" "$out"');
+// 出力先が "-"（標準出力）なら標準出力へ。そうしないとカレントディレクトリに "-" という名前のファイルができる
+const ffmpegStub = stub(
+  'ffmpeg',
+  'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; if [ "$out" = "-" ]; then cat "$in"; else cp "$in" "$out"; fi',
+);
 // slowMarker があるときは 30 秒眠る（処理中の中止を試すため）
 const slowMarker = path.join(serverTmp, 'slow');
 const whisperkitStub = stub(
@@ -70,7 +74,16 @@ try {
 
   // 未接続画面は既定ポート（47321）にサーバーがいるか見に行く。CI には何もいないので接続拒否が
   // コンソールエラーとして残り、最後の「ページエラーなし」で落ちる。先に smoke 用のポートを設定しておく
-  await worker.evaluate((port) => chrome.storage.local.set({ config: { server: { port } } }), SERVER_PORT);
+  // service worker を見つけた直後は chrome API がまだ生えていないことがある（まれに落ちていた）
+  for (let i = 0; ; i++) {
+    try {
+      await worker.evaluate((port) => chrome.storage.local.set({ config: { server: { port } } }), SERVER_PORT);
+      break;
+    } catch (e) {
+      if (i >= 50) throw e;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
 
   const popup = await context.newPage();
   const errors = [];
@@ -240,8 +253,8 @@ try {
 
   // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。
   // offscreen.html をタブとして開き、合成ストリームでセッションを始めておく。
-  // updateThreshold は fixture の「追加の行」が小さいので少し下げる（既定は 1.2%。ワイプの動きだけの 0.5〜0.9% では更新しない値）
-  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0, finalState: true, updateThreshold: 0.01 };
+  // 既定値のまま通す（動き続ける領域を除いて比べるので、ワイプが動いても 0.4% には届かない）
+  const slideConfig = { imageFormat: 'png', jpegQuality: 0.9, maxSlideWidth: 0, finalState: true, updateThreshold: 0.004 };
   const frameSession = '20990101-000001-smok';
   const off2 = await context.newPage();
   off2.on('pageerror', (e) => errors.push(String(e)));
@@ -276,13 +289,15 @@ try {
     detectWidth: 160,
     detectHeight: 90,
     pixelDiffThreshold: 24,
-    changeThreshold: 0.02,
+    changeThreshold: 0.025,
     stableThreshold: 0.015,
     stableSamples: 2,
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
     minShotIntervalMs: 1000,
     tickIntervalMs: 1000,
+    cutThreshold: 0.3,
+    sameSceneColor: 0.65,
   };
   const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
   const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide, detect }) => {
@@ -460,7 +475,7 @@ try {
   assert.equal(settled.state, 'COMPLETED', trace);
   assert.equal(settled.processing, undefined, trace);
   const outDirs = readdirSync(serverOut);
-  const outDir = outDirs.find((d) => d.startsWith(frameSession));
+  const outDir = outDirs.find((d) => d === frameSession || d.endsWith(`_${frameSession}`));
   assert.ok(outDir, `server output for ${frameSession}: ${outDirs}`);
   // ユーザー向けは notes.md と slides/ だけ。作業ファイルは .lecscribe/ に入る
   assert.deepEqual(readdirSync(path.join(serverOut, outDir)).sort(), ['.lecscribe', 'notes.md', 'slides']);
@@ -568,7 +583,7 @@ try {
   const cancelMs = Date.now() - cancelStarted;
   assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
   assert.ok(cancelMs < 5000, `discard during processing took ${cancelMs} ms (whisperkit stub sleeps 30 s)`);
-  assert.ok(!readdirSync(serverOut).some((d) => d.startsWith(cancelSession)), `server dir still exists: ${readdirSync(serverOut)}`);
+  assert.ok(!readdirSync(serverOut).some((d) => d === cancelSession || d.endsWith(`_${cancelSession}`)), `server dir still exists: ${readdirSync(serverOut)}`);
   // 中止で空いたので、送信待ちだった 2 本目が始まる
   assert.equal(cancelled.state.processing?.sessionId, queuedSession, JSON.stringify(cancelled.state));
   assert.equal(cancelled.state.pendingUploads, undefined, JSON.stringify(cancelled.state));
@@ -586,7 +601,7 @@ try {
   assert.equal(cancelled2.ok, true, JSON.stringify(cancelled2));
   assert.equal(cancelled2.state.processing, undefined, JSON.stringify(cancelled2.state));
   assert.notEqual(cancelled2.state.state, 'PROCESSING', JSON.stringify(cancelled2.state));
-  assert.ok(!readdirSync(serverOut).some((d) => d.startsWith(queuedSession)), `server dir still exists: ${readdirSync(serverOut)}`);
+  assert.ok(!readdirSync(serverOut).some((d) => d === queuedSession || d.endsWith(`_${queuedSession}`)), `server dir still exists: ${readdirSync(serverOut)}`);
   // 遅れて届く polling 結果で処理中に戻らないこと
   await popup.waitForTimeout(2500);
   const afterCancel = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;

@@ -89,7 +89,7 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
     case 'EXPORT':
       return { state: await exportSession(msg.sessionId) };
     case 'DISCARD':
-      return { state: await discardSession(msg.sessionId) };
+      return { state: await discardSession(msg.sessionId, msg) };
     case 'PROBE':
       return { probe: await runProbe(msg.tabId) };
     case 'DETECT_STATUS':
@@ -516,10 +516,12 @@ async function onDownloadSettled(): Promise<void> {
 }
 
 /**
- * セッションを捨てる。文字起こし中・送信待ちなら処理を中止し、サーバー側のフォルダも消す
- * （まだ成果物になっていないため）。処理済みのセッションはサーバー側の出力を残す。
+ * 一覧の「中止」「削除」。
+ * - 処理中・送信待ち: 処理を止める。output が 'keep' でなければサーバー側のフォルダも消す（'delete' なら notes.md があっても）
+ * - それ以外: output が 'delete' ならサーバー側のフォルダを消す
+ * - keepRecording でなければ Chrome 側の録音（OPFS）を消す（やり直しの中止では残す）
  */
-async function discardSession(sessionId: string): Promise<SessionState> {
+async function discardSession(sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}): Promise<SessionState> {
   let current = await readState();
   if (isActive(current) && current.sessionId === sessionId) throw new LecError('BUSY', '録音中のセッションは削除できません。');
   if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
@@ -527,22 +529,27 @@ async function discardSession(sessionId: string): Promise<SessionState> {
   const config = await loadConfig();
   const wasProcessing = current.processing?.sessionId === sessionId;
   const wasPending = current.pendingUploads?.includes(sessionId) ?? false;
+  const force = options.output === 'delete';
   await ensureOffscreenDocument();
   if (wasProcessing) {
     await sendToOffscreen.cancelUpload(sessionId).catch(() => undefined);
-    await cancelOnServer(sessionId, config.server, true);
+    await cancelOnServer(sessionId, config.server, options.output !== 'keep', force);
     current = { ...current, processing: undefined, error: undefined };
   } else if (wasPending) {
-    await cancelOnServer(sessionId, config.server, true);
+    await cancelOnServer(sessionId, config.server, options.output !== 'keep', force);
+  } else if (force) {
+    await cancelOnServer(sessionId, config.server, true, true);
   }
-  try {
-    await sendToOffscreen.discard(sessionId);
-  } catch (e) {
-    await writeState(current);
-    throw e;
+  if (!options.keepRecording) {
+    try {
+      await sendToOffscreen.discard(sessionId);
+    } catch (e) {
+      await writeState(current);
+      throw e;
+    }
   }
-  // 直前のセッションを捨てるときだけ IDLE に戻す。別のセッションを録音中なら、その録音の状態は触らない
-  const isLast = current.lastSession?.sessionId === sessionId;
+  // 直前のセッションを捨てるときだけ IDLE に戻す。別のセッションを録音中なら、その録音の状態は触らない。録音を残すなら捨てていない
+  const isLast = current.lastSession?.sessionId === sessionId && !options.keepRecording;
   const next: SessionState =
     isLast && !isActive(current)
       ? { ...INITIAL_STATE, title: current.title, processing: current.processing, pendingUploads: current.pendingUploads }
@@ -594,14 +601,16 @@ async function pair(): Promise<{ state: SessionState; paired: boolean }> {
   return { state: { ...current, error: undefined, warnings: current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE') }, paired: true };
 }
 
-/** サーバーに処理の中止（と削除）を頼む。繋がらなくても破棄は続ける */
-async function cancelOnServer(sessionId: string, server: Config['server'], remove: boolean): Promise<void> {
+/** サーバーの処理を止める。remove でフォルダも消す（force なら notes.md があっても）。繋がらなくても破棄は続ける */
+async function cancelOnServer(sessionId: string, server: Config['server'], remove: boolean, force = false): Promise<void> {
   if (!server.paired && !server.token) return;
   try {
+    // サーバーが別のセッションを処理中だと応答が遅れることがある。待ち続けると拡張のメッセージが詰まる
     await fetch(`http://127.0.0.1:${server.port}/sessions/${sessionId}/cancel`, {
       method: 'POST',
       headers: { ...authHeaders(server), 'content-type': 'application/json' },
-      body: JSON.stringify({ delete: remove }),
+      body: JSON.stringify({ delete: remove, force }),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     // サーバーが落ちていれば処理も止まっている
