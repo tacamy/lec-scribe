@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, constants } from 'node:fs/promises';
+import { access, constants, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 export type RunResult = { code: number; stdout: string; stderr: string; /** binary のとき stdout をそのまま */ stdoutBytes?: Uint8Array };
@@ -82,15 +82,25 @@ export function forgetResolvedBins(): void {
 }
 
 /** PATH（または絶対パス）を実際に歩いて探す */
+/**
+ * 実行できる普通のファイルか。access(X_OK) だけだとディレクトリや空のファイルも通ってしまい、
+ * 「ある」と答えたのに spawn で失敗する
+ */
+export async function isExecutable(file: string): Promise<boolean> {
+  try {
+    const info = await stat(file);
+    if (!info.isFile() || info.size === 0) return false;
+    await access(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function findBin(bin: string): Promise<string | null> {
   const candidates = bin.includes('/') ? [bin] : (process.env['PATH'] ?? '').split(path.delimiter).map((dir) => path.join(dir, bin));
   for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // 次を探す
-    }
+    if (await isExecutable(candidate)) return candidate;
   }
   return null;
 }

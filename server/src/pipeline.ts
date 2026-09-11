@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ServerConfig } from './config.ts';
+import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
@@ -175,10 +175,9 @@ export class Pipeline {
     }
     if (thumbs.size === 0) return [...slides];
     // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
-    const measure =
-      this.config.sceneVision > 0 || this.config.sceneVisionPhoto > 0
-        ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
-        : null;
+    const measure = usesVision(this.config)
+      ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
+      : null;
     const visionOptions = measure ? { distance: measure.distance, text: measure.text, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined;
     const decisions = pickShownSlides(slides, thumbs, this.config.sceneColor, visionOptions, this.config.sceneKeep);
     await writeFile(

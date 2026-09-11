@@ -1,11 +1,10 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
-import { helperPath } from './vision.ts';
 import { recoverInterrupted } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
@@ -31,7 +30,7 @@ async function writeStub(name: string, body: string): Promise<string> {
 beforeAll(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-'));
   await writeFile(path.join(tmp, '.keep'), '');
-  await (await import('node:fs/promises')).mkdir(path.join(tmp, 'bin'));
+  await mkdir(path.join(tmp, 'bin'));
   // ffmpeg スタブ: 入力をそのまま出力にコピーする
   const ffmpeg = await writeStub('ffmpeg', 'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; cp "$in" "$out"');
   // whisperkit-cli スタブ: --report-path に report JSON を書く
@@ -98,36 +97,27 @@ describe('local server', () => {
     const res = await fetch(`${base}/health`, { headers: { origin: ORIGIN } });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ ok: true, ffmpeg: true, whisperkit: true, authorized: false, model: 'stub' });
     // この fixture は Vision を使わない設定（sceneVision も sceneVisionPhoto も 0）なので null
-    expect((body as { vision?: unknown }).vision).toBeNull();
+    expect(body).toMatchObject({ ok: true, ffmpeg: true, whisperkit: true, authorized: false, model: 'stub', vision: null });
   });
 
-  it('/health の vision は、補助コマンドが置き場にあるかをディスクで見て答える（ビルドはしない。#17）', async () => {
-    const originalHome = process.env['HOME'];
-    const home = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-home-'));
+  it('/health の vision は、Vision を使う設定なら補助コマンドの状態を返す（#17。中身は vision.test.ts）', async () => {
     const { server: app } = createApp({ ...config, sceneVision: 0.2 }, TOKEN);
     await new Promise<void>((resolve) => app.listen(0, '127.0.0.1', resolve));
-    const url = `http://127.0.0.1:${(app.address() as AddressInfo).port}/health`;
     try {
-      process.env['HOME'] = home;
-      const before = (await (await fetch(url, { headers: { origin: ORIGIN } })).json()) as { vision?: unknown };
-      // まだ無い（そして /health を呼んでも作られない）
-      expect(before.vision).toBe(false);
-      expect(await readdir(home)).toEqual([]);
+      const body = (await (await fetch(`http://127.0.0.1:${(app.address() as AddressInfo).port}/health`, { headers: { origin: ORIGIN } })).json()) as {
+        vision?: unknown;
+        visionReason?: unknown;
+      };
       if (process.platform === 'darwin') {
-        // 置き場に（中身は何でもいい）実行できるファイルを置けば true
-        const bin = await helperPath();
-        await mkdir(path.dirname(bin), { recursive: true });
-        await writeFile(bin, '#!/bin/sh\n', { mode: 0o755 });
-        const after = (await (await fetch(url, { headers: { origin: ORIGIN } })).json()) as { vision?: unknown };
-        expect(after.vision).toBe(true);
+        expect(['ready', 'building', 'idle', 'failed']).toContain(body.vision);
+        if (body.vision === 'failed') expect(typeof body.visionReason).toBe('string');
+        else expect(body.visionReason).toBeUndefined();
+      } else {
+        expect(body.vision).toBeNull(); // macOS 以外では使わない
       }
     } finally {
-      if (originalHome === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = originalHome;
       await new Promise<void>((resolve) => app.close(() => resolve()));
-      await rm(home, { recursive: true, force: true });
     }
   });
 
@@ -251,7 +241,7 @@ describe('local server', () => {
 
   it('marks sessions left mid-pipeline as errors on startup', async () => {
     const dir = path.join(config.outDir, '20260908-140000-stuk_stuck');
-    await (await import('node:fs/promises')).mkdir(path.join(dir, '.lecscribe'), { recursive: true });
+    await mkdir(path.join(dir, '.lecscribe'), { recursive: true });
     await writeFile(path.join(dir, '.lecscribe', 'pipeline.json'), JSON.stringify({ stage: 'polishing', outputDir: dir, updatedAt: 'x' }));
     const recovered = await recoverInterrupted(config.outDir);
     expect(recovered).toEqual([dir]);
@@ -264,7 +254,7 @@ describe('local server', () => {
   it('moves files of the old flat layout into .lecscribe when a session is processed again', async () => {
     const sessionId = '20260908-120000-old1';
     const dir = path.join(config.outDir, `${sessionId}_old`);
-    await (await import('node:fs/promises')).mkdir(path.join(dir, 'slides'), { recursive: true });
+    await mkdir(path.join(dir, 'slides'), { recursive: true });
     await writeFile(path.join(dir, 'audio.webm'), 'x');
     await writeFile(path.join(dir, 'timeline.json'), '[]');
     await writeFile(path.join(dir, 'lecture.md'), '# old');

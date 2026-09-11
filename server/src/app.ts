@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
-import { visionHelperReady } from './vision.ts';
+import { visionStatus } from './vision.ts';
 import { slugify } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
@@ -19,6 +19,8 @@ export const VERSION = '0.1.0';
  * 上げるのは約束が変わったときだけ（新しいフィールドを拡張が送る・受け取る、意味が変わる）。
  * 内部の改善やノートの作り方の変更では上げない。
  *   1: 2026-09-11。cancel の force、status の 404、title 先頭のフォルダ名、までを含む
+ *   2: 2026-09-11。/health に vision（見た目の判定の補助コマンドの状態）と visionReason（#17）。
+ *      見せるだけの項目なので、拡張が必要とする最低の版は 1 のまま
  */
 export const API_VERSION = 2;
 
@@ -108,13 +110,7 @@ export function createApp(
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
-      // Vision を使わない設定なら null（補助コマンドの有無を聞く意味がない）。使う設定なら、いま使えるか
-      const visionEnabled = config.sceneVision > 0 || config.sceneVisionPhoto > 0;
-      const [ffmpeg, whisperkit, vision] = await Promise.all([
-        resolveBin(config.ffmpegBin),
-        resolveBin(config.whisperkitBin),
-        visionEnabled ? visionHelperReady() : Promise.resolve(null),
-      ]);
+      const [ffmpeg, whisperkit, vision] = await Promise.all([resolveBin(config.ffmpegBin), resolveBin(config.whisperkitBin), visionStatus(config)]);
       sendJson(res, 200, {
         ok: true,
         version: VERSION,
@@ -127,8 +123,10 @@ export function createApp(
         outDir: config.outDir,
         ffmpeg: ffmpeg !== null,
         whisperkit: whisperkit !== null,
-        // 見た目の判定（§13.4b）の補助コマンドが使えるか。作れなかったことを利用者に見せるため（#17。api 2 から）
-        vision,
+        // 見た目の判定（§13.4b）の補助コマンドの状態。作れなかったことと理由を利用者に見せるため（#17。api 2 から）。
+        // ready / building / idle / failed。使わない設定と macOS 以外は null
+        vision: vision?.state ?? null,
+        ...(vision?.state === 'failed' ? { visionReason: vision.reason } : {}),
         // ノート作成の呼び出し先。拡張の設定画面が「未設定なら有効にする手順」を出すのに使う
         llm: config.llm,
         authorized: authorized(req),

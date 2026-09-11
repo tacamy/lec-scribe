@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { outdatedMessage, reportsVision, REQUIRED_SERVER_API, serverOutdated, VISION_IN_HEALTH_API } from './health';
+import { outdatedMessage, REQUIRED_SERVER_API, serverOutdated, visionLine } from './health';
 
 describe('サーバーの版の突き合わせ', () => {
   it('api を返さない古いサーバーは古いと判定する', () => {
@@ -19,10 +19,25 @@ describe('サーバーの版の突き合わせ', () => {
   });
 });
 
-describe('見た目の判定の状態（#17）', () => {
-  it('vision を返す版かどうかは api で判断する（項目の有無では見ない）', () => {
-    expect(reportsVision({ api: VISION_IN_HEALTH_API })).toBe(true);
-    expect(reportsVision({ api: VISION_IN_HEALTH_API - 1, vision: true })).toBe(false);
-    expect(reportsVision({})).toBe(false);
+describe('見た目の判定の 1 行（#17）', () => {
+  it('状態を返さないサーバーには行を出さない（項目の有無は古さの判定ではなく、表示の有無）', () => {
+    expect(visionLine({ api: 1 })).toBeNull();
+  });
+  it('状態ごとに別の文になり、導入を勧めるのは作れなかったときだけ', () => {
+    expect(visionLine({ vision: 'ready' })).toBe('見た目の判定（Vision）: あり');
+    expect(visionLine({ vision: 'building' })).toContain('準備中');
+    expect(visionLine({ vision: 'idle' })).toContain('次の文字起こしのときに作ります');
+    expect(visionLine({ vision: 'idle' })).not.toContain('xcode-select');
+    expect(visionLine({ vision: 'building' })).not.toContain('xcode-select');
+    const failed = visionLine({ vision: 'failed', visionReason: 'swiftc failed (1): error: invalid active developer path' });
+    expect(failed).toContain('invalid active developer path');
+    expect(failed).toContain('xcode-select --install');
+    expect(failed).toContain('server.log');
+    expect(visionLine({ vision: null })).toContain('使わない');
+  });
+  it('想定外の値は「分かりません」にして、CLT の導入を勧めない', () => {
+    const odd = visionLine({ vision: 'false' as unknown as 'ready' });
+    expect(odd).toContain('分かりません');
+    expect(odd).not.toContain('xcode-select');
   });
 });

@@ -12,14 +12,6 @@ import { authHeaders, type Config } from './config';
 /** この拡張が必要とするサーバーの約束の版。サーバー側の API_VERSION（server/src/app.ts）と同じ意味 */
 export const REQUIRED_SERVER_API = 1;
 
-/** `/health` が `vision` を返すようになった版。それより前のサーバーには聞いても分からない（#17） */
-export const VISION_IN_HEALTH_API = 2;
-
-/** このサーバーは見た目の判定の状態を教えてくれるか（版で判断する。項目の有無で古さを見分けない。§12.1c） */
-export function reportsVision(h: Health): boolean {
-  return (h.api ?? 0) >= VISION_IN_HEALTH_API;
-}
-
 /** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
 export const APP_DIR = '~/LecScribe-app';
 /** 手で更新するときの 1 行。設定画面と警告文で同じものを出す */
@@ -33,8 +25,13 @@ export type Health = {
   commit?: string | null;
   whisperkit?: boolean;
   ffmpeg?: boolean;
-  /** 見た目の判定の補助コマンドが使えるか。null は使わない設定。api 2 から（#17） */
-  vision?: boolean | null;
+  /**
+   * 見た目の判定の補助コマンドの状態（api 2 から。#17）。null は使わない設定か macOS 以外。
+   * 返さない（undefined）のは 2 より前のサーバー。見せるだけの項目なので、無ければ行を出さないだけ（古さの判定は api で行う）
+   */
+  vision?: 'ready' | 'building' | 'idle' | 'failed' | null;
+  /** vision が failed のときの理由 */
+  visionReason?: string;
   authorized?: boolean;
   paired?: boolean;
   model?: string;
@@ -71,4 +68,32 @@ export function serverOutdated(health: Health): boolean {
 export function outdatedMessage(health: Health): string {
   const have = typeof health.api === 'number' ? `版 ${health.api}` : '古い版';
   return `Mac 側のサーバーが古く（${have}。この拡張には版 ${REQUIRED_SERVER_API} が必要）、一部の機能が動きません。自動更新が有効なら次にログインしたときに直ります。すぐに直すには、ターミナルで ${UPDATE_COMMAND} を実行してください。`;
+}
+
+/** サーバーのログの場所（作れなかった理由の全文はここ） */
+export const SERVER_LOG = '~/Library/Logs/lec-scribe/server.log';
+
+/**
+ * 見た目の判定（Vision）の 1 行。設定画面の「接続テスト」に出す（#17）。
+ * サーバーが状態を返さない（2 より前の版）なら null＝行を出さない。
+ * 「なし」を CLT の導入に直結させない: まだ作っていない・作っている途中・作れなかった、は別の状態で、
+ * 導入を勧めていいのは作れなかったときだけ
+ */
+export function visionLine(h: Health): string | null {
+  if (h.vision === undefined) return null;
+  const label = '見た目の判定（Vision）';
+  switch (h.vision) {
+    case null:
+      return `${label}: 使わない（設定で切っているか、macOS 以外）`;
+    case 'ready':
+      return `${label}: あり`;
+    case 'building':
+      return `${label}: 準備中（数秒。もう一度押してください）`;
+    case 'idle':
+      return `${label}: まだ作っていません。次の文字起こしのときに作ります`;
+    case 'failed':
+      return `${label}: 作れませんでした（${h.visionReason ?? '理由不明'}）。Xcode Command Line Tools が無いか、ライセンスに未同意のことが多いです（xcode-select --install / sudo xcodebuild -license）。直したあと、次の文字起こしのときに作り直します。ログ: ${SERVER_LOG}`;
+    default:
+      return `${label}: 分かりません（サーバーの答え: ${String(h.vision)}）`;
+  }
 }
