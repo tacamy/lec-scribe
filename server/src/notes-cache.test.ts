@@ -101,6 +101,20 @@ describe('deriveFromCache（節の区切りだけ変わったときの組み替�
     expect(d.outline?.topics.map((t) => t.startId)).toEqual(['intro', 'slide_001', 'slide_004']);
   });
 
+  it('まとまりの最後の画像の id で節がつながったときも（載せる画像が最後の 1 枚）、本文の並びで組み替える', () => {
+    // slide_001 と slide_002 が同じ場面になり、載せるのは最後の slide_002。節の id は slide_002 で、本文は 001 → 002 の順
+    const inputs = [
+      { id: 'intro', text: 'はじめに。' },
+      { id: 'slide_002', text: '一枚目。二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '四枚目。' },
+    ];
+    const d = deriveFromCache(cache, inputs);
+    expect(d.unmatched).toEqual([]);
+    expect(d.polished.get('slide_002')?.text).toBe('整えた 一枚目。\n\n整えた 二枚目。');
+    expect(d.outline?.topics.map((t) => t.startId)).toEqual(['intro', 'slide_002', 'slide_004']);
+  });
+
   it('本文が変わった節は組み替えられず、呼び出し側に任せる', () => {
     const inputs = [
       { id: 'intro', text: 'はじめに。' },
