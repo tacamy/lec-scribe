@@ -655,28 +655,17 @@ sessions/<sessionId>/
 
 ### 12.1b 自動更新（2026-09-11）
 
-拡張は Chrome ウェブストアが更新するが、サーバーは `~/LecScribe-app/` の git 作業ツリーなので、放っておくと古いまま残る。新旧が組むと新しい機能が黙って効かなくなる（例: 新しい拡張の「削除」は `force: true` を送るが、古いサーバーはそれを知らず `notes.md` のあるフォルダを残す）。利用者に初回の導入以外でターミナルを触らせないため、サーバーが自分で更新する（`server/src/update.ts`）。
+拡張は Chrome ウェブストアが更新するが、サーバーは `~/LecScribe-app/` の git 作業ツリーなので、放っておくと古いまま残る。新旧が組むと新しい機能が黙って効かなくなる（例: 新しい拡張の「削除」は `force: true` を送るが、古いサーバーはそれを知らず `notes.md` のあるフォルダを残す）。利用者に初回の導入以外でターミナルを触らせないため、サーバーが自分で更新する（`server/src/update.ts` の `selfUpdate`）。
 
-- 起動時（ログイン、落ちたあとの再起動、`agent restart`）に `git fetch origin main` して、`HEAD..origin/main` が進んでいるか見る。定期的な確認はしない（起動時だけで十分。ログインのたびに走る）。
-- 進んでいれば `/health` の `updating` を true にし、`POST /sessions` を 503（`code: 'UPDATING'`）で断る。拡張のパネルは 5 秒ごとに `/health` を見ていて、`updating` なら Start を押せなくし、Server 行と説明文に「更新中」を出す。`pipeline.activeCount()` が 0 になるのを待ってから `git merge --ff-only origin/main` し、10 秒待って `process.exit(0)`。launchd の `KeepAlive` が 10 秒後に新しいコードで起動し直す。10 秒待つのは、開いているパネルが「更新中」を拾えるようにするため。入れ替えの最中はサーバーが落ちているので、パネルは直前に「更新中」を見ていれば 90 秒までは更新中のまま扱う。
-- 録音中に Stop して送った先が更新中だったときは、拡張が `SERVER_UPDATING` のエラーを出す（「終わると自動で使えるようになるので、少し待ってから一覧の『文字起こしする』を押してください」）。録音のデータは OPFS に残っている。
-- 開発機を壊さないため、次のどれかなら確認しない: git リポジトリでない、ブランチが `main` でない、手元に変更がある（`git status --porcelain --untracked-files=no`）。`--auto-update 0` / `LEC_SCRIBE_AUTO_UPDATE=0` で止められる。fast-forward できなければ（手で編集していた等）ログに残して古いコードのまま動き続ける。
+**`listen` する前に済ませる。** これが設計の要。まだ誰も繋がっていないので、処理中の待ち合わせも、「更新中です」を拡張に伝える仕組みも、入れ替えたあと古いコードで応答し続ける時間も要らない。入れ替えたら `process.exit(0)` し、launchd の `KeepAlive` が新しいコードで起動し直す。利用者から見ると起動が数秒遅いだけで、サーバーが動き出したときにはもう新しい。
+
+- 手順: `git rev-parse`（作業ツリーか、今のブランチ）→ `git status --porcelain`（手元に変更が無いか）→ `git fetch origin <branch>`（20 秒で打ち切り）→ `git rev-list --count HEAD..FETCH_HEAD` → 進んでいれば `git merge --ff-only FETCH_HEAD` → 終了。確認は毎回の起動時（ログイン、落ちたあと、`agent restart`）だけで、定期的には見に行かない。
+- **何が起きても投げない。** `run()` は子プロセスの失敗や打ち切りで reject するので、握らないとプロセスが落ち、launchd が起動し直して同じところで落ちる無限ループになる（ネットワークが悪いだけで永久に使えなくなる）。`selfUpdate` は全体を try/catch で囲み、「今回は見送る」と記録して普通に起動する。
+- **既定は launchd で常駐しているときだけ有効。** `agent.mjs install` が plist に `LEC_SCRIBE_MANAGED=1` を書き、サーバーはそれがあるときだけ既定で自動更新する。手で起動したサーバー（`pnpm start`）や `scripts/smoke-extension.mjs` は開発者の作業ツリーを勝手に書き換えない。`--auto-update on/off`（`LEC_SCRIBE_AUTO_UPDATE`）で明示できる。綴りは `1` / `true` / `on` / `yes` を有効として扱う（`0` だけを無効とみなす形だと、`false` と書いたときに黙って有効のままになる）。
+- 開発機を壊さないため、次のどれかなら何もしない: git の作業ツリーでない、ブランチが `--branch`（`LEC_SCRIBE_BRANCH`、既定 `main`。install.sh と同じ）でない、手元に変更がある。fast-forward できなければ記録して古いまま起動する。
+- ブランチと `FETCH_HEAD` の使い方、`git` の場所（`--git` / `LEC_SCRIBE_GIT`）は `install.sh` / `update.sh` と合わせてある。
 - `pnpm install` は走らせない（サーバーはランタイム依存なし）。Vision の補助コマンドはソースのハッシュで名前が変わるので、必要なら次の処理で作り直される（`update.sh` と違って先には作らない。数十秒待つことがある）。
-- `update.sh` は手で更新したいとき用に残す。
-
-```text
-pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
-```
-
-| 項目 | 既定 |
-|---|---|
-| bind | `127.0.0.1` のみ |
-| port | 47321 |
-| out | `~/LecScribe`（ユーザー確認済み、Q-08） |
-| model | `large-v3`（§13.2） |
-| token | `~/.lec-scribe/token`（初回起動時に生成して表示） |
-
-起動時に `ffmpeg` と `whisperkit-cli` の存在を確認し、なければ導入コマンドを表示して終了する。
+- `update.sh` は手で更新したいとき用に残す。こちらは `agent.mjs install` を呼んで plist と launcher も作り直す（`restart` では作り直されないので、`LEC_SCRIBE_MANAGED` のような新しい設定が入らない）。
 
 ### 12.2 API
 
@@ -689,7 +678,7 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 | PUT | `/sessions/:id/slides.json`, `/sessions/:id/timeline.json` | メタデータ |
 | POST | `/sessions/:id/finalize` | パイプライン開始（非同期、キューは同時 1 件） |
 | GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }`。フォルダが無ければ 404 |
-| POST | `/sessions` | `{ sessionId, title?, startedAt?, ... }`。フォルダを作って 201 `{ outputDir }`。自動更新の最中は 503 `{ error: { code: 'UPDATING' } }`（§12.1b） |
+| POST | `/sessions` | `{ sessionId, title?, startedAt?, ... }`。フォルダを作って 201 `{ outputDir }` |
 | POST | `/pair` | `{ name? }`。認証不要だが `Origin: chrome-extension://<id>` 必須。macOS のダイアログで承認されると `{ paired: true, token }`（承認済みなら同じトークンを返す）。拒否は 403、ダイアログ表示中は 429 |
 | POST | `/sessions/:id/cancel` | `{ delete?: boolean; force?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（`notes.md` があるフォルダは残す）。`force` で `notes.md` があっても削除（一覧の「削除」。2026-09-11） |
 | POST | `/sessions/:id/open` | `{ target?: 'folder' \| 'lecture' }`。出力フォルダまたは `notes.md` を macOS の `open` で開く |
@@ -1114,8 +1103,10 @@ type Config = {
 | `--whisperkit` / `--ffmpeg` / `--open` / `--osascript` | `LEC_SCRIBE_WHISPERKIT` など | コマンド名 | 外部コマンドの場所 |
 | `--token-file` / `--trusted-file` | `LEC_SCRIBE_TOKEN_FILE` など | `~/.lec-scribe/` の下 | トークンと承認済み拡張（§12.3） |
 | `--keep-wav` | `LEC_SCRIBE_KEEP_WAV` | false | 変換した wav を残す |
-| `--auto-update` | `LEC_SCRIBE_AUTO_UPDATE` | 1 | 起動時に origin/main を見て入れ替える（§12.1b）。0 で止める |
-| `--app-dir` | `LEC_SCRIBE_APP_DIR` | リポジトリの根 | 自動更新の対象の作業ツリー |
+| `--auto-update` | `LEC_SCRIBE_AUTO_UPDATE` | launchd 常駐なら on | 起動時に自分を更新する（§12.1b）。`on` / `off` |
+| `--app-dir` | `LEC_SCRIBE_APP_DIR` | リポジトリの根 | 自動更新の対象の作業ツリー（install.sh の置き場所と同じ意味） |
+| `--branch` | `LEC_SCRIBE_BRANCH` | `main` | 自動更新で追いかけるブランチ（install.sh と同じ） |
+| `--git` | `LEC_SCRIBE_GIT` | `git` | git コマンドの場所 |
 | `--llm` | `LEC_SCRIBE_LLM` | `none` | ノート作成の呼び出し先（`codex` / `openai` / `ollama` / `none`。§13.5） |
 | `--llm-model` | `LEC_SCRIBE_LLM_MODEL` | 空 | モデル名（空なら呼び出し先ごとの既定） |
 | `--llm-chars` | `LEC_SCRIBE_LLM_CHARS` | 12000 | 1 回に送る本文の文字数（§13.5） |

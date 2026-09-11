@@ -192,10 +192,8 @@ function serverApi(server: ServerTarget, signal?: AbortSignal): ServerApi {
     }
     const json = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     if (!res.ok) {
-      const err = json?.['error'] as { code?: string; message?: string } | undefined;
+      const err = json?.['error'] as { message?: string } | undefined;
       const message = err?.message ?? `HTTP ${res.status}`;
-      // サーバーが自分を更新している最中（§12.1b）。終われば送れるので、設定の問題とは分けて伝える
-      if (res.status === 503 && err?.code === 'UPDATING') throw new LecError('SERVER_UPDATING', message);
       throw new LecError('SERVER_REJECTED', res.status === 401 ? `${message} 拡張の設定でトークンを確認してください。` : message);
     }
     return json ?? {};

@@ -22,4 +22,5 @@ done
 # 次の文字起こしの途中でビルドが始まって待たせないように、ここで作っておく
 LEC_SCRIBE_VISION_SRC="$APP_DIR/server/src/vision.ts" node --experimental-strip-types -e "import(process.env.LEC_SCRIBE_VISION_SRC).then((m) => m.ensureVisionHelper((line) => console.log('  ' + line)))" || true
 
-node "$APP_DIR/server/scripts/agent.mjs" restart
+# install は plist と launcher を作り直しつつ、今の LEC_SCRIBE_* を引き継ぐ（restart では作り直されない）
+node "$APP_DIR/server/scripts/agent.mjs" install

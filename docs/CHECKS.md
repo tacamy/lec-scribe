@@ -238,7 +238,8 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | Y | `--llm-model` を変えて「やり直す」と、前のモデルの文章が使い回されず作り直される | `enable-notes.sh` でモデルを変えてから「やり直す」 | トークンを使う |
 | Z | 旧 `<日時-ID>_<タイトル>` のフォルダのセッションでも「やり直す」「フォルダを開く」が動く | 9 月 10 日以前に作ったセッション | 後方互換 |
 | AA | `install.sh` / `update.sh` のあと、最初の文字起こしで補助コマンドのビルド待ちが起きない | 更新してから 1 本処理する | `imagefp.swift` を変えたとき |
-| AB | サーバーの自動更新: main が進んだ状態で `agent:restart` すると、ログに「新しい版があります」→「入れ替えました」と出て、10 秒後に新しいコードで起動し直す。その間パネルの Start が押せず「更新中」と出て、終わると戻る。処理中なら空くまで待つ | main を進めてから `pnpm --filter @lec-scribe/server agent:restart`。パネルを開いたまま見る | `~/repos/lec-scribe` が main で変更なしのとき。ブランチ作業中は「確認しません」と出る |
+| AB | サーバーの自動更新: main が進んだ状態で `agent:restart` すると、ログに「新しい版があります」→「入れ替えました」と出て、新しいコードで起動し直す（`git log` が進んでいる）。更新が無いときは「最新です」、ブランチ作業中は「ブランチが main ではありません」 | main を進めてから `pnpm --filter @lec-scribe/server agent:restart`、`~/Library/Logs/lec-scribe/server.log` を見る | `agent:install` を 1 度通して plist に `LEC_SCRIBE_MANAGED` を入れてから |
+| AC | ネットワークを切って `agent:restart` しても、サーバーがクラッシュループにならず普通に起動する（ログに「自動更新: …見送る」旨が出て `/health` が返る） | Wi-Fi を切って `agent:restart` → `curl 127.0.0.1:47321/health` | 20 秒ほどで起動する |
 
 ## 過去セッションの再処理
 

@@ -14,7 +14,7 @@ import { loadConfig } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
-import { applyUpdate, checkForUpdate } from './update.ts';
+import { selfUpdate } from './update.ts';
 
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
@@ -26,8 +26,18 @@ const missing: string[] = [];
 if (!(await resolveBin(config.ffmpegBin))) missing.push(`ffmpeg（${config.ffmpegBin}）`);
 if (!(await resolveBin(config.whisperkitBin))) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
 
+// 自動更新（§12.1b）。listen する前に済ませる。入れ替えたら終了し、launchd が新しいコードで起動し直す
+if (config.autoUpdate) {
+  const result = await selfUpdate({ appDir: config.appDir, branch: config.branch, gitBin: config.gitBin, log });
+  if (result.updated) {
+    log('自動更新: 入れ替えました。新しいコードで起動し直します');
+    process.exit(0);
+  }
+  log(`自動更新: ${result.reason}`);
+}
+
 const trusted = await loadTrusted(config.trustedFile);
-const { server, pipeline, status } = createApp(config, token, log, trusted);
+const { server } = createApp(config, token, log, trusted);
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
   console.log(`LecScribe server v${VERSION}`);
@@ -47,37 +57,3 @@ server.listen(config.port, config.host, () => {
     console.log('');
   }
 });
-
-/**
- * 起動時の自動更新（SPEC §12.1b）。origin/main が進んでいれば、処理が空いてから fast-forward して終了する。
- * launchd の KeepAlive が起動し直す。拡張がパネルを開いていれば /health の updating を見て Start を止める
- */
-if (config.autoUpdate) void autoUpdate();
-
-async function autoUpdate(): Promise<void> {
-  const check = await checkForUpdate(config.appDir);
-  if (check.skipped) {
-    log(`自動更新: 確認しません（${check.skipped}）`);
-    return;
-  }
-  if (!check.available) {
-    log('自動更新: 最新です');
-    return;
-  }
-  log(`自動更新: 新しい版があります（${check.behind} コミット）。処理が空いたら入れ替えます`);
-  status.updating = true;
-  while (pipeline.activeCount() > 0) await sleep(5_000);
-  if (!(await applyUpdate(config.appDir, log))) {
-    status.updating = false;
-    return;
-  }
-  // 開いているパネルが「更新中」を拾えるよう、少し待ってから止める（パネルは 5 秒ごとに /health を見る）
-  log('自動更新: 入れ替えました。10 秒後に止まります（launchd が新しいコードで起動し直します）');
-  await sleep(10_000);
-  server.close();
-  process.exit(0);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

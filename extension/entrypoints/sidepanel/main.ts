@@ -150,32 +150,6 @@ async function refreshConfig() {
   serverConfigured = serverEnabled(config);
 }
 
-/**
- * Mac 側のサーバーが自分を更新している間は録音を始めさせない（SPEC §12.1b）。
- * パネルを開いている間 5 秒ごとに /health を見る。入れ替えの最中はサーバーが落ちているので、
- * 直前に「更新中」と言っていたなら、しばらくは更新中のまま扱う
- */
-let serverUpdating = false;
-let updatingSeenAt = 0;
-const UPDATING_GRACE_MS = 90_000;
-
-async function pollServerHealth() {
-  if (!serverConfigured) return;
-  let next = serverUpdating;
-  try {
-    const res = await fetch(`http://127.0.0.1:${serverTarget.port}/health`, { headers: authHeaders(serverTarget), signal: AbortSignal.timeout(2000) });
-    const body = (await res.json()) as { updating?: boolean };
-    next = body.updating === true;
-    if (next) updatingSeenAt = Date.now();
-  } catch {
-    next = serverUpdating && Date.now() - updatingSeenAt < UPDATING_GRACE_MS;
-  }
-  if (next !== serverUpdating) {
-    serverUpdating = next;
-    render(current);
-  }
-}
-window.setInterval(() => void pollServerHealth(), 5_000);
 
 /** 未接続画面で、Mac 側にサーバーがいるかを先に見せる（いなければ接続ボタンを押しても意味がないため） */
 let presenceChecked = false;
@@ -235,8 +209,7 @@ function render(state: SessionState) {
 
   startBtn.hidden = active;
   stopBtn.hidden = !active;
-  // サーバーの更新中は始めさせない（送っても 503 になる）
-  startBtn.disabled = !!state.exporting || serverUpdating;
+  startBtn.disabled = !!state.exporting;
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
   openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
@@ -269,9 +242,7 @@ function render(state: SessionState) {
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
 
-  if (serverUpdating && !active) {
-    footer.textContent = 'Mac 側のサーバーを更新しています。終わると自動で使えるようになります。';
-  } else if (state.state === 'CAPTURING') {
+  if (state.state === 'CAPTURING') {
     footer.textContent = state.processing
       ? '録音中です。前のセッションの文字起こしは裏で続いています。'
       : '録音中です。スライドの切り替えは自動で保存されます。';
@@ -327,7 +298,6 @@ function describeServer(state: SessionState): string {
     return `${STAGE_TEXT[p.stage]}${p.percent !== undefined ? ` ${p.percent}%` : ''} · ${elapsed}${pending}`;
   }
   if (pending) return `待機中${pending}`;
-  if (serverUpdating) return '更新中 · まもなく使えます';
   if (state.state === 'COMPLETED' && state.lastSession?.outputDir) return `完了 · ${shortPath(state.lastSession.outputDir)}`;
   return serverConfigured ? '待機中' : '未接続';
 }
