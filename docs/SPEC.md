@@ -234,7 +234,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - `content_scripts` は宣言しない。常時注入せず、Start 時に `activeTab` の範囲で注入する。
 - `<all_urls>` や `optional_host_permissions` は要求しない。
-- permission は Phase ごとに必要になった時点で追加する（Phase 3 時点: `tabCapture` / `offscreen` / `activeTab` / `storage` / `downloads` / `sidePanel` / `scripting`。host_permissions は `http://127.0.0.1/*` のみで、ローカルサーバーと fixture ページへの注入テストに使う）。
+- permission は Phase ごとに必要になった時点で追加する（現在: `tabCapture` / `offscreen` / `activeTab` / `storage` / `downloads` / `sidePanel` / `scripting` / `alarms`。`alarms` は送信に失敗した行列を時間を置いて送り直すため、2026-09-11 に追加した（§6.5、#8）。host_permissions は `http://127.0.0.1/*` のみで、ローカルサーバーと fixture ページへの注入テストに使う）。
 
 ### 6.2 コンテキストと責務
 
@@ -269,7 +269,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 3. service worker → offscreen: `CAPTURE_STOP`。`MediaRecorder.stop()` → 最終チャンクを書き込み → トラック停止 → `status.json` を `captured` に
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
-6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「削除」を選べる
+6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「削除」を選べる。**一時的な失敗**（繋がらない、5xx、429）なら、その 1 本を行列の **最後尾** に回して `chrome.alarms` で送り直す（2026-09-11、#8。それまでは 1 回の失敗で行列を全部捨てていた）。間隔は 0.5 → 1 → 2 → 5 → 10 分と空け、5 回続けて駄目なら行列から外して手動に回す（毎回セッション全部を送り直すので、短い間隔で回し続けない）。**恒久的な失敗**（承認されていない、送るものが無い）はその 1 本だけ行列から外し、**残りはそのまま**次を送る（1 本の事情で他を巻き込まない）。どちらかは `ErrorInfo.retryable` で運び、回数は `uploadAttempts` に持つ
 7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションは「中止」で止める。初回の処理なら `POST /sessions/:id/cancel { delete: true }` で中止・削除し、やり直しの中止なら処理だけ止めて前回の結果と録音は残す（§11.3）。どちらも次の送信待ちを始める
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。
@@ -302,7 +302,7 @@ type SessionState = {
   warnings: WarningCode[];     // PLAYBACK_RATE, TAB_HIDDEN, SERVER_UNREACHABLE, DRM, NAVIGATED, ...
   progress?: { stage: string; percent?: number };
   outputDir?: string;
-  error?: { code: ErrorCode; message: string };
+  error?: { code: ErrorCode; message: string; retryable?: boolean };  // retryable: 時間を置けば通る失敗（#8）
 };
 ```
 
@@ -683,7 +683,7 @@ sessions/<sessionId>/
 
 | メソッド | パス | 内容 |
 |---|---|---|
-| GET | `/health` | `{ ok, version, api, commit, ffmpeg, whisperkit, model, llm, authorized, paired, processing }`。`api` は拡張との約束の版（§12.1c）、`commit` は動いているコードの短い SHA（診断用。分からなければ null） |
+| GET | `/health` | `{ ok, version, api, commit, ffmpeg, whisperkit, model, llm, authorized, paired, processing }`。`api` は拡張との約束の版（§12.1c）、`commit` は動いているコードの短い SHA（診断用。分からなければ null）。ffmpeg / whisperkit の有無は `resolveBin` が覚えている（1 分で忘れる。毎回 PATH を歩いていた #9） |
 | POST | `/sessions` | `session.json` 相当を受け取りディレクトリを作成 |
 | PUT | `/sessions/:id/audio` | `audio.webm`（`application/octet-stream`、ストリーム書き込み） |
 | PUT | `/sessions/:id/slides/:name` | PNG / JPEG |

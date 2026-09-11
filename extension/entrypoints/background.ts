@@ -76,6 +76,60 @@ function serialized<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/**
+ * 送信に失敗した行列を時間を置いて送り直す（#8）。service worker は止まることがあるので setTimeout ではなく
+ * chrome.alarms を使う（下限が 30 秒）。成功すれば upload() が次を順に送り、また失敗すれば upload() が掛け直す
+ */
+const RETRY_ALARM = 'retry-upload';
+/**
+ * やり直しの間隔（分）。同じセッションが続けて失敗するほど空ける。
+ * サーバーが落ちているだけなら数十秒で戻るが、ディスクが一杯のような状況では
+ * 毎回セッション全部（音声とスライド）を送り直すので、短い間隔で回し続けない
+ */
+const RETRY_DELAYS_MINUTES = [0.5, 1, 2, 5, 10];
+/** これだけ続けて失敗したら、その録音は行列から外して手動に回す */
+const MAX_RETRIES = RETRY_DELAYS_MINUTES.length;
+
+async function scheduleRetry(attempt = 0): Promise<void> {
+  const delayInMinutes = RETRY_DELAYS_MINUTES[Math.min(attempt, RETRY_DELAYS_MINUTES.length - 1)]!;
+  await chrome.alarms.create(RETRY_ALARM, { delayInMinutes });
+}
+
+/** 回数を 1 つ増やした記録を返す。undefined を混ぜないよう、空になったら消す */
+function bumpAttempts(attempts: Record<string, number> | undefined, sessionId: string): Record<string, number> {
+  return { ...attempts, [sessionId]: (attempts?.[sessionId] ?? 0) + 1 };
+}
+
+/** そのセッションの記録だけ消す（成功した、行列から外した） */
+function clearAttempts(attempts: Record<string, number> | undefined, sessionId: string): Record<string, number> | undefined {
+  if (!attempts?.[sessionId]) return attempts;
+  const { [sessionId]: _done, ...rest } = attempts;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== RETRY_ALARM) return;
+  void serialized(async () => {
+    const current = await readState();
+    const [head, ...rest] = current.pendingUploads ?? [];
+    if (!head) return;
+    // 別のことが動いている間は手を出さない。アラームは 1 回きりなので、掛け直さないと二度と起きない
+    if (current.processing || current.exporting) {
+      await scheduleRetry(current.uploadAttempts?.[head] ?? 0);
+      return;
+    }
+    try {
+      await upload(head, rest);
+    } catch {
+      // 送信そのものの失敗は upload() が状態に書き、次のアラームも掛けている。
+      // ただし upload() が try に入る前に投げる経路（エクスポート中・未接続）では何も掛からないので、
+      // 行列が残っていればここで掛け直す（掛け忘れると行列が誰にも拾われなくなる）
+      const after = await readState();
+      if (after.pendingUploads?.length) await scheduleRetry(after.uploadAttempts?.[after.pendingUploads[0]!] ?? 0);
+    }
+  });
+});
+
 async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<object> {
   switch (msg.type) {
     case 'START':
@@ -363,7 +417,8 @@ async function upload(sessionId: string, pending: string[] = []): Promise<Sessio
     await writeState(queued);
     return queued;
   }
-  const remaining = pending.filter((id) => id !== sessionId);
+  // 送信に失敗して残っている行列（#8）も引き継ぐ。前は処理中にしか行列が無かったので pending だけで足りていた
+  const remaining = [...new Set([...pending, ...(current.pendingUploads ?? [])])].filter((id) => id !== sessionId);
 
   const uploading: SessionState = {
     ...current,
@@ -381,20 +436,31 @@ async function upload(sessionId: string, pending: string[] = []): Promise<Sessio
       ...uploading,
       state: isActive(current) ? current.state : 'PROCESSING',
       processing: { sessionId, stage: 'queued', startedAt: uploading.processing!.startedAt, outputDir },
+      uploadAttempts: clearAttempts(current.uploadAttempts, sessionId),
     };
     await writeState(processing);
     return processing;
   } catch (e) {
+    const info = toErrorInfo(e);
+    // 失敗の後始末（#8）。失敗したのは「この 1 本」なので、他の待ち行列は巻き込まない。
+    // 一時的な失敗（繋がらない、5xx）なら行列の最後尾に回して時間を置いて送り直す。
+    // 何度やっても駄目なもの、送り直しても同じもの（承認されていない、送るものが無い）は行列から外す
+    const attempts = current.uploadAttempts;
+    const tried = (attempts?.[sessionId] ?? 0) + 1;
+    const retry = info.retryable === true && tried <= MAX_RETRIES;
+    // 最後尾に回すのは、1 本の失敗が後ろのセッションをいつまでも待たせないようにするため
+    const queue = retry ? [...remaining, sessionId] : remaining;
     const failed: SessionState = {
       ...uploading,
       state: isActive(current) ? current.state : 'COMPLETED',
-      error: toErrorInfo(e),
-      warnings: [...current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
+      error: info,
+      warnings: retry ? [...uploading.warnings, 'SERVER_UNREACHABLE'] : uploading.warnings,
       processing: undefined,
-      // サーバーに繋がらないなら、待っている分もまとめて手動送信に回す
-      pendingUploads: undefined,
+      pendingUploads: queue.length > 0 ? queue : undefined,
+      uploadAttempts: retry ? bumpAttempts(attempts, sessionId) : clearAttempts(attempts, sessionId),
     };
     await writeState(failed);
+    if (queue.length > 0) await scheduleRetry(retry ? tried : 0);
     await closeOffscreenIfIdle();
     throw e;
   }
@@ -622,15 +688,18 @@ async function reconcile(): Promise<void> {
   const state = await readState();
   if (await hasOffscreenDocument()) return;
   if (state.processing) {
-    // 送信・polling は offscreen document が持っていた。再送で続きから処理できる
+    // 送信・polling は offscreen document が持っていた。再送で続きから処理できる。
+    // 順番を待っていただけの分は何も失敗していないので残し、アラームで順に送る（#8）
+    const pending = state.pendingUploads ?? [];
     await writeState({
       ...state,
       state: isActive(state) ? state.state : 'COMPLETED',
       processing: undefined,
-      pendingUploads: undefined,
+      pendingUploads: pending.length > 0 ? pending : undefined,
       warnings: [...state.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
       error: { code: 'SERVER_UNREACHABLE', message: '拡張が再起動したため進捗を見失いました。一覧の「文字起こしする」で再開できます。' },
     });
+    if (pending.length > 0) await scheduleRetry();
     if (!isActive(state)) return;
   }
   if (!isActive(state)) return;

@@ -188,13 +188,16 @@ function serverApi(server: ServerTarget, signal?: AbortSignal): ServerApi {
       throw new LecError(
         'SERVER_UNREACHABLE',
         `ローカルサーバーに接続できません（127.0.0.1:${server.port}）。サーバーを起動してください。${toErrorInfo(e).message}`,
+        true, // 起動し直せば通る
       );
     }
     const json = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
     if (!res.ok) {
       const err = json?.['error'] as { message?: string } | undefined;
       const message = err?.message ?? `HTTP ${res.status}`;
-      throw new LecError('SERVER_REJECTED', res.status === 401 ? `${message} 拡張の設定でトークンを確認してください。` : message);
+      // 5xx と 429 はサーバー側の一時的な事情。401 や 400 は送り直しても同じ答えになる
+      const transient = res.status >= 500 || res.status === 429;
+      throw new LecError('SERVER_REJECTED', res.status === 401 ? `${message} 拡張の設定でトークンを確認してください。` : message, transient);
     }
     return json ?? {};
   };
@@ -328,7 +331,12 @@ async function patchStatus(dir: FileSystemDirectoryHandle, patch: Partial<Sessio
 function withTimeout<T>(promise: Promise<T>, ms: number, port: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(
-      () => reject(new LecError('SERVER_UNREACHABLE', `ローカルサーバーが応答しません（127.0.0.1:${port}）。サーバーを起動してください。`)),
+      () =>
+        reject(
+          // 返事が遅いだけ（起動中、別のセッションを処理中）なので、時間を置けば通る（#8）。
+          // 繋がらないときと同じ扱いにしないと、この経路だけ送信待ちの行列が捨てられる
+          new LecError('SERVER_UNREACHABLE', `ローカルサーバーが応答しません（127.0.0.1:${port}）。サーバーを起動してください。`, true),
+        ),
       ms,
     );
     promise.then(resolve, reject).finally(() => window.clearTimeout(timer));

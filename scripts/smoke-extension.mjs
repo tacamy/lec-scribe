@@ -50,11 +50,8 @@ const whisperkitStub = stub(
 const osascriptStub = stub('osascript', 'echo allowed');
 writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
 const serverOut = path.join(serverTmp, 'out');
-const localServer = spawn(
-  process.execPath,
-  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json'), '--auto-update', 'off'],
-  { stdio: 'ignore' },
-);
+const localServerArgs = ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json'), '--auto-update', 'off'];
+let localServer = spawn(process.execPath, localServerArgs, { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 1200));
 const context = await chromium.launchPersistentContext('', {
   channel: 'chromium',
@@ -623,6 +620,71 @@ try {
   assert.equal(typeof serverApi, 'number', `server did not report an api version: ${serverApi}`);
   assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
+  // #8: サーバーに繋がらない送信失敗で、送信待ちの行列を捨てないこと。
+  // サーバーを止めて 2 本送ると、どちらも失敗して行列に残る。起動し直して手で送ると順に処理される
+  localServer.kill();
+  await new Promise((r) => setTimeout(r, 500));
+  const off4 = await context.newPage();
+  off4.on('pageerror', (e) => errors.push(String(e)));
+  await off4.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off4.waitForFunction(() => !!globalThis.__lecscribe);
+  const retryA = '20990101-000004-smok';
+  const retryB = '20990101-000005-smok';
+  for (const sessionId of [retryA, retryB]) {
+    await off4.evaluate(async (sessionId) => {
+      const api = globalThis.__lecscribe;
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const dest = ctx.createMediaStreamDestination();
+      osc.connect(dest);
+      osc.start();
+      await ctx.resume();
+      const config = { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } };
+      await api.startFromStream(dest.stream, config, { sessionId, title: 'smoke retry', startedAt: new Date().toISOString() });
+      await new Promise((r) => setTimeout(r, 900));
+      await api.stop();
+      osc.stop();
+      await ctx.close();
+    }, sessionId);
+  }
+  await off4.close();
+  const failedA = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryA);
+  assert.equal(failedA.ok, false, JSON.stringify(failedA));
+  assert.equal(failedA.error.code, 'SERVER_UNREACHABLE', JSON.stringify(failedA.error));
+  assert.equal(failedA.error.retryable, true, JSON.stringify(failedA.error));
+  const failedB = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
+  assert.equal(failedB.ok, false, JSON.stringify(failedB));
+  const kept = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  // 失敗したものは最後尾に回る（1 本の失敗で後ろが待たされないように）。A → B の順で失敗したので [A, B]
+  assert.deepEqual(kept.pendingUploads, [retryA, retryB], `queue was dropped: ${JSON.stringify(kept)}`);
+  assert.ok(kept.warnings.includes('SERVER_UNREACHABLE'), JSON.stringify(kept.warnings));
+  // サーバーを起動し直し、手で 1 本送ると、残りも順に送られる
+  localServer = spawn(process.execPath, localServerArgs, { stdio: 'ignore' });
+  for (let i = 0; i < 50; i++) {
+    const ok = await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false);
+    if (ok) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  // 恒久的な失敗（存在しないセッション）では、その 1 本だけ落ちて他は行列に残る
+  const gone = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: '20990101-000009-smok' }));
+  assert.equal(gone.ok, false, JSON.stringify(gone));
+  const afterPermanent = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  assert.deepEqual(afterPermanent.pendingUploads, [retryA, retryB], `permanent failure evicted the queue: ${JSON.stringify(afterPermanent)}`);
+  const resent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
+  assert.equal(resent.ok, true, JSON.stringify(resent));
+  assert.deepEqual(resent.state.pendingUploads, [retryA], JSON.stringify(resent.state));
+  let drained = null;
+  for (let i = 0; i < 100; i++) {
+    drained = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (!drained.processing && !drained.pendingUploads) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(drained.pendingUploads, undefined, `queue did not drain: ${JSON.stringify(drained)}`);
+  assert.ok(!drained.warnings.includes('SERVER_UNREACHABLE'), JSON.stringify(drained.warnings));
+  for (const id of [retryA, retryB]) {
+    assert.ok(readdirSync(serverOut).some((d) => d === id || d.endsWith(`_${id}`)), `no server output for ${id}: ${readdirSync(serverOut)}`);
+  }
+  console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');
