@@ -671,7 +671,7 @@ sessions/<sessionId>/
 
 | メソッド | パス | 内容 |
 |---|---|---|
-| GET | `/health` | `{ ok, version, ffmpeg, whisperkit, model }` |
+| GET | `/health` | `{ ok, version, ffmpeg, whisperkit, model }`。ffmpeg / whisperkit の有無は `resolveBin` が覚えている（見つからなかった結果は 1 分で忘れる。毎回 PATH を歩いていた #9） |
 | POST | `/sessions` | `session.json` 相当を受け取りディレクトリを作成 |
 | PUT | `/sessions/:id/audio` | `audio.webm`（`application/octet-stream`、ストリーム書き込み） |
 | PUT | `/sessions/:id/slides/:name` | PNG / JPEG |

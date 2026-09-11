@@ -23,8 +23,9 @@ await mkdir(config.outDir, { recursive: true });
 const { token, created } = await loadOrCreateToken(config.tokenFile);
 
 const missing: string[] = [];
-if (!(await resolveBin(config.ffmpegBin))) missing.push(`ffmpeg（${config.ffmpegBin}）`);
-if (!(await resolveBin(config.whisperkitBin))) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
+const [ffmpeg, whisperkit] = await Promise.all([resolveBin(config.ffmpegBin), resolveBin(config.whisperkitBin)]);
+if (!ffmpeg) missing.push(`ffmpeg（${config.ffmpegBin}）`);
+if (!whisperkit) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
 
 // 自動更新（§12.1b）。listen する前に済ませる。入れ替えたら終了し、launchd が新しいコードで起動し直す
 if (config.autoUpdate) {

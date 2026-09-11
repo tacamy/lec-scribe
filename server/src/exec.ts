@@ -54,8 +54,35 @@ export function run(
   });
 }
 
-/** PATH（または絶対パス）でコマンドが見つかるか */
+const resolved = new Map<string, { value: string | null; at: number }>();
+/**
+ * 覚えておく時間。見つかった結果も忘れる（brew uninstall や Xcode の更新でコマンドが消えると、
+ * 覚えたままでは /health が「ある」と言い続け、文字起こしが素の ENOENT で落ちるため）。
+ * 1 分あれば、1 回の処理やパネルの表示でくり返し呼ばれる分はまとめて 1 回の探索で済む
+ */
+const TTL_MS = 60_000;
+
+/**
+ * PATH（または絶対パス）でコマンドが見つかるか。結果は少しの間だけ覚えておく。
+ * /health はリクエストのたびに ffmpeg と whisperkit-cli を探していて、PATH の項目数ぶん
+ * access() が走っていた（#9）。時計が戻ったときは覚え直す（スリープ復帰の時刻合わせ）
+ */
 export async function resolveBin(bin: string): Promise<string | null> {
+  const hit = resolved.get(bin);
+  const age = hit ? Date.now() - hit.at : 0;
+  if (hit && age >= 0 && age < TTL_MS) return hit.value;
+  const value = await findBin(bin);
+  resolved.set(bin, { value, at: Date.now() });
+  return value;
+}
+
+/** テスト用。覚えた場所を忘れる */
+export function forgetResolvedBins(): void {
+  resolved.clear();
+}
+
+/** PATH（または絶対パス）を実際に歩いて探す */
+async function findBin(bin: string): Promise<string | null> {
   const candidates = bin.includes('/') ? [bin] : (process.env['PATH'] ?? '').split(path.delimiter).map((dir) => path.join(dir, bin));
   for (const candidate of candidates) {
     try {
