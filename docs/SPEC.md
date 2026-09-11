@@ -666,7 +666,9 @@ sessions/<sessionId>/
 - ブランチと `FETCH_HEAD` の使い方、`git` の場所（`--git` / `LEC_SCRIBE_GIT`）は `install.sh` / `update.sh` と合わせてある。
 - `pnpm install` は走らせない（サーバーはランタイム依存なし）。Vision の補助コマンドはソースのハッシュで名前が変わるので、必要なら次の処理で作り直される（`update.sh` と違って先には作らない。数十秒待つことがある）。
 - `update.sh` は手で更新したいとき用に残す。こちらは `agent.mjs install` を呼んで plist と launcher も作り直す（`restart` では作り直されないので、`LEC_SCRIBE_MANAGED` のような新しい設定が入らない）。
-- **plist と launcher にはコードに依存するものを置かない**（2026-09-11、#10）。launcher（`~/Applications/LecScribe Server.app` の実行ファイル）はリポジトリの `server/scripts/start.sh` を `exec` するだけで、node の探し方と起動フラグはそのスクリプトが持つ。起動コマンドを変えるコミットも git で届くので、自動更新だけで効く。plist は launcher の場所・作業ディレクトリ・環境変数だけ。新しい設定項目は `config.ts` の既定値で動くようにし、plist に無いと起動できない形にはしない。
+- **plist と launcher にはコードに依存するものを置かない**（2026-09-11、#10）。launcher（`~/Applications/LecScribe Server.app` の実行ファイル）はリポジトリの `server/scripts/start.sh` を `exec` するだけで、node の探し方（使えるのは 22 以上）と起動フラグはそのスクリプトが持つ。起動コマンドを変えるコミットも git で届くので、自動更新だけで効く。plist が持つのは launcher の場所・作業ディレクトリ・環境変数と、launchd 自身への指示（`RunAtLoad` / `KeepAlive` / `ThrottleInterval` / ログの出力先）だけ。新しい設定項目は `config.ts` の既定値で動くようにし、plist に無いと起動できない形にはしない。
+  - **launcher は `start.sh` が読めなければ直接 `node … index.ts` に落ちる。** これが無いと、`start.sh` を持たないコミットに戻した瞬間（巻き戻し、古いブランチ、CHECKS の AE の手順）に launchd が 10 秒ごとの起動失敗を繰り返し、サーバーが起動しない＝自動更新も走らないので自力では二度と直らない。落とし所があるので、`server/src/index.ts` の場所を変えないという下の約束は、古い launcher のためだけでなくこの経路のためでもある。
+  - 生成する launcher に差し込むパスは `'…'` で囲む（`LEC_SCRIBE_APP_DIR` は利用者が決められるので、`$` を含むパスでも壊れないように。plist の XML は `escape()` で守っているのに、launcher のシェルは素のままだった）。
   - サーバーが自分の plist を書き換える案は取らない。launchd は plist を bootstrap のときしか読まず、自分を `bootout` すると誰も起動し直さない。`agent.mjs install` は初回の導入と、`LEC_SCRIBE_*` の設定を変えるときの道具に留める。
   - 2026-09-11 より前に登録した launcher は `node --experimental-strip-types server/src/index.ts` を直接指している。`update.sh`（`agent.mjs install` を呼ぶ）を通れば新しい launcher になるが、自動更新だけの環境では古いままなので、**`server/src/index.ts` の場所と、このフラグで起動できることは変えない**。
 

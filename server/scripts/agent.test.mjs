@@ -1,7 +1,7 @@
 // agent.mjs print が plist に書く EnvironmentVariables を確かめる。
 // print は launchctl を触らないので、HOME を一時ディレクトリに向ければ副作用なく試せる。
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,5 +76,39 @@ describe('agent.mjs の設定引き継ぎ', () => {
     const env = printedEnv({ LEC_SCRIBE_PORT: '47399' });
     expect(env['LEC_SCRIBE_PORT']).toBe('47399');
     expect(env['PATH']).toBe(process.env['PATH'] ?? '/usr/bin:/bin');
+  });
+});
+
+describe('agent.mjs print-launcher', () => {
+  /**
+   * 起動用アプリに差し込むパスがシェルに壊されないこと（#10）。
+   * LEC_SCRIBE_APP_DIR は利用者が決められるので、$ を含む場所に置かれうる。
+   * 素のまま二重引用符に入れると /bin/sh が $po を空に展開し、launcher が別の場所を exec して
+   * 起動に失敗する。サーバーが起動しないと自動更新も走らないので、自力では直らなくなる
+   */
+  it('$ を含む場所に置いても、パスがそのまま渡る', () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'lec-scribe-agent-'));
+    try {
+      // ESM は読み込むときに symlink を解くので、比べる側も実体のパスにそろえる（macOS の /var → /private/var）
+      const repo = path.join(realpathSync(tmp), 're$po');
+      const scripts = path.join(repo, 'server', 'scripts');
+      mkdirSync(scripts, { recursive: true });
+      copyFileSync(agent, path.join(scripts, 'agent.mjs'));
+      const printed = spawnSync(process.execPath, [path.join(scripts, 'agent.mjs'), 'print-launcher'], {
+        encoding: 'utf8',
+        env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', HOME: tmp },
+      });
+      expect(printed.status).toBe(0);
+      // 代入の部分だけ /bin/sh に読ませて、変数の中身が元のパスと一致するか見る
+      const assigns = printed.stdout.split('\n').filter((l) => /^(LEC_SCRIBE_NODE|START)=/.test(l));
+      expect(assigns).toHaveLength(2);
+      const shown = spawnSync('/bin/sh', ['-c', `${assigns.join('\n')}\nprintf '%s' "$START"`], { encoding: 'utf8' });
+      expect(shown.stdout).toBe(path.join(repo, 'server', 'scripts', 'start.sh'));
+      // start.sh が読めないときに直接起動へ落ちる行が残っていること（巻き戻しでの起動不能を防ぐ）
+      expect(printed.stdout).toContain('--experimental-strip-types');
+      expect(printed.stdout).toContain(`'${path.join(repo, 'server', 'src', 'index.ts')}'`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
