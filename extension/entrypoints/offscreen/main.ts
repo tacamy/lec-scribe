@@ -331,7 +331,12 @@ async function patchStatus(dir: FileSystemDirectoryHandle, patch: Partial<Sessio
 function withTimeout<T>(promise: Promise<T>, ms: number, port: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(
-      () => reject(new LecError('SERVER_UNREACHABLE', `ローカルサーバーが応答しません（127.0.0.1:${port}）。サーバーを起動してください。`)),
+      () =>
+        reject(
+          // 返事が遅いだけ（起動中、別のセッションを処理中）なので、時間を置けば通る（#8）。
+          // 繋がらないときと同じ扱いにしないと、この経路だけ送信待ちの行列が捨てられる
+          new LecError('SERVER_UNREACHABLE', `ローカルサーバーが応答しません（127.0.0.1:${port}）。サーバーを起動してください。`, true),
+        ),
       ms,
     );
     promise.then(resolve, reject).finally(() => window.clearTimeout(timer));

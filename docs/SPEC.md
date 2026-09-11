@@ -234,7 +234,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 
 - `content_scripts` は宣言しない。常時注入せず、Start 時に `activeTab` の範囲で注入する。
 - `<all_urls>` や `optional_host_permissions` は要求しない。
-- permission は Phase ごとに必要になった時点で追加する（Phase 3 時点: `tabCapture` / `offscreen` / `activeTab` / `storage` / `downloads` / `sidePanel` / `scripting`。host_permissions は `http://127.0.0.1/*` のみで、ローカルサーバーと fixture ページへの注入テストに使う）。
+- permission は Phase ごとに必要になった時点で追加する（現在: `tabCapture` / `offscreen` / `activeTab` / `storage` / `downloads` / `sidePanel` / `scripting` / `alarms`。`alarms` は送信に失敗した行列を時間を置いて送り直すため、2026-09-11 に追加した（§6.5、#8）。host_permissions は `http://127.0.0.1/*` のみで、ローカルサーバーと fixture ページへの注入テストに使う）。
 
 ### 6.2 コンテキストと責務
 
@@ -302,7 +302,7 @@ type SessionState = {
   warnings: WarningCode[];     // PLAYBACK_RATE, TAB_HIDDEN, SERVER_UNREACHABLE, DRM, NAVIGATED, ...
   progress?: { stage: string; percent?: number };
   outputDir?: string;
-  error?: { code: ErrorCode; message: string };
+  error?: { code: ErrorCode; message: string; retryable?: boolean };  // retryable: 時間を置けば通る失敗（#8）
 };
 ```
 

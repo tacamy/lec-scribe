@@ -92,11 +92,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   void serialized(async () => {
     const current = await readState();
     const [head, ...rest] = current.pendingUploads ?? [];
-    if (!head || current.processing || current.exporting) return;
+    if (!head) return;
+    // 別のことが動いている間は手を出さない。アラームは 1 回きりなので、掛け直さないと二度と起きない
+    if (current.processing || current.exporting) {
+      await scheduleRetry();
+      return;
+    }
     try {
       await upload(head, rest);
     } catch {
-      // 失敗は upload() が状態に書き、次のアラームも掛けている
+      // 送信そのものの失敗は upload() が状態に書き、次のアラームも掛けている。
+      // ただし upload() が try に入る前に投げる経路（エクスポート中・未接続）では何も掛からないので、
+      // 行列が残っていればここで掛け直す（掛け忘れると行列が誰にも拾われなくなる）
+      if ((await readState()).pendingUploads?.length) await scheduleRetry();
     }
   });
 });
@@ -652,15 +660,18 @@ async function reconcile(): Promise<void> {
   const state = await readState();
   if (await hasOffscreenDocument()) return;
   if (state.processing) {
-    // 送信・polling は offscreen document が持っていた。再送で続きから処理できる
+    // 送信・polling は offscreen document が持っていた。再送で続きから処理できる。
+    // 順番を待っていただけの分は何も失敗していないので残し、アラームで順に送る（#8）
+    const pending = state.pendingUploads ?? [];
     await writeState({
       ...state,
       state: isActive(state) ? state.state : 'COMPLETED',
       processing: undefined,
-      pendingUploads: undefined,
+      pendingUploads: pending.length > 0 ? pending : undefined,
       warnings: [...state.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
       error: { code: 'SERVER_UNREACHABLE', message: '拡張が再起動したため進捗を見失いました。一覧の「文字起こしする」で再開できます。' },
     });
+    if (pending.length > 0) await scheduleRetry();
     if (!isActive(state)) return;
   }
   if (!isActive(state)) return;
