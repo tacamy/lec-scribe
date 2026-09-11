@@ -33,6 +33,11 @@ const SAME_TEXT_SIM = 0.8;
 /** 短い方の文字のこの割合が、順序を保って長い方に含まれていれば「含まれる」 */
 const CONTAINED_MIN = 0.9;
 /**
+ * 両方にこの文字数以上の文字があって中身が違えば、写真同士の判定でもまとめない（別のラベルが付いた別の写真）。
+ * 6 章で「カメラ本体」と「粗微動ユニット」のラベルが付いた別の装置の写真が 0.53 でまとまり、片方が消えたため
+ */
+const VETO_MIN_CHARS = 4;
+/**
  * 画素の差がこの割合以下で、文字が同じか一方に含まれるなら、同じスライドの途中の状態とみなす
  * （箇条書きが 1 行増えた、字幕が出かけている）。7 章で字幕の出かけの画像が Vision では 0.70 も離れていたため
  */
@@ -104,9 +109,17 @@ export function colorEntropy(a: Uint8Array): number {
   return bits;
 }
 
-/** 文字認識の結果を比べやすくする（空白と改行を除き、1 文字ずつに分ける） */
+/**
+ * 文字認識の結果を比べやすくする。行を並べ替えてからつなぎ、空白を除いて 1 文字ずつに分ける
+ * （同じ画面でも行の読まれる順は変わる。6 章では「ロゴ／字幕」と「字幕／ロゴ」で 0.06 になっていた）
+ */
 function normalizeText(text: string): string[] {
-  return [...text.replace(/\s+/g, '')];
+  const lines = text
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ''))
+    .filter(Boolean)
+    .sort();
+  return [...lines.join('')];
 }
 
 function editDistance(a: readonly string[], b: readonly string[]): number {
@@ -147,7 +160,7 @@ export type VisionOptions = {
   distance: (a: number, b: number) => number | undefined;
   /** これ以下なら、どんな画面でも同じとみなす（メニューを開いた・少しスクロールした程度） */
   tight: number;
-  /** 両方が写真・映像なら、これ以下でも同じ場面とみなす（被写体が動いた程度）。文字が同じ画像同士もこの距離まで */
+  /** 両方が写真・映像（文字が違わない）なら、これ以下でも同じ場面とみなす（被写体が動いた程度）。文字が同じ画像同士もこの距離まで */
   photo: number;
   /** 画像に写っている文字（字幕・見出し）。読めなかった画像は undefined */
   text?: (index: number) => string | undefined;
@@ -230,12 +243,15 @@ export function pickShownSlides(
       // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ
       if (vision.tight > 0 && d <= vision.tight) return { reason: 'vision', metrics };
       if (vision.photo > 0 && d <= vision.photo) {
-        // 3. 字幕や見出しの文字が同じ（両方に文字がない場合も含む）で見た目も近ければ、同じ場面。
+        // 3. 字幕や見出しの文字が同じ（両方に文字がない場合や、一方が他方に含まれる場合も）で見た目も近ければ、同じ場面。
         //    同じテンプレートで文字だけ違うスライドはここで残る
-        if (hasText && (textSim === undefined || textSim >= SAME_TEXT_SIM)) return { reason: 'text', metrics };
-        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす
+        const contained = hasText && text !== '' && otherText !== '' && textContained(text, otherText);
+        if (hasText && (textSim === undefined || textSim >= SAME_TEXT_SIM || contained)) return { reason: 'text', metrics };
+        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。
+        //    ただし両方に文字があって中身が違うなら、別のラベルが付いた別の写真なのでまとめない
         const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
-        if (!strongOnly && bothPhoto) return { reason: 'vision', metrics };
+        const differentText = hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && !contained;
+        if (!strongOnly && bothPhoto && !differentText) return { reason: 'vision', metrics };
       }
     }
     // 5. 画素がほとんど同じで文字が同じか一方に含まれるなら、同じスライドの途中の状態

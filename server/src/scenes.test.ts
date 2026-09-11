@@ -214,6 +214,8 @@ describe('写っている文字（Vision の文字認識）', () => {
     expect(textContained('ネジレバネの幼虫は自分で歩い\n幼虫に寄生す', 'ネジレバネの幼虫は自分で歩いてカメムシの幼虫に寄生する')).toBe(true);
     expect(textContained('カメラ本体', '粗微動ユニット')).toBe(false);
     expect(textContained('', 'カメラ本体')).toBe(false);
+    // 行の順は問わない（ロゴと字幕の読まれる順が入れ替わる）
+    expect(textSimilarity('MicroMate\n粗微動ユニット', '粗微動ユニット\nMicroMate')).toBe(1);
   });
 
   it('文字が同じ（または両方にない）で見た目も近ければ、スライド風の画面でも外す', () => {
@@ -231,6 +233,22 @@ describe('写っている文字（Vision の文字認識）', () => {
     // 距離が photo より大きければ文字が同じでも残す
     const far = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.6 }, ['ネジレバネの幼虫', 'ネジレバネの幼虫']), 'first');
     expect(far.map((x) => x.shown)).toEqual([true, true]);
+    // 一方の文字が他方に含まれる（字幕が増えた）なら同じ扱い
+    const grown = pickShownSlides(slides.slice(0, 2), thumbs, 0.65, withVision({ '0-1': 0.4 }, ['LEICA S9D', 'LEICA S9D\n対象物をそのままの向きで見られる顕微鏡']), 'first');
+    expect(grown.map((x) => x.shown)).toEqual([true, false]);
+    expect(grown[1]!.reason).toBe('text');
+  });
+
+  it('写真同士でも、両方に文字があって中身が違えばまとめない（別のラベルの別の写真）', () => {
+    // 4→5 は写真同士で 0.4。ラベルが違えば残し、片方にしか文字がなければ（読めた文字がノイズ程度）写真同士の判定でまとめる
+    const labelled = pickShownSlides(slides.slice(3, 5), thumbs, 0.65, withVision({ '0-1': 0.4 }, ['カメラ本体', '粗微動ユニット']), 'first');
+    expect(labelled.map((x) => x.shown)).toEqual([true, true]);
+    const noise = pickShownSlides(slides.slice(3, 5), thumbs, 0.65, withVision({ '0-1': 0.4 }, ['', 'lodanor']), 'first');
+    expect(noise.map((x) => x.shown)).toEqual([true, false]);
+    expect(noise[1]!.reason).toBe('vision');
+    // 3 文字以下の読み取りは文字とみなさない
+    const short = pickShownSlides(slides.slice(3, 5), thumbs, 0.65, withVision({ '0-1': 0.4 }, ['6S', 'W42']), 'first');
+    expect(short.map((x) => x.shown)).toEqual([true, false]);
   });
 
   it('画素がほとんど同じで文字が一方に含まれるなら、途中の状態として外す（見た目の距離が離れていても）', () => {
