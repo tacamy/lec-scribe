@@ -15,6 +15,7 @@ import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
 import { currentCommit, selfUpdate } from './update.ts';
+import { ensureVisionHelper } from './vision.ts';
 
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
@@ -40,6 +41,10 @@ if (config.autoUpdate) {
 // どちらも listen の前に要るが、互いに関係ないので並べて待つ
 const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), currentCommit(config.appDir, config.gitBin)]);
 const { server } = createApp(config, token, log, trusted, { commit });
+// 更新の後始末（SPEC §12.1b、#10）。どの経路で更新しても起動は必ず通るので、ここに集める。
+// 待たない（ポートを開けるのを遅らせない）。Vision を使わない設定と、開発機で手で起動したサーバーは作らない
+if (config.managed && (config.sceneVision > 0 || config.sceneVisionPhoto > 0)) void ensureVisionHelper(log);
+
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
   console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${commit}` : ''}）`);
