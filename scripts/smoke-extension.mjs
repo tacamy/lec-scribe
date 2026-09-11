@@ -52,7 +52,7 @@ writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
 const serverOut = path.join(serverTmp, 'out');
 const localServer = spawn(
   process.execPath,
-  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json')],
+  ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json'), '--auto-update', 'off'],
   { stdio: 'ignore' },
 );
 await new Promise((r) => setTimeout(r, 1200));

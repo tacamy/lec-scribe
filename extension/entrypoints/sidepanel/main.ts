@@ -150,6 +150,7 @@ async function refreshConfig() {
   serverConfigured = serverEnabled(config);
 }
 
+
 /** 未接続画面で、Mac 側にサーバーがいるかを先に見せる（いなければ接続ボタンを押しても意味がないため） */
 let presenceChecked = false;
 async function checkServerPresence() {

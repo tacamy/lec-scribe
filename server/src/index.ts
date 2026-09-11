@@ -14,6 +14,7 @@ import { loadConfig } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
+import { selfUpdate } from './update.ts';
 
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
@@ -24,6 +25,16 @@ const { token, created } = await loadOrCreateToken(config.tokenFile);
 const missing: string[] = [];
 if (!(await resolveBin(config.ffmpegBin))) missing.push(`ffmpeg（${config.ffmpegBin}）`);
 if (!(await resolveBin(config.whisperkitBin))) missing.push(`whisperkit-cli（${config.whisperkitBin}）`);
+
+// 自動更新（§12.1b）。listen する前に済ませる。入れ替えたら終了し、launchd が新しいコードで起動し直す
+if (config.autoUpdate) {
+  const result = await selfUpdate({ appDir: config.appDir, branch: config.branch, gitBin: config.gitBin, log });
+  if (result.updated) {
+    log('自動更新: 入れ替えました。新しいコードで起動し直します');
+    process.exit(0);
+  }
+  log(`自動更新: ${result.reason}`);
+}
 
 const trusted = await loadTrusted(config.trustedFile);
 const { server } = createApp(config, token, log, trusted);

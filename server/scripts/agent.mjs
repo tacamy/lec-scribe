@@ -116,7 +116,9 @@ ${Object.entries(settingsEnv())
  * LEC_SCRIBE_LLM_MODEL=、API キーを外すときの OPENAI_API_KEY=）
  */
 function settingsEnv() {
-  const merged = {};
+  // launchd で常駐していることの印。サーバーはこれがあるときだけ自動更新する（SPEC §12.1b）。
+  // 手で起動したサーバーや smoke テストが開発者の作業ツリーを書き換えないようにするため
+  const merged = { LEC_SCRIBE_MANAGED: '1' };
   if (existsSync(plistPath)) {
     const xml = readFileSync(plistPath, 'utf8');
     if (xml.includes('<?xml')) {

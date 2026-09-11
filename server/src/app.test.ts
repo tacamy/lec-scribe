@@ -74,6 +74,10 @@ beforeAll(async () => {
     sceneVision: 0,
     sceneVisionPhoto: 0,
     sceneKeep: 'last',
+    autoUpdate: false,
+    appDir: tmp,
+    branch: 'main',
+    gitBin: 'git',
   };
   const { server } = createApp(config, TOKEN);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

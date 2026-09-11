@@ -6,7 +6,7 @@
 
 改訂履歴:
 
-- v0.7（2026-09-11）: 検知の精度（動き続ける画素のマスク §9.1b、変化の広がり §9.1、カット §9.1c、色の分布 §9.1d）。サーバー側で同じ場面の画像をまとめる（§13.4b。macOS の Vision による画像比較と文字認識）。画像を文の途中に挟まない（§13.4）。ノート作成の結果を残して使い回す（§13.5b）、1 回に送る本文を 12,000 字に（§13.5）。出力フォルダを `<タイトル>_<日時-ID>` に（§14）。一覧の「破棄」を「削除 / 中止 / 非表示」に分け、全件表示・ツールチップ・確認ダイアログを入れた（§11.3、§15.1）。
+- v0.7（2026-09-11）: サーバーの自動更新（§12.1b）。検知の精度（動き続ける画素のマスク §9.1b、変化の広がり §9.1、カット §9.1c、色の分布 §9.1d）。サーバー側で同じ場面の画像をまとめる（§13.4b。macOS の Vision による画像比較と文字認識）。画像を文の途中に挟まない（§13.4）。ノート作成の結果を残して使い回す（§13.5b）、1 回に送る本文を 12,000 字に（§13.5）。出力フォルダを `<タイトル>_<日時-ID>` に（§14）。一覧の「破棄」を「削除 / 中止 / 非表示」に分け、全件表示・ツールチップ・確認ダイアログを入れた（§11.3、§15.1）。
 - v0.6（2026-09-09）: キャプチャの瞬間に動画上へサムネイルのトーストを出す（§15.3）。文字が 1 行ずつ出るスライドを最終状態で上書きする（§9.2b）。`notes.md` / `lecture.md` から「（ノート）」と「（このスライドの間の発話はありません）」を削除（§13.4、§13.5）。Whisper の幻覚区間を除去（§13.2b）。承認フローと Host 検査（D-10、§12.3）、利用者向けの `install.sh`（§12.1）。
 - v0.5（2026-09-09）: 出力フォルダを `notes.md` + `slides/` だけに整理し、作業ファイルを `.lecscribe/` へ（§14）。`lecture.md` / `notes.md` の節見出しを廃止（§13.4）。文字起こし中・送信待ちのセッションを「破棄」で中止・削除できるように（§11.3、`POST /sessions/:id/cancel`）。文字起こし中も次の録音を始められ、Stop 後は送信待ちに並ぶ（§6.5）。パネルのボタン名を「フォルダを開く / やり直す / 文字起こしする / 破棄」に（§15.1。「Downloads に書き出す」は後に UI から削除）。
 - v0.4（2026-09-09）: Phase 7〜9 の実装で確定した事項を反映。`whisperkit-cli` 1.1.0 のフラグと report の形（§13.1）、モデル比較（`large-v3` を既定に維持）、スライド割り当ての 1.5 秒補正（§13.4）、LLM による `notes.md`（§13.5、`codex exec` / OpenAI API / Ollama）、launchd 常駐（README）。UI は「アイコンのポップアップで Start → サイドパネルで監視」（D-12）。
@@ -653,19 +653,19 @@ sessions/<sessionId>/
 
 利用者向けの導入は `install.sh`（`curl … | bash` の 1 行。Xcode Command Line Tools → Homebrew → node / git / ffmpeg / whisperkit-cli → `~/LecScribe-app/` に取得 → `agent.mjs install` → 画像の比較に使う Vision の補助コマンドをビルド（§13.4b。数十秒。失敗しても続行する））。ノート作成（§13.5）は既定で無効で、`enable-notes.sh [codex|ollama|none]` が Codex CLI の導入とログインを済ませて `LEC_SCRIBE_LLM` 付きで登録し直す。`agent.mjs install` は既に登録されている plist の `LEC_SCRIBE_*` / `OPENAI_API_KEY` を引き継ぐので、あとから `install.sh` を流し直してもこの設定は消えない。引き継ぎをやめたい変数は空文字で渡す（`LEC_SCRIBE_LLM_MODEL= … agent:install`。`enable-notes.sh` はバックエンドを切り替えるときに前のモデル名をこれで落とす）。`GET /health` が `llm` を返し、拡張の設定画面の「ノート作成」が今の状態と有効化のコマンドを表示する（2026-09-09）。拡張は Chrome ウェブストアで配る前提で、未接続画面がサーバーを見つけられないときにこの 1 行をコピーできる形で案内する（2026-09-09）。更新は `update.sh`（処理中なら待ってから、Vision の補助コマンドを作り直して `agent restart`。`imagefp.swift` が変わると作り直しになるので、次の文字起こしの途中でビルドが始まって待たせないようにする）。
 
-```text
-pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
-```
+### 12.1b 自動更新（2026-09-11）
 
-| 項目 | 既定 |
-|---|---|
-| bind | `127.0.0.1` のみ |
-| port | 47321 |
-| out | `~/LecScribe`（ユーザー確認済み、Q-08） |
-| model | `large-v3`（§13.2） |
-| token | `~/.lec-scribe/token`（初回起動時に生成して表示） |
+拡張は Chrome ウェブストアが更新するが、サーバーは `~/LecScribe-app/` の git 作業ツリーなので、放っておくと古いまま残る。新旧が組むと新しい機能が黙って効かなくなる（例: 新しい拡張の「削除」は `force: true` を送るが、古いサーバーはそれを知らず `notes.md` のあるフォルダを残す）。利用者に初回の導入以外でターミナルを触らせないため、サーバーが自分で更新する（`server/src/update.ts` の `selfUpdate`）。
 
-起動時に `ffmpeg` と `whisperkit-cli` の存在を確認し、なければ導入コマンドを表示して終了する。
+**`listen` する前に済ませる。** これが設計の要。まだ誰も繋がっていないので、処理中の待ち合わせも、「更新中です」を拡張に伝える仕組みも、入れ替えたあと古いコードで応答し続ける時間も要らない。入れ替えたら `process.exit(0)` し、launchd の `KeepAlive` が新しいコードで起動し直す。利用者から見ると起動が数秒遅いだけで、サーバーが動き出したときにはもう新しい。
+
+- 手順: `git rev-parse`（作業ツリーか、今のブランチ）→ `git status --porcelain`（手元に変更が無いか）→ `git fetch origin <branch>`（20 秒で打ち切り）→ `git rev-list --count HEAD..FETCH_HEAD` → 進んでいれば `git merge --ff-only FETCH_HEAD` → 終了。確認は毎回の起動時（ログイン、落ちたあと、`agent restart`）だけで、定期的には見に行かない。
+- **何が起きても投げない。** `run()` は子プロセスの失敗や打ち切りで reject するので、握らないとプロセスが落ち、launchd が起動し直して同じところで落ちる無限ループになる（ネットワークが悪いだけで永久に使えなくなる）。`selfUpdate` は全体を try/catch で囲み、「今回は見送る」と記録して普通に起動する。
+- **既定は launchd で常駐しているときだけ有効。** `agent.mjs install` が plist に `LEC_SCRIBE_MANAGED=1` を書き、サーバーはそれがあるときだけ既定で自動更新する。手で起動したサーバー（`pnpm start`）や `scripts/smoke-extension.mjs` は開発者の作業ツリーを勝手に書き換えない。`--auto-update on/off`（`LEC_SCRIBE_AUTO_UPDATE`）で明示できる。綴りは `1` / `true` / `on` / `yes` を有効として扱う（`0` だけを無効とみなす形だと、`false` と書いたときに黙って有効のままになる）。
+- 開発機を壊さないため、次のどれかなら何もしない: git の作業ツリーでない、ブランチが `--branch`（`LEC_SCRIBE_BRANCH`、既定 `main`。install.sh と同じ）でない、手元に変更がある。fast-forward できなければ記録して古いまま起動する。
+- ブランチと `FETCH_HEAD` の使い方、`git` の場所（`--git` / `LEC_SCRIBE_GIT`）は `install.sh` / `update.sh` と合わせてある。
+- `pnpm install` は走らせない（サーバーはランタイム依存なし）。Vision の補助コマンドはソースのハッシュで名前が変わるので、必要なら次の処理で作り直される（`update.sh` と違って先には作らない。数十秒待つことがある）。
+- `update.sh` は手で更新したいとき用に残す。こちらは `agent.mjs install` を呼んで plist と launcher も作り直す（`restart` では作り直されないので、`LEC_SCRIBE_MANAGED` のような新しい設定が入らない）。
 
 ### 12.2 API
 
@@ -677,7 +677,8 @@ pnpm --filter server start -- --port 47321 --out ~/LecScribe --model large-v3
 | PUT | `/sessions/:id/slides/:name` | PNG / JPEG |
 | PUT | `/sessions/:id/slides.json`, `/sessions/:id/timeline.json` | メタデータ |
 | POST | `/sessions/:id/finalize` | パイプライン開始（非同期、キューは同時 1 件） |
-| GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }` |
+| GET | `/sessions/:id/status` | `{ stage, percent?, outputDir?, error? }`。フォルダが無ければ 404 |
+| POST | `/sessions` | `{ sessionId, title?, startedAt?, ... }`。フォルダを作って 201 `{ outputDir }` |
 | POST | `/pair` | `{ name? }`。認証不要だが `Origin: chrome-extension://<id>` 必須。macOS のダイアログで承認されると `{ paired: true, token }`（承認済みなら同じトークンを返す）。拒否は 403、ダイアログ表示中は 429 |
 | POST | `/sessions/:id/cancel` | `{ delete?: boolean; force?: boolean }`。待機中なら取り下げ、実行中なら子プロセス（ffmpeg / whisperkit / codex）を止める。`delete` でフォルダごと削除（`notes.md` があるフォルダは残す）。`force` で `notes.md` があっても削除（一覧の「削除」。2026-09-11） |
 | POST | `/sessions/:id/open` | `{ target?: 'folder' \| 'lecture' }`。出力フォルダまたは `notes.md` を macOS の `open` で開く |
@@ -1102,6 +1103,10 @@ type Config = {
 | `--whisperkit` / `--ffmpeg` / `--open` / `--osascript` | `LEC_SCRIBE_WHISPERKIT` など | コマンド名 | 外部コマンドの場所 |
 | `--token-file` / `--trusted-file` | `LEC_SCRIBE_TOKEN_FILE` など | `~/.lec-scribe/` の下 | トークンと承認済み拡張（§12.3） |
 | `--keep-wav` | `LEC_SCRIBE_KEEP_WAV` | false | 変換した wav を残す |
+| `--auto-update` | `LEC_SCRIBE_AUTO_UPDATE` | launchd 常駐なら on | 起動時に自分を更新する（§12.1b）。`on` / `off` |
+| `--app-dir` | `LEC_SCRIBE_APP_DIR` | リポジトリの根 | 自動更新の対象の作業ツリー（install.sh の置き場所と同じ意味） |
+| `--branch` | `LEC_SCRIBE_BRANCH` | `main` | 自動更新で追いかけるブランチ（install.sh と同じ） |
+| `--git` | `LEC_SCRIBE_GIT` | `git` | git コマンドの場所 |
 | `--llm` | `LEC_SCRIBE_LLM` | `none` | ノート作成の呼び出し先（`codex` / `openai` / `ollama` / `none`。§13.5） |
 | `--llm-model` | `LEC_SCRIBE_LLM_MODEL` | 空 | モデル名（空なら呼び出し先ごとの既定） |
 | `--llm-chars` | `LEC_SCRIBE_LLM_CHARS` | 12000 | 1 回に送る本文の文字数（§13.5） |
