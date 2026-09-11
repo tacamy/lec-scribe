@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { outdatedMessage, REQUIRED_SERVER_API, serverOutdated } from './health';
+import { outdatedMessage, reportsVision, REQUIRED_SERVER_API, serverOutdated, VISION_IN_HEALTH_API } from './health';
 
 describe('サーバーの版の突き合わせ', () => {
   it('api を返さない古いサーバーは古いと判定する', () => {
@@ -16,5 +16,13 @@ describe('サーバーの版の突き合わせ', () => {
     expect(outdatedMessage(h)).toContain(`版 ${REQUIRED_SERVER_API - 1}`);
     expect(outdatedMessage(h)).toContain(`版 ${REQUIRED_SERVER_API} が必要`);
     expect(outdatedMessage(h)).toContain('update.sh');
+  });
+});
+
+describe('見た目の判定の状態（#17）', () => {
+  it('vision を返す版かどうかは api で判断する（項目の有無では見ない）', () => {
+    expect(reportsVision({ api: VISION_IN_HEALTH_API })).toBe(true);
+    expect(reportsVision({ api: VISION_IN_HEALTH_API - 1, vision: true })).toBe(false);
+    expect(reportsVision({})).toBe(false);
   });
 });

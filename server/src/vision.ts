@@ -44,10 +44,30 @@ export function ensureVisionHelper(log: (message: string) => void = () => undefi
   return helperPromise;
 }
 
+/** いまのソースに対応する補助コマンドの置き場（名前がソースのハッシュ）。ビルドはしない */
+export async function helperPath(): Promise<string> {
+  const source = await readFile(SOURCE, 'utf8');
+  return path.join(binDir(), `imagefp-${createHash('sha256').update(source).digest('hex').slice(0, 12)}`);
+}
+
+/**
+ * 補助コマンドが使える状態か。ディスクを見るだけで、ビルドは始めない（#17）。
+ * /health から呼ぶので、CLT が無い Mac で /usr/bin/swiftc の shim を叩いてダイアログを出すようなことはしない。
+ * 起動時のビルドが終わる前や、作れなかったあとは false。次の文字起こしで作り直せば true に変わる
+ */
+export async function visionHelperReady(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  try {
+    await access(await helperPath(), constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function build(log: (message: string) => void): Promise<string | null> {
   if (process.platform !== 'darwin') return null;
-  const source = await readFile(SOURCE, 'utf8');
-  const bin = path.join(binDir(), `imagefp-${createHash('sha256').update(source).digest('hex').slice(0, 12)}`);
+  const bin = await helperPath();
   try {
     await access(bin, constants.X_OK);
     return bin;

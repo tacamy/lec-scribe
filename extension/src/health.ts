@@ -12,6 +12,14 @@ import { authHeaders, type Config } from './config';
 /** この拡張が必要とするサーバーの約束の版。サーバー側の API_VERSION（server/src/app.ts）と同じ意味 */
 export const REQUIRED_SERVER_API = 1;
 
+/** `/health` が `vision` を返すようになった版。それより前のサーバーには聞いても分からない（#17） */
+export const VISION_IN_HEALTH_API = 2;
+
+/** このサーバーは見た目の判定の状態を教えてくれるか（版で判断する。項目の有無で古さを見分けない。§12.1c） */
+export function reportsVision(h: Health): boolean {
+  return (h.api ?? 0) >= VISION_IN_HEALTH_API;
+}
+
 /** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
 export const APP_DIR = '~/LecScribe-app';
 /** 手で更新するときの 1 行。設定画面と警告文で同じものを出す */
@@ -25,6 +33,8 @@ export type Health = {
   commit?: string | null;
   whisperkit?: boolean;
   ffmpeg?: boolean;
+  /** 見た目の判定の補助コマンドが使えるか。null は使わない設定。api 2 から（#17） */
+  vision?: boolean | null;
   authorized?: boolean;
   paired?: boolean;
   model?: string;

@@ -1,10 +1,11 @@
-import { chmod, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
+import { helperPath } from './vision.ts';
 import { recoverInterrupted } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
@@ -98,6 +99,36 @@ describe('local server', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ ok: true, ffmpeg: true, whisperkit: true, authorized: false, model: 'stub' });
+    // この fixture は Vision を使わない設定（sceneVision も sceneVisionPhoto も 0）なので null
+    expect((body as { vision?: unknown }).vision).toBeNull();
+  });
+
+  it('/health の vision は、補助コマンドが置き場にあるかをディスクで見て答える（ビルドはしない。#17）', async () => {
+    const originalHome = process.env['HOME'];
+    const home = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-home-'));
+    const { server: app } = createApp({ ...config, sceneVision: 0.2 }, TOKEN);
+    await new Promise<void>((resolve) => app.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(app.address() as AddressInfo).port}/health`;
+    try {
+      process.env['HOME'] = home;
+      const before = (await (await fetch(url, { headers: { origin: ORIGIN } })).json()) as { vision?: unknown };
+      // まだ無い（そして /health を呼んでも作られない）
+      expect(before.vision).toBe(false);
+      expect(await readdir(home)).toEqual([]);
+      if (process.platform === 'darwin') {
+        // 置き場に（中身は何でもいい）実行できるファイルを置けば true
+        const bin = await helperPath();
+        await mkdir(path.dirname(bin), { recursive: true });
+        await writeFile(bin, '#!/bin/sh\n', { mode: 0o755 });
+        const after = (await (await fetch(url, { headers: { origin: ORIGIN } })).json()) as { vision?: unknown };
+        expect(after.vision).toBe(true);
+      }
+    } finally {
+      if (originalHome === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = originalHome;
+      await new Promise<void>((resolve) => app.close(() => resolve()));
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('rejects a wrong token and a web origin', async () => {

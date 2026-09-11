@@ -243,6 +243,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | AD | サーバーを止めた状態で 2 本 Stop すると、Server 行に「送信待ち 2 件」と警告が出て行列が消えない。サーバーを起動すると、間隔を空けながら自動で送られて消える（すぐ試すなら一覧の「文字起こしする」） | `agent:uninstall` → 2 本録って Stop → `agent:install` | 元に戻すには `agent:install`。#8 |
 | AE | 古いサーバー（`api` を返さない 2026-09-11 より前の版）に繋ぐと、パネルの警告に「Mac 側のサーバーが古く…」が出て、設定画面の「接続を確認」にも同じ文が出る。`update.sh` で消える | 開発機で古いコミットを checkout して `pnpm start`、拡張を開く | #7。手元では main を古いコミットに戻して試す |
 | AF | `agent:install` のあと、`agent.mjs print-launcher` の出力どおりの起動用アプリができていて、サーバーが普通に起動する（`agent:status` で `/health` が返る）。`start.sh` にログを 1 行足して `agent:restart` すると、それが server.log に出る（起動コマンドを git 側で変えられる証拠）。`start.sh` を一時的に別名にして `agent:restart` しても、直接起動に落ちて起動する（クラッシュループにならない） | `agent:install` → `agent:status` → `start.sh` を編集 → `agent:restart` → `start.sh` を退避 → `agent:restart` | **終わったら `git checkout server/scripts/start.sh` と退避の戻し**。#10 |
+| AG | 設定画面の「接続を確認」に「見た目の判定（Vision）: あり」と出る。`~/.lec-scribe/bin` を退避して押し直すと「なし」と `xcode-select --install` の案内になる。戻して（または 1 本文字起こしして作り直させて）押し直すと「あり」に戻る | 「接続を確認」→ `mv ~/.lec-scribe/bin ~/.lec-scribe/bin.bak` → 押し直す → 戻す | 退避した `bin` を必ず戻す。#17 |
 
 ## 過去セッションの再処理
 
