@@ -248,7 +248,8 @@ function render(state: SessionState) {
   } else if (state.processing) {
     footer.textContent = 'サーバーで処理中です。このパネルを閉じても処理は続きます。';
   } else if (state.state === 'COMPLETED' && state.lastSession?.outputDir) {
-    footer.textContent = `文字起こしが終わりました: ${shortPath(state.lastSession.outputDir)}`;
+    // 状態表示の「Done」と同じことなので何も出さない（出力先は一覧の「フォルダを開く」で開ける）
+    footer.textContent = '';
   } else if (state.state === 'COMPLETED') {
     footer.textContent = '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。';
   } else if (state.exporting) {

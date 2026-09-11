@@ -70,6 +70,8 @@ button.primary { background: var(--accent); color: #fff; }
 button.danger { background: var(--danger); color: #fff; }
 button:disabled { opacity: 0.5; cursor: default; }
 .footer { color: var(--muted); font-size: 11px; }
+/* 何も出さないときは場所も取らない */
+.footer:empty { display: none; }
 .setup { display: grid; gap: 10px; }
 .setup p { margin: 0; font-size: 13px; line-height: 1.6; }
 .setup .note { color: var(--muted); font-size: 11px; }
