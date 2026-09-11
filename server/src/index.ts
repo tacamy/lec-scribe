@@ -8,13 +8,13 @@
  *   pnpm --filter @lec-scribe/server start -- --port 47321 --out ~/LecScribe --model large-v3
  */
 import { mkdir } from 'node:fs/promises';
-import { createApp, VERSION } from './app.ts';
+import { API_VERSION, createApp, VERSION } from './app.ts';
 import { recoverInterrupted } from './pipeline.ts';
 import { loadConfig } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
-import { selfUpdate } from './update.ts';
+import { currentCommit, selfUpdate } from './update.ts';
 
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
@@ -37,11 +37,12 @@ if (config.autoUpdate) {
   log(`自動更新: ${result.reason}`);
 }
 
-const trusted = await loadTrusted(config.trustedFile);
-const { server } = createApp(config, token, log, trusted);
+// どちらも listen の前に要るが、互いに関係ないので並べて待つ
+const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), currentCommit(config.appDir, config.gitBin)]);
+const { server } = createApp(config, token, log, trusted, { commit });
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
-  console.log(`LecScribe server v${VERSION}`);
+  console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${commit}` : ''}）`);
   console.log(`  listening : http://${config.host}:${config.port}`);
   console.log(`  output    : ${config.outDir}`);
   console.log(`  model     : ${config.model} (${config.language})`);

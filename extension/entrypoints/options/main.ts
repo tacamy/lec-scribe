@@ -1,5 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
-import { authHeaders, loadConfig, saveConfig, type Config } from '../../src/config';
+import { loadConfig, saveConfig, type Config } from '../../src/config';
+import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, type Health } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
@@ -11,10 +12,7 @@ const pairStatus = $('pairStatus');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
 const notesCmd = $('notesCmd');
-/** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
-const APP_DIR = '~/LecScribe-app';
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
-const UPDATE_COMMAND = `bash ${APP_DIR}/update.sh`;
 notesCmd.textContent = NOTES_COMMAND;
 bindCopyButton($<HTMLButtonElement>('copyNotesCmd'), NOTES_COMMAND);
 
@@ -43,14 +41,6 @@ function readForm(): Config {
   };
 }
 
-type Health = { version?: string; whisperkit?: boolean; ffmpeg?: boolean; authorized?: boolean; paired?: boolean; model?: string; outDir?: string; llm?: string };
-
-async function health(server: Config['server']): Promise<Health> {
-  // 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう打ち切る
-  const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers: authHeaders(server), signal: AbortSignal.timeout(3000) });
-  return (await res.json()) as Health;
-}
-
 const LLM_LABEL: Record<string, string> = { codex: 'Codex CLI', openai: 'OpenAI API', ollama: 'Ollama' };
 
 /** 遅れて届いた古い /health の結果で、新しい表示を上書きしないための世代番号 */
@@ -61,12 +51,16 @@ let notesGeneration = 0;
  * そもそも繋がらない場合は「分からない」扱いにして、有効化の案内は出さない
  * （古いサーバーには enable-notes.sh がまだ無く、実行しても失敗するため）
  */
-function renderNotes(llm: string | undefined, reachable = true) {
+/** ノート作成の状態。health が null なら繋がらなかったとき */
+function renderNotes(health: Health | null) {
+  const llm = health?.llm;
   const enabled = !!llm && llm !== 'none';
-  const unknown = !reachable || llm === undefined;
-  notesStatus.textContent = !reachable
+  // 「古いサーバーか」は api で判断する（§12.1c）。llm を返すかどうかで見分けるのはやめた（#7）
+  const outdated = !!health && serverOutdated(health);
+  const unknown = !health || outdated;
+  notesStatus.textContent = !health
     ? 'サーバーに接続できないため分かりません'
-    : llm === undefined
+    : outdated
       ? `サーバーが古いため分かりません。ターミナルで ${UPDATE_COMMAND} を実行して更新してください`
       : enabled
         ? `有効（${LLM_LABEL[llm] ?? llm}）`
@@ -77,12 +71,12 @@ function renderNotes(llm: string | undefined, reachable = true) {
 
 // 開いた時点のサーバーの状態を出す（接続テストを押さなくても分かるように）
 const initialCheck = ++notesGeneration;
-void health(config.server)
+void fetchHealth(config.server)
   .then((body) => {
-    if (initialCheck === notesGeneration) renderNotes(body.llm);
+    if (initialCheck === notesGeneration) renderNotes(body);
   })
   .catch(() => {
-    if (initialCheck === notesGeneration) renderNotes(undefined, false);
+    if (initialCheck === notesGeneration) renderNotes(null);
   });
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
@@ -112,13 +106,14 @@ $('test').addEventListener('click', async () => {
   const { server } = readForm();
   show('接続中…');
   try {
-    const body = await health(server);
-    const lines = [`サーバー v${body.version ?? '?'} に接続できました`];
+    const body = await fetchHealth(server);
+    const lines = [`サーバー v${body.version ?? '?'} に接続できました${body.commit ? `（${body.commit}）` : ''}`];
+    if (serverOutdated(body)) lines.push(outdatedMessage(body));
     lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);
     notesGeneration++; // 進行中の初回チェックの結果で上書きされないようにする
-    renderNotes(body.llm);
+    renderNotes(body);
     // サーバー側の承認状態を設定にも反映する（trusted.json を消したときなど）
     if (body.paired !== undefined && body.paired !== config.server.paired) {
       config = { ...config, server: { ...config.server, paired: body.paired } };

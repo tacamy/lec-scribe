@@ -1,5 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
+import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
@@ -157,8 +158,7 @@ async function checkServerPresence() {
   if (presenceChecked) return;
   presenceChecked = true;
   try {
-    const res = await fetch(`http://127.0.0.1:${serverTarget.port}/health`, { signal: AbortSignal.timeout(2000) });
-    const body = (await res.json()) as { version?: string; whisperkit?: boolean; ffmpeg?: boolean };
+    const body = await fetchHealth(serverTarget, { auth: false, timeoutMs: 2000 });
     const missing = [!body.whisperkit && 'whisperkit-cli', !body.ffmpeg && 'ffmpeg'].filter(Boolean);
     setupStatus.textContent =
       missing.length > 0
@@ -326,16 +326,49 @@ function videoPhase(video: VideoStatus): string {
   return video.playing ? '再生中' : '待機中';
 }
 
+/** サーバーが古いときの文（§12.1c）。状態機械の警告とは別に、このパネルが /health を見て決める */
+let serverOutdatedText: string | null = null;
+/** 直前に出した警告。サーバーの版が分かったときに、同じ内容のまま 1 行足して描き直すため */
+let lastWarningCodes: WarningCode[] = [];
+
 function renderWarnings(codes: WarningCode[]) {
+  lastWarningCodes = codes;
+  const texts = [...codes.map((code) => WARNING_TEXT[code]), ...(serverOutdatedText ? [serverOutdatedText] : [])];
   warningsList.replaceChildren(
-    ...codes.map((code) => {
+    ...texts.map((text) => {
       const li = document.createElement('li');
-      li.textContent = WARNING_TEXT[code];
+      li.textContent = text;
       return li;
     }),
   );
-  warningsList.hidden = codes.length === 0;
+  warningsList.hidden = texts.length === 0;
 }
+
+/**
+ * 接続済みならサーバーの版を見る。繋がらなければ何も出さない（別の警告が担う）。
+ * 開いたとき、設定が変わったとき、パネルに戻ったとき（端末で update.sh を実行して戻ってくる）に呼ぶ
+ */
+async function checkServerVersion() {
+  let next: string | null = null;
+  if (serverConfigured) {
+    try {
+      const body = await fetchHealth(serverTarget);
+      next = serverOutdated(body) ? outdatedMessage(body) : null;
+    } catch {
+      // 繋がらない・応答が読めない: 版は分からないので、前に出した文もそのままにする
+      return;
+    }
+  }
+  if (next === serverOutdatedText) return;
+  serverOutdatedText = next;
+  // 警告の欄だけ描き直す。render() を呼ぶと、Start 前の probe の結果（Video 行と NO_VIDEO の警告）が消える
+  renderWarnings(lastWarningCodes);
+}
+
+// 端末で update.sh を実行して戻ってきたときに、古いという警告が消えるように見直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void checkServerVersion();
+});
 
 /** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
 async function showProbe() {
@@ -665,11 +698,13 @@ snapBtn.addEventListener('click', async () => {
 $('optionsBtn').addEventListener('click', () => void chrome.runtime.openOptionsPage());
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes['config']) void refreshConfig().then(() => render(current));
+  if (area === 'local' && changes['config']) void refreshConfig().then(() => render(current)).then(checkServerVersion);
 });
 
 onStateChange(render);
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
   if (isPopup && !isActive(state)) void showProbe();
+  // 版の確認は描画を待たせない（3 秒かかることがある）
+  void checkServerVersion();
 });
