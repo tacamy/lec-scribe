@@ -647,7 +647,8 @@ try {
   const failedB = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
   assert.equal(failedB.ok, false, JSON.stringify(failedB));
   const kept = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
-  assert.deepEqual(kept.pendingUploads, [retryB, retryA], `queue was dropped: ${JSON.stringify(kept)}`);
+  // 失敗したものは最後尾に回る（1 本の失敗で後ろが待たされないように）。A → B の順で失敗したので [A, B]
+  assert.deepEqual(kept.pendingUploads, [retryA, retryB], `queue was dropped: ${JSON.stringify(kept)}`);
   assert.ok(kept.warnings.includes('SERVER_UNREACHABLE'), JSON.stringify(kept.warnings));
   // サーバーを起動し直し、手で 1 本送ると、残りも順に送られる
   localServer = spawn(process.execPath, localServerArgs, { stdio: 'ignore' });
@@ -656,6 +657,11 @@ try {
     if (ok) break;
     await new Promise((r) => setTimeout(r, 200));
   }
+  // 恒久的な失敗（存在しないセッション）では、その 1 本だけ落ちて他は行列に残る
+  const gone = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: '20990101-000009-smok' }));
+  assert.equal(gone.ok, false, JSON.stringify(gone));
+  const afterPermanent = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  assert.deepEqual(afterPermanent.pendingUploads, [retryA, retryB], `permanent failure evicted the queue: ${JSON.stringify(afterPermanent)}`);
   const resent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
   assert.equal(resent.ok, true, JSON.stringify(resent));
   assert.deepEqual(resent.state.pendingUploads, [retryA], JSON.stringify(resent.state));
