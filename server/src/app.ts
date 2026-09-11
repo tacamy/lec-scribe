@@ -97,6 +97,7 @@ export function createApp(
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
+      const tools = await Promise.all([resolveBin(config.ffmpegBin), resolveBin(config.whisperkitBin)]);
       sendJson(res, 200, {
         ok: true,
         version: VERSION,
@@ -104,8 +105,8 @@ export function createApp(
         model: config.model,
         language: config.language,
         outDir: config.outDir,
-        ffmpeg: (await resolveBin(config.ffmpegBin)) !== null,
-        whisperkit: (await resolveBin(config.whisperkitBin)) !== null,
+        ffmpeg: tools[0] !== null,
+        whisperkit: tools[1] !== null,
         // ノート作成の呼び出し先。拡張の設定画面が「未設定なら有効にする手順」を出すのに使う
         llm: config.llm,
         authorized: authorized(req),

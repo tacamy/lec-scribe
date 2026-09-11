@@ -55,7 +55,28 @@ export function run(
 }
 
 /** PATH（または絶対パス）でコマンドが見つかるか */
+/**
+ * 見つかった場所は覚えておく（プロセスが生きている間に変わらない）。/health はリクエストのたびに
+ * ffmpeg と whisperkit-cli を探していて、PATH の項目数ぶん access() が走っていた（#9）。
+ * 見つからなかった結果も覚えるが、あとから入れた（brew install した）ことに気づけるよう 1 分で忘れる
+ */
+const resolved = new Map<string, { value: string | null; at: number }>();
+const MISS_TTL_MS = 60_000;
+
 export async function resolveBin(bin: string): Promise<string | null> {
+  const hit = resolved.get(bin);
+  if (hit && (hit.value !== null || Date.now() - hit.at < MISS_TTL_MS)) return hit.value;
+  const value = await findBin(bin);
+  resolved.set(bin, { value, at: Date.now() });
+  return value;
+}
+
+/** テスト用。覚えた場所を忘れる */
+export function forgetResolvedBins(): void {
+  resolved.clear();
+}
+
+async function findBin(bin: string): Promise<string | null> {
   const candidates = bin.includes('/') ? [bin] : (process.env['PATH'] ?? '').split(path.delimiter).map((dir) => path.join(dir, bin));
   for (const candidate of candidates) {
     try {
