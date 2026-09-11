@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, type Health } from '../../src/health';
+import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, visionLine, type Health } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
@@ -111,6 +111,9 @@ $('test').addEventListener('click', async () => {
     if (serverOutdated(body)) lines.push(outdatedMessage(body));
     lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
+    // 見た目の判定（同じ場面の画像をまとめる）。無くても動くので「接続できた」の判定には混ぜない（#17）
+    const vision = visionLine(body);
+    if (vision) lines.push(vision);
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);
     notesGeneration++; // 進行中の初回チェックの結果で上書きされないようにする
     renderNotes(body);

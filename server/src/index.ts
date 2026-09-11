@@ -10,7 +10,7 @@
 import { mkdir } from 'node:fs/promises';
 import { API_VERSION, createApp, VERSION } from './app.ts';
 import { recoverInterrupted } from './pipeline.ts';
-import { loadConfig } from './config.ts';
+import { loadConfig, usesVision } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
@@ -43,7 +43,7 @@ const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), cu
 const { server } = createApp(config, token, log, trusted, { commit });
 // 更新の後始末（SPEC §12.1b、#10）。どの経路で更新しても起動は必ず通るので、ここに集める。
 // 待たない（ポートを開けるのを遅らせない）。Vision を使わない設定と、開発機で手で起動したサーバーは作らない
-if (config.managed && (config.sceneVision > 0 || config.sceneVisionPhoto > 0)) void ensureVisionHelper(log);
+if (config.managed && usesVision(config)) void ensureVisionHelper(log);
 
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {

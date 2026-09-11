@@ -1,11 +1,68 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { forgetResolvedBins, resolveBin, run } from './exec.ts';
-import { ensureVisionHelper, visionDistances } from './vision.ts';
+import { ensureVisionHelper, existingHelper, helperPath, visionDistances, visionStatus } from './vision.ts';
 
 describe('vision', () => {
+  /** HOME を一時的に差し替える。戻すときに undefined を代入しない（文字列 "undefined" が入る） */
+  const withHome = async (home: string, fn: () => Promise<void>) => {
+    const original = process.env['HOME'];
+    process.env['HOME'] = home;
+    try {
+      await fn();
+    } finally {
+      if (original === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = original;
+    }
+  };
+
+  it('/health 用の状態はディスクを見るだけで、ビルドを始めない（#17）', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-home-'));
+    try {
+      await withHome(home, async () => {
+        const uses = { sceneVision: 0.2, sceneVisionPhoto: 0 };
+        expect(await existingHelper()).toBeNull();
+        // 置き場は作られていない＝ビルドが走っていない（macOS 以外でもここまでは同じ）
+        expect(await readdir(home)).toEqual([]);
+        if (process.platform === 'darwin') {
+          expect(await visionStatus(uses)).toEqual({ state: 'idle' });
+          // 置き場に実行できるファイル（中身は空でなければ何でもいい）を置けば ready
+          const bin = await helperPath();
+          await mkdir(path.dirname(bin), { recursive: true });
+          await writeFile(bin, '#!/bin/sh\n', { mode: 0o755 });
+          expect(await existingHelper()).toBe(bin);
+          expect(await visionStatus(uses)).toEqual({ state: 'ready' });
+        } else {
+          expect(await visionStatus(uses)).toBeNull(); // macOS 以外では使わない
+        }
+        // 使わない設定なら状態を聞かない
+        expect(await visionStatus({ sceneVision: 0, sceneVisionPhoto: 0 })).toBeNull();
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('覚えたパスが消えていたら作り直す（置き場を退避しても、次の文字起こしで戻る。#17）', async () => {
+    if (process.platform !== 'darwin' || !(await resolveBin('swiftc'))) return; // CI などでは飛ばす
+    const home = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-home-'));
+    try {
+      await withHome(home, async () => {
+        const first = await ensureVisionHelper();
+        expect(first).toBeTruthy();
+        await rm(first!);
+        expect(await visionStatus({ sceneVision: 0.2, sceneVisionPhoto: 0 })).toEqual({ state: 'idle' });
+        const again = await ensureVisionHelper();
+        expect(again).toBe(first);
+        expect(await existingHelper()).toBe(first); // 実際に作り直されている
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('作れなかったときは覚えず、次に呼ばれたらやり直す（#10）', async () => {
     // 補助コマンドがまだ無い HOME と、swiftc が見つからない PATH にして 1 回目を失敗させる。
     // 覚えてしまうと、あとから Command Line Tools を入れても常駐サーバーは気づけない（何日も動くので）

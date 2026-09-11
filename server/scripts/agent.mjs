@@ -216,12 +216,39 @@ async function install() {
  */
 const WAIT_FOR_SERVER_MS = 45_000;
 
+/**
+ * 見た目の判定（Vision）の 1 行（/health の vision、#17）。使わない設定・古いサーバーなら null。
+ * install.sh が前もってビルドして結果をターミナルに出していたのを、起動時のビルドに移したときに失ったので、ここで出す
+ */
+function visionText(h) {
+  switch (h.vision) {
+    case 'ready':
+      return '見た目の判定（Vision）: あり';
+    case 'building':
+      return '見た目の判定（Vision）: 準備中（数秒）';
+    case 'idle':
+      return '見た目の判定（Vision）: まだ作っていません（次の文字起こしのときに作ります）';
+    case 'failed':
+      return `見た目の判定（Vision）: 作れませんでした（${h.visionReason ?? '理由不明'}）。Xcode Command Line Tools が無いか、ライセンスに未同意のことが多いです（xcode-select --install / sudo xcodebuild -license）。直したあと、次の文字起こしのときに作り直します`;
+    default:
+      return null;
+  }
+}
+
 async function waitAndReport() {
   for (let i = 0; i < WAIT_FOR_SERVER_MS / 500; i++) {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
       console.log(notesLine(h));
+      // 起動時に補助コマンドを作っている最中なら少し待ってから報告する（前もって作っていた頃と同じ見え方に）
+      let latest = h;
+      for (let j = 0; j < 20 && latest?.vision === 'building'; j++) {
+        await new Promise((r) => setTimeout(r, 500));
+        latest = (await health()) ?? latest;
+      }
+      const vision = visionText(latest);
+      if (vision) console.log(vision);
       console.log('Chrome の LecScribe アイコンを押して「このMacと接続」→ Mac のダイアログで「許可」してください。');
       if (existsSync(tokenPath)) console.log(`（トークンで繋ぐ場合: ${readFileSync(tokenPath, 'utf8').trim()}）`);
       return;
@@ -249,6 +276,8 @@ async function status() {
   const h = await health();
   console.log(h ? `サーバー: v${h.version} が http://127.0.0.1:${port} で応答（model: ${h.model}）` : `サーバー: http://127.0.0.1:${port} は応答なし`);
   if (h) console.log(notesLine(h));
+  const vision = h ? visionText(h) : null;
+  if (vision) console.log(vision);
   if (existsSync(logPath)) console.log(`ログ: ${logPath}`);
 }
 

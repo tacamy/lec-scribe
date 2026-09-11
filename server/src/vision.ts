@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access, chmod, constants, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveBin, run } from './exec.ts';
+import { type ServerConfig, usesVision } from './config.ts';
+import { isExecutable, resolveBin, run } from './exec.ts';
 
 /**
  * macOS の Vision で画像の「見た目の距離」を測り、写っている文字を読む（SPEC §13.4b）。
@@ -25,40 +26,109 @@ const BUILD_TIMEOUT_MS = 180_000;
 /** 途中で終わった（強制終了された）ビルドの置き土産を片付けるまでの時間 */
 const STALE_TMP_MS = 60 * 60 * 1000;
 
-let helperPromise: Promise<string | null> | null = null;
+/** ソースのハッシュ。起動中にソースは変わらない（更新は必ず再起動を伴う。§12.1b）ので 1 回読めば足りる */
+let sourceHash: Promise<string> | null = null;
 
-/** ビルド済みの補助コマンドのパス。ソースが変わっていれば作り直す。作れなければ null */
-export function ensureVisionHelper(log: (message: string) => void = () => undefined): Promise<string | null> {
-  // 覚えておくのは作れたときだけ。作れなかったことを覚えると、起動時にたまたま駄目だった（Xcode の更新中、
-  // Command Line Tools をまだ入れていない）だけで、常駐サーバーが動いている何日もの間ずっと見た目の判定を
-  // 諦めることになる。作れなければ忘れて、次に呼ばれたらやり直す（そのとき呼び出し側のログにも理由が出る）
-  helperPromise ??= build(log)
+/** いまのソースに対応する補助コマンドの置き場（名前がソースのハッシュ）。ビルドはしない */
+export async function helperPath(): Promise<string> {
+  sourceHash ??= readFile(SOURCE, 'utf8')
+    .then((source) => createHash('sha256').update(source).digest('hex').slice(0, 12))
     .catch((e: unknown) => {
-      log(`Vision の補助コマンドを用意できません（見た目の距離は使いません）: ${e instanceof Error ? e.message : String(e)}`);
+      sourceHash = null; // 読めなかったことは覚えない
+      throw e;
+    });
+  return path.join(binDir(), `imagefp-${await sourceHash}`);
+}
+
+/** 置き場にある、いまのソースの補助コマンド。無ければ null。ディスクを見るだけでビルドはしない */
+export async function existingHelper(): Promise<string | null> {
+  try {
+    const bin = await helperPath();
+    return (await isExecutable(bin)) ? bin : null;
+  } catch {
+    return null;
+  }
+}
+
+export type HelperStatus =
+  /** 置き場にあって使える */
+  | { state: 'ready' }
+  /** いま作っている（起動直後の数秒、または最初の文字起こしの途中） */
+  | { state: 'building' }
+  /** まだ作ろうとしていない、または置き場から消えた。次に使うときに作る */
+  | { state: 'idle' }
+  /** 作れなかった。理由は見せるためのもので、やり直しの判断には使わない（次に使うときまた試す） */
+  | { state: 'failed'; reason: string };
+
+let helperPromise: Promise<string | null> | null = null;
+let building = false;
+let lastFailure: string | null = null;
+
+/**
+ * 補助コマンドの状態（/health 用。#17）。ディスクを見るだけでビルドは始めない。
+ * CLT が無い Mac にも /usr/bin/swiftc の shim があり、/health のたびに叩くとダイアログが出るため。
+ * Vision を使わない設定と macOS 以外は null（そもそも使わない）
+ */
+export async function visionStatus(config: Pick<ServerConfig, 'sceneVision' | 'sceneVisionPhoto'>): Promise<HelperStatus | null> {
+  if (!usesVision(config) || process.platform !== 'darwin') return null;
+  if (building) return { state: 'building' };
+  if (await existingHelper()) return { state: 'ready' };
+  if (lastFailure !== null) return { state: 'failed', reason: lastFailure };
+  return { state: 'idle' };
+}
+
+/**
+ * ビルド済みの補助コマンドのパス。無ければ作る。作れなければ null。
+ * 覚えたパスはまだあるか確かめてから返す（置き場を退避・削除されたら作り直す。/health の見え方と食い違わないように）。
+ * 覚えておくのは作れたときだけ。作れなかったことを覚えると、起動時にたまたま駄目だった（Xcode の更新中、
+ * Command Line Tools をまだ入れていない）だけで、常駐サーバーが動いている何日もの間ずっと見た目の判定を
+ * 諦めることになる。作れなければ忘れて、次に呼ばれたらやり直す（そのとき呼び出し側のログにも理由が出る）
+ */
+export async function ensureVisionHelper(log: (message: string) => void = () => undefined): Promise<string | null> {
+  const cached = helperPromise;
+  if (cached) {
+    const bin = await cached;
+    if (bin && (await isExecutable(bin))) return bin;
+    // 消えていた。自分が最初に気づいたなら忘れる（同時に気づいた別の呼び出しが先に作り始めていればそれを待つ）
+    if (helperPromise === cached) helperPromise = null;
+  }
+  helperPromise ??= startBuild(log);
+  return helperPromise;
+}
+
+function startBuild(log: (message: string) => void): Promise<string | null> {
+  building = true;
+  return build(log)
+    .then((bin) => {
+      lastFailure = null;
+      return bin;
+    })
+    .catch((e: unknown) => {
+      lastFailure = describeBuildError(e);
+      log(`Vision の補助コマンドを用意できません（見た目の距離は使いません）: ${lastFailure}`);
       return null;
     })
     .then((bin) => {
+      building = false;
       if (!bin) helperPromise = null;
       return bin;
     });
-  return helperPromise;
+}
+
+/** 失敗の理由を 1 行に。打ち切りは spawn の AbortError で届く */
+function describeBuildError(e: unknown): string {
+  if (e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
+    return `${BUILD_TIMEOUT_MS / 60_000} 分たっても終わりませんでした（「開発者ツールをインストールしますか」のダイアログが出たままになっていないか確かめてください）`;
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 async function build(log: (message: string) => void): Promise<string | null> {
   if (process.platform !== 'darwin') return null;
-  const source = await readFile(SOURCE, 'utf8');
-  const bin = path.join(binDir(), `imagefp-${createHash('sha256').update(source).digest('hex').slice(0, 12)}`);
-  try {
-    await access(bin, constants.X_OK);
-    return bin;
-  } catch {
-    // まだない
-  }
+  const bin = await helperPath();
+  if (await isExecutable(bin)) return bin;
   const swiftc = (await resolveBin('swiftc')) ?? (await resolveBin('xcrun'));
-  if (!swiftc) {
-    log('swiftc が見つかりません（Xcode Command Line Tools を入れると、見た目が同じ画像の判定が使えます）');
-    return null;
-  }
+  if (!swiftc) throw new Error('swiftc が見つかりません（Xcode Command Line Tools を入れると、見た目が同じ画像の判定が使えます）');
   await mkdir(binDir(), { recursive: true, mode: 0o700 });
   await sweepStale();
   log('Vision の補助コマンドをビルドします（ソースが変わったときだけ、数秒）');

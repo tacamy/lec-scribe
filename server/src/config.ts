@@ -129,3 +129,11 @@ export function parseArgs(argv: string[]): Record<string, string> {
 function expandHome(p: string): string {
   return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
 }
+
+/**
+ * 見た目の判定（macOS の Vision、§13.4b）を使う設定か。両方 0 なら使わない。
+ * 起動時のビルド（index.ts）、文字起こし（pipeline.ts）、/health の報告（app.ts）が同じ規則で判断する
+ */
+export function usesVision(config: Pick<ServerConfig, 'sceneVision' | 'sceneVisionPhoto'>): boolean {
+  return config.sceneVision > 0 || config.sceneVisionPhoto > 0;
+}

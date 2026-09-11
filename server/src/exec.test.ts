@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { forgetResolvedBins, resolveBin } from './exec.ts';
+import { forgetResolvedBins, isExecutable, resolveBin } from './exec.ts';
 
 describe('resolveBin', () => {
   const originalPath = process.env['PATH'];
@@ -54,5 +54,25 @@ describe('resolveBin', () => {
   it('パスで指定されたものはそのまま見る', async () => {
     expect(await resolveBin('/bin/sh')).toBe('/bin/sh');
     expect(await resolveBin('/no/such/lec-scribe')).toBeNull();
+  });
+});
+
+describe('isExecutable', () => {
+  it('ディレクトリや空のファイルは「実行できる」と言わない（access(X_OK) だけだと通ってしまう）', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-exec-'));
+    try {
+      expect(await isExecutable(dir)).toBe(false);
+      const empty = path.join(dir, 'empty');
+      await writeFile(empty, '');
+      await chmod(empty, 0o755);
+      expect(await isExecutable(empty)).toBe(false);
+      const real = path.join(dir, 'real');
+      await writeFile(real, '#!/bin/sh\n');
+      await chmod(real, 0o755);
+      expect(await isExecutable(real)).toBe(true);
+      expect(await isExecutable(path.join(dir, 'missing'))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

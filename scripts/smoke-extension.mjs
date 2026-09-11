@@ -616,10 +616,35 @@ try {
   // 片方だけ上げ忘れると（新しい項目を送るのに API_VERSION を上げなかった等）ここで落ちる
   const requiredApi = Number(/REQUIRED_SERVER_API\s*=\s*(\d+)/.exec(readFileSync('extension/src/health.ts', 'utf8'))?.[1]);
   assert.ok(Number.isInteger(requiredApi), 'could not read REQUIRED_SERVER_API from extension/src/health.ts');
-  const serverApi = (await (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).json()).api;
+  const smokeHealth = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).json();
+  const serverApi = smokeHealth.api;
   assert.equal(typeof serverApi, 'number', `server did not report an api version: ${serverApi}`);
   assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
+  // api 2 の約束（#17）: vision は ready / building / idle / failed か null。抜けていたら約束違反。
+  // 版の確認を先にしておく（古いサーバーでは vision が無いのが正しく、そのときは版の不一致の方を知らせる）
+  const VISION_STATES = ['ready', 'building', 'idle', 'failed'];
+  assert.ok(smokeHealth.vision === null || VISION_STATES.includes(smokeHealth.vision), `health.vision is ${JSON.stringify(smokeHealth.vision)}`);
+
+  // #17: 設定画面の「接続テスト」に、/health の vision に対応する行が出る。
+  // 設定画面は module の先頭で設定を await してから listener を付けるので、port 欄が埋まるのを待ってから押す。
+  // この smoke サーバーは launchd 管理でないので起動時にビルドせず、状態は idle か ready で安定している（CI は null）
+  const optionsPage = await context.newPage();
+  optionsPage.on('pageerror', (e) => errors.push(String(e)));
+  await optionsPage.goto(`chrome-extension://${extensionId}/options.html`);
+  await optionsPage.waitForFunction((port) => document.querySelector('#port')?.value === String(port), SERVER_PORT, { timeout: 5_000 });
+  await optionsPage.click('#test');
+  const visionLine = await (
+    await optionsPage.waitForFunction(
+      () => (document.getElementById('result')?.textContent ?? '').split('\n').find((l) => l.startsWith('見た目の判定（Vision）: ')) ?? null,
+      null,
+      { timeout: 10_000 },
+    )
+  ).jsonValue();
+  const expectedVision = { ready: 'あり', building: '準備中', idle: 'まだ作っていません', failed: '作れませんでした' }[smokeHealth.vision] ?? '使わない';
+  assert.ok(String(visionLine).startsWith(`見た目の判定（Vision）: ${expectedVision}`), `options page said ${JSON.stringify(visionLine)} for health.vision=${JSON.stringify(smokeHealth.vision)}`);
+  console.log(`options: ${visionLine}`);
+  await optionsPage.close();
   // #8: サーバーに繋がらない送信失敗で、送信待ちの行列を捨てないこと。
   // サーバーを止めて 2 本送ると、どちらも失敗して行列に残る。起動し直して手で送ると順に処理される
   localServer.kill();
