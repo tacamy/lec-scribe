@@ -76,6 +76,31 @@ function serialized<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/**
+ * 送信に失敗した行列を時間を置いて送り直す（#8）。service worker は止まることがあるので setTimeout ではなく
+ * chrome.alarms を使う（下限が 30 秒）。成功すれば upload() が次を順に送り、また失敗すれば upload() が掛け直す
+ */
+const RETRY_ALARM = 'retry-upload';
+const RETRY_DELAY_MINUTES = 0.5;
+
+async function scheduleRetry(): Promise<void> {
+  await chrome.alarms.create(RETRY_ALARM, { delayInMinutes: RETRY_DELAY_MINUTES });
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== RETRY_ALARM) return;
+  void serialized(async () => {
+    const current = await readState();
+    const [head, ...rest] = current.pendingUploads ?? [];
+    if (!head || current.processing || current.exporting) return;
+    try {
+      await upload(head, rest);
+    } catch {
+      // 失敗は upload() が状態に書き、次のアラームも掛けている
+    }
+  });
+});
+
 async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<object> {
   switch (msg.type) {
     case 'START':
@@ -363,7 +388,8 @@ async function upload(sessionId: string, pending: string[] = []): Promise<Sessio
     await writeState(queued);
     return queued;
   }
-  const remaining = pending.filter((id) => id !== sessionId);
+  // 送信に失敗して残っている行列（#8）も引き継ぐ。前は処理中にしか行列が無かったので pending だけで足りていた
+  const remaining = [...new Set([...pending, ...(current.pendingUploads ?? [])])].filter((id) => id !== sessionId);
 
   const uploading: SessionState = {
     ...current,
@@ -385,16 +411,20 @@ async function upload(sessionId: string, pending: string[] = []): Promise<Sessio
     await writeState(processing);
     return processing;
   } catch (e) {
+    const info = toErrorInfo(e);
+    // 一時的な失敗（繋がらない、5xx）なら、失敗した分を先頭に戻して行列を残し、時間を置いて送り直す（#8）。
+    // 恒久的な失敗（承認されていない、送るものが無い）は送り直しても同じなので、行列ごと手動に回す
+    const retryable = info.retryable === true;
     const failed: SessionState = {
       ...uploading,
       state: isActive(current) ? current.state : 'COMPLETED',
-      error: toErrorInfo(e),
-      warnings: [...current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'],
+      error: info,
+      warnings: retryable ? [...current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'), 'SERVER_UNREACHABLE'] : current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE'),
       processing: undefined,
-      // サーバーに繋がらないなら、待っている分もまとめて手動送信に回す
-      pendingUploads: undefined,
+      pendingUploads: retryable ? [sessionId, ...remaining] : undefined,
     };
     await writeState(failed);
+    if (retryable) await scheduleRetry();
     await closeOffscreenIfIdle();
     throw e;
   }

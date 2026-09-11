@@ -160,7 +160,7 @@ export function hasTarget<T extends AnyMessage['target']>(
 
 function unwrap<T>(reply: Reply<T> | undefined, type: string): T {
   if (!reply) throw new LecError('INTERNAL', `Empty reply for ${type}`);
-  if (!reply.ok) throw new LecError(reply.error.code, reply.error.message);
+  if (!reply.ok) throw new LecError(reply.error.code, reply.error.message, reply.error.retryable === true);
   const { ok: _ok, ...rest } = reply;
   return rest as T;
 }

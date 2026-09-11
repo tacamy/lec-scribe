@@ -269,7 +269,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 3. service worker → offscreen: `CAPTURE_STOP`。`MediaRecorder.stop()` → 最終チャンクを書き込み → トラック停止 → `status.json` を `captured` に
 4. 状態 `UPLOADING`: offscreen が `GET /health` → `POST /sessions` → 音声・スライド・timeline を PUT → `POST /sessions/:id/finalize`
 5. 状態 `PROCESSING`: `GET /sessions/:id/status` を 2 秒ごとにポーリング → `done` で `COMPLETED`（出力ディレクトリを表示）
-6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「削除」を選べる
+6. 失敗時: `ERROR`。データは OPFS に残り、パネルの一覧から「文字起こしする」（再送）「削除」を選べる。**一時的な失敗**（繋がらない、5xx、429）なら失敗した分を先頭に戻して送信待ちの行列を残し、`chrome.alarms` で 30 秒後に送り直す（成功すれば残りも順に送る。2026-09-11、#8。それまでは 1 回の失敗で行列を全部捨てていた）。恒久的な失敗（承認されていない、送るものが無い）は送り直しても同じなので、行列ごと手動に回す。どちらかは `ErrorInfo.retryable` で運ぶ
 7. 処理中（`UPLOADING` / `PROCESSING`）に別のセッションを Stop したとき、または一覧で「文字起こしする / やり直す」を押したときは `pendingUploads` に積み、前の処理が終わり次第順に送る（何件でも並べられる）。処理中・送信待ちのセッションは「中止」で止める。初回の処理なら `POST /sessions/:id/cancel { delete: true }` で中止・削除し、やり直しの中止なら処理だけ止めて前回の結果と録音は残す（§11.3）。どちらも次の送信待ちを始める
 
 自動停止: 対象タブが閉じられた、またはキャプチャトラックが `ended` になった場合は Stop と同じ処理を自動で行う。ページ遷移（content script 消失）の場合は録音を継続しつつ「動画ページから移動しました」と警告し、スライド検知だけ停止する。

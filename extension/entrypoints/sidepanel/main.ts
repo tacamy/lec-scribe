@@ -135,7 +135,7 @@ const WARNING_TEXT: Record<WarningCode, string> = {
   CROSS_ORIGIN_IFRAME: '別ドメインの iframe 内の動画は現在未対応です。',
   DRM: 'DRM 保護された動画のため、スライド画像は取得できません。',
   TAINTED: 'この動画からはスライド画像を取得できません（cross-origin）。音声のみ録音します。',
-  SERVER_UNREACHABLE: 'ローカルサーバーに接続できません。',
+  SERVER_UNREACHABLE: 'ローカルサーバーに接続できません。送信待ちは、繋がり次第 30 秒ごとに送り直します。',
 };
 
 let current: SessionState = INITIAL_STATE;
