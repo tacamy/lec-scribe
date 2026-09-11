@@ -44,7 +44,8 @@ export function createApp(
     if (cached) return cached;
     try {
       const entries = await readdir(config.outDir, { withFileTypes: true });
-      const hit = entries.find((e) => e.isDirectory() && (e.name === sessionId || e.name.startsWith(`${sessionId}_`)));
+      // 現在は <タイトル>_<ID>。2026-09-11 より前に作った <ID>_<タイトル> も見つける
+      const hit = entries.find((e) => e.isDirectory() && (e.name === sessionId || e.name.endsWith(`_${sessionId}`) || e.name.startsWith(`${sessionId}_`)));
       if (!hit) return null;
       const dir = path.join(config.outDir, hit.name);
       dirCache.set(sessionId, dir);
@@ -171,7 +172,8 @@ export function createApp(
       let dir = await findSessionDir(meta.sessionId);
       if (!dir) {
         const slug = slugify(meta.title);
-        dir = path.join(config.outDir, slug ? `${meta.sessionId}_${slug}` : meta.sessionId);
+        // Finder で並べたときにタイトルで探せるよう、タイトルを先に、ID を後ろに付ける
+        dir = path.join(config.outDir, slug ? `${slug}_${meta.sessionId}` : meta.sessionId);
         dirCache.set(meta.sessionId, dir);
       }
       await ensureLayout(dir);
@@ -233,14 +235,15 @@ export function createApp(
       return;
     }
 
-    // POST /sessions/:id/cancel { delete?: boolean } — 処理を中止する。delete でフォルダごと消す
+    // POST /sessions/:id/cancel { delete?: boolean; force?: boolean } — 処理を中止する。delete でフォルダごと消す
     if (req.method === 'POST' && parts[2] === 'cancel' && parts.length === 3) {
-      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean };
+      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean; force?: boolean };
       const cancelled = await pipeline.cancel(dir);
       let deleted = false;
       if (body.delete === true) {
-        // 成果物（notes.md）が既にあるフォルダは消さない。「やり直す」待ちの破棄で完成済みのノートを失わないため
-        const hasNotes = await stat(path.join(dir, NOTES_FILE)).then(() => true).catch(() => false);
+        // 成果物（notes.md）が既にあるフォルダは消さない。「やり直す」中の中止で完成済みのノートを失わないため。
+        // 利用者が一覧の「削除」で明示したとき（force）だけ、notes.md があっても消す
+        const hasNotes = body.force === true ? false : await stat(path.join(dir, NOTES_FILE)).then(() => true).catch(() => false);
         if (hasNotes) {
           log(`cancel ${sessionId}: notes.md があるので削除しない`);
         } else {

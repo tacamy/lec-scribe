@@ -330,14 +330,19 @@ export class Pipeline {
         // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
         const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides };
         await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
-        // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする
-        await writeFile(
-          path.join(dir, NOTES_FILE),
-          buildLectureMarkdown({
-            ...lectureInput,
-            note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
-          }),
-        );
+        // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする。
+        // ただし前回の整えた notes.md が既にあるとき（やり直し）は触らない。途中で「中止」しても前回の結果が残るように
+        const notesFile = path.join(dir, NOTES_FILE);
+        const hasNotes = await stat(notesFile).then(() => true).catch(() => false);
+        if (!hasNotes || this.config.llm === 'none') {
+          await writeFile(
+            notesFile,
+            buildLectureMarkdown({
+              ...lectureInput,
+              note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
+            }),
+          );
+        }
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         return {
           summary: {

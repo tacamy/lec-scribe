@@ -114,7 +114,7 @@ describe('local server', () => {
     });
     expect(created.status).toBe(201);
     const { outputDir } = (await created.json()) as { outputDir: string };
-    expect(path.basename(outputDir)).toBe('20260908-103005-ab12_テスト_動画_1');
+    expect(path.basename(outputDir)).toBe('テスト_動画_1_20260908-103005-ab12');
 
     const put = (name: string, body: string | Uint8Array) =>
       fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
@@ -307,7 +307,7 @@ describe('local server', () => {
   it('keeps a finished session folder when a cancel asks to delete it', async () => {
     // 処理済み（notes.md あり）のセッションに対する cancel+delete は、フォルダを消さない
     const sessionId = '20260908-103005-ab12';
-    const dir = path.join(config.outDir, `${sessionId}_テスト_動画_1`);
+    const dir = path.join(config.outDir, `テスト_動画_1_${sessionId}`);
     expect(await readdir(dir)).toContain('notes.md');
     const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
       method: 'POST',
@@ -316,6 +316,20 @@ describe('local server', () => {
     });
     expect(await res.json()).toMatchObject({ ok: true, cancelled: false, deleted: false });
     expect(await readdir(dir)).toContain('notes.md');
+  });
+
+  it('deletes a finished session folder when the cancel says force（一覧の「削除」）', async () => {
+    const sessionId = '20260908-103005-ab12';
+    const dir = path.join(config.outDir, `テスト_動画_1_${sessionId}`);
+    const res = await fetch(`${base}/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: true, force: true }),
+    });
+    expect(await res.json()).toMatchObject({ ok: true, cancelled: false, deleted: true });
+    await expect(readdir(dir)).rejects.toThrow();
+    // 消したあとは status が 404（拡張はこれで「データなし」を出す）
+    expect((await fetch(`${base}/sessions/${sessionId}/status`, { headers })).status).toBe(404);
   });
 
   it('rejects requests whose Host is not loopback', async () => {

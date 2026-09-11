@@ -460,7 +460,7 @@ try {
   assert.equal(settled.state, 'COMPLETED', trace);
   assert.equal(settled.processing, undefined, trace);
   const outDirs = readdirSync(serverOut);
-  const outDir = outDirs.find((d) => d.startsWith(frameSession));
+  const outDir = outDirs.find((d) => d === frameSession || d.endsWith(`_${frameSession}`));
   assert.ok(outDir, `server output for ${frameSession}: ${outDirs}`);
   // ユーザー向けは notes.md と slides/ だけ。作業ファイルは .lecscribe/ に入る
   assert.deepEqual(readdirSync(path.join(serverOut, outDir)).sort(), ['.lecscribe', 'notes.md', 'slides']);

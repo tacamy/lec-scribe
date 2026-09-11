@@ -52,6 +52,8 @@ export type SessionStatus = {
   outputDir?: string;
   /** 文字起こしが終わった時刻 */
   transcribedAt?: string;
+  /** 一覧で隠している（録音のデータは残す） */
+  hidden?: boolean;
 };
 
 export type StoredSession = {
@@ -105,6 +107,13 @@ export async function listFiles(dir: FileSystemDirectoryHandle): Promise<File[]>
     if (handle.kind === 'file') files.push(await (handle as FileSystemFileHandle).getFile());
   }
   return files.sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
+/** 一覧で隠す・戻す（status.json の hidden）。録音のデータは残す */
+export async function setSessionHidden(sessionId: string, hidden: boolean): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
+  await writeJson(dir, STATUS_FILE, { ...status, hidden });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

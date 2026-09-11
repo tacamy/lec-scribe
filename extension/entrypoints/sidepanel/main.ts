@@ -3,7 +3,7 @@ import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
-import { listSessions, type StoredSession } from '../../src/opfs/session-store';
+import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
 import {
   INITIAL_STATE,
@@ -49,9 +49,56 @@ const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/tacamy/lec
 installCmd.textContent = INSTALL_COMMAND;
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
+const hiddenToggle = $<HTMLButtonElement>('hiddenToggle');
 const footer = $('footer');
 // 未接続のときに隠す通常 UI
 const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSection];
+
+/**
+ * 一覧の行のタイトルは幅の都合で省略されることがあるので、省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）と全文を出す。
+ * 1 つの要素を使い回して行の上に重ねる（ポップアップでは一覧の中がスクロールするので、行の中に置くと切れる）
+ */
+const sessionTip = document.createElement('div');
+sessionTip.className = 'sessionTip';
+sessionTip.setAttribute('role', 'tooltip');
+sessionTip.hidden = true;
+document.body.append(sessionTip);
+let tipShowTimer = 0;
+let tipHideTimer = 0;
+
+/** タイトル（anchor）のすぐ上にタイトル全文を出す。幅は行（row）まで。文字は選んでコピーできる */
+function showSessionTip(anchor: HTMLElement, row: HTMLElement, title: string) {
+  window.clearTimeout(tipHideTimer);
+  sessionTip.textContent = title;
+  sessionTip.hidden = false;
+  // 行の左端にそろえ、行の幅を最大幅にする。タイトルの上に出す（三角の分を含めて 6px。下に出すと同じ行のボタンを覆って押せなくなる）。上に収まらなければ下に
+  const a = anchor.getBoundingClientRect();
+  const r = row.getBoundingClientRect();
+  sessionTip.style.left = `${r.left}px`;
+  sessionTip.style.maxWidth = `${r.width}px`;
+  const height = sessionTip.offsetHeight;
+  const above = a.top - height - 6;
+  const fitsAbove = above >= 8;
+  sessionTip.classList.toggle('below', !fitsAbove);
+  sessionTip.style.top = `${fitsAbove ? above : Math.min(a.bottom + 6, window.innerHeight - height - 8)}px`;
+}
+
+/** 少し待ってから消す（ツールチップの上に移動してコピーを押せるように）。soon=false ですぐ消す */
+function hideSessionTip(soon = true) {
+  window.clearTimeout(tipShowTimer);
+  window.clearTimeout(tipHideTimer);
+  if (!soon) {
+    sessionTip.hidden = true;
+    return;
+  }
+  tipHideTimer = window.setTimeout(() => (sessionTip.hidden = true), 250);
+}
+sessionTip.addEventListener('mouseenter', () => window.clearTimeout(tipHideTimer));
+sessionTip.addEventListener('mouseleave', () => hideSessionTip());
+sessionList.addEventListener('scroll', () => hideSessionTip(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideSessionTip(false);
+});
 
 // 末尾の「…」は CSS のアニメーション（.dots）で 1 文字ずつ増やす
 const STATE_LABEL: Record<SessionState['state'], string> = {
@@ -353,84 +400,173 @@ function stopStatsLoop() {
   slidesValue.textContent = '—';
 }
 
+/** 「非表示」にした行も一覧に出すか（パネルを開いている間だけ覚える） */
+let showHidden = false;
+/**
+ * 削除・中止の確認ダイアログ（HTML の <dialog>）。
+ * ブラウザの confirm() はポップアップ・サイドパネルでは表示されずに閉じられることがあるので使わない
+ */
+const confirmDialog = $<HTMLDialogElement>('confirmDialog');
+const confirmText = $('confirmText');
+const confirmOk = $<HTMLButtonElement>('confirmOk');
+$<HTMLButtonElement>('confirmCancel').addEventListener('click', () => confirmDialog.close(''));
+
+/** 確認を出して、OK なら true。Esc やキャンセルで false */
+function askConfirm(text: string, okLabel: string): Promise<boolean> {
+  confirmText.textContent = text;
+  confirmOk.textContent = okLabel;
+  return new Promise((resolve) => {
+    const onClose = () => {
+      confirmDialog.removeEventListener('close', onClose);
+      resolve(confirmDialog.returnValue === 'ok');
+    };
+    confirmDialog.returnValue = '';
+    confirmDialog.addEventListener('close', onClose);
+    confirmDialog.showModal();
+  });
+}
+/** サーバーにフォルダがないセッション（Finder で消した、など）。行に「データなし」を出す */
+const outputMissing = new Map<string, boolean>();
+
 async function renderSessions() {
-  let sessions: StoredSession[] = [];
+  let all: StoredSession[] = [];
   try {
     const activeId = isActive(current) ? current.sessionId : undefined;
-    sessions = (await listSessions()).filter((s) => s.sessionId !== activeId);
+    all = (await listSessions()).filter((s) => s.sessionId !== activeId);
   } catch {
     // OPFS unavailable; nothing to list.
   }
-  sessionsSection.hidden = sessions.length === 0 || !setupSection.hidden;
+  const hiddenCount = all.filter((s) => s.status?.hidden).length;
+  const sessions = showHidden ? all : all.filter((s) => !s.status?.hidden);
+  sessionsSection.hidden = all.length === 0 || !setupSection.hidden;
+  hideSessionTip(false);
   sessionList.replaceChildren(...sessions.map(sessionItem));
+  hiddenToggle.hidden = hiddenCount === 0;
+  hiddenToggle.textContent = showHidden ? `非表示のセッションを隠す（${hiddenCount}）` : `非表示のセッションを表示（${hiddenCount}）`;
+  void checkOutputs(sessions);
+}
+
+hiddenToggle.addEventListener('click', () => {
+  showHidden = !showHidden;
+  void renderSessions();
+});
+
+/** 処理済みの行について、サーバーにフォルダが残っているかを一度だけ聞く。なければ描き直して「データなし」を出す */
+async function checkOutputs(sessions: readonly StoredSession[]) {
+  if (!serverTarget.token) return;
+  const targets = sessions.filter((s) => s.status?.stage === 'done' && !outputMissing.has(s.sessionId));
+  if (targets.length === 0) return;
+  await Promise.all(
+    targets.map(async (s) => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${serverTarget.port}/sessions/${s.sessionId}/status`, { headers: authHeaders(serverTarget), signal: AbortSignal.timeout(3000) });
+        if (res.status === 404 || res.ok) outputMissing.set(s.sessionId, res.status === 404);
+      } catch {
+        // サーバーが落ちていれば分からない（次に描くときにまた聞く）
+      }
+    }),
+  );
+  if (targets.some((s) => outputMissing.get(s.sessionId))) await renderSessions();
 }
 
 function sessionItem(session: StoredSession): HTMLLIElement {
   const li = document.createElement('li');
+  // 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数
+  const title = session.meta?.title?.trim() || formatSessionId(session.sessionId);
   const main = document.createElement('div');
   main.className = 'sessionMain';
-  const id = document.createElement('span');
-  id.textContent = formatSessionId(session.sessionId);
-  id.title = session.meta?.title ?? session.sessionId;
-  const meta = document.createElement('span');
+  const name = document.createElement('span');
+  name.className = 'sessionTitle';
+  name.textContent = title;
+  const parts = [formatSessionId(session.sessionId), formatBytes(session.audioBytes), `${session.slideCount} 枚`];
+  if (session.status?.durationMs !== undefined) parts.splice(1, 0, formatElapsed(session.status.durationMs));
+  const metaText = parts.join(' · ');
+  const meta = document.createElement('div');
   meta.className = 'sessionMeta';
-  const parts = [formatBytes(session.audioBytes), `${session.slideCount} 枚`];
-  if (session.status?.durationMs !== undefined) parts.unshift(formatElapsed(session.status.durationMs));
-  meta.textContent = parts.join(' · ');
-  main.append(id, meta);
+  meta.textContent = metaText;
+  // タイトルが省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）と全文を出す
+  const truncated = () => name.scrollWidth > name.clientWidth;
+  name.addEventListener('mouseenter', () => {
+    window.clearTimeout(tipShowTimer);
+    if (truncated()) tipShowTimer = window.setTimeout(() => showSessionTip(name, li, title), 250);
+  });
+  name.addEventListener('mouseleave', () => hideSessionTip());
+  li.addEventListener('focusin', () => {
+    if (truncated()) showSessionTip(name, li, title);
+  });
+  li.addEventListener('focusout', () => hideSessionTip());
+  main.append(name);
 
   const btns = document.createElement('div');
   btns.className = 'sessionBtns';
   const done = session.status?.stage === 'done';
-  const openFolderBtn = document.createElement('button');
-  openFolderBtn.type = 'button';
-  openFolderBtn.className = 'primary';
-  openFolderBtn.textContent = 'フォルダを開く';
-  openFolderBtn.title = session.status?.outputDir ?? '';
-  openFolderBtn.addEventListener('click', () => void openOutput(session.sessionId, 'folder', session.status?.outputDir));
-  const uploadBtn = document.createElement('button');
-  uploadBtn.type = 'button';
-  uploadBtn.className = done ? '' : 'primary';
-  uploadBtn.textContent = done ? 'やり直す' : '文字起こしする';
-  uploadBtn.title = done ? '同じフォルダに文字起こしをやり直す' : 'ローカルサーバーへ送って文字起こしする（~/LecScribe に出力）';
-  const discardBtn = document.createElement('button');
-  discardBtn.type = 'button';
-  discardBtn.textContent = '破棄';
+  const hidden = session.status?.hidden === true;
+  const missing = done && outputMissing.get(session.sessionId) === true;
   const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
-  // 処理中でも「文字起こしする / やり直す」は押せる（送信待ちに並ぶ）。処理中・送信待ちの本人だけ押せない
-  uploadBtn.disabled = !!current.exporting || inFlight;
-  // 破棄は処理中でも押せる（処理を中止して消す）。エクスポート中だけ待つ
-  discardBtn.disabled = !!current.exporting;
-  uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
-  discardBtn.addEventListener('click', () => {
-    const text = inFlight
-      ? `${formatSessionId(session.sessionId)} の文字起こしを中止して、録音とサーバー側のフォルダを削除します。よろしいですか？`
-      : `${formatSessionId(session.sessionId)} の録音を拡張内のストレージから削除します。\n` +
-        '文字起こしの出力（~/LecScribe）はそのまま残ります。よろしいですか？';
-    if (confirm(text)) void act(() => sendToBackground.discard(session.sessionId));
-  });
+  const button = (label: string, className = '') => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = className;
+    b.textContent = label;
+    return b;
+  };
+  const tag = (label: string, title = '') => {
+    const t = document.createElement('span');
+    t.className = 'tag';
+    t.textContent = label;
+    t.title = title;
+    return t;
+  };
   // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
-  if (done) btns.append(openFolderBtn, uploadBtn);
-  else btns.append(uploadBtn);
-  btns.append(discardBtn);
   if (inFlight) {
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち';
-    btns.append(tag);
-  } else if (session.status?.stage === 'capturing') {
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = '中断';
-    btns.append(tag);
-  } else if (session.status?.stage === 'error') {
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = 'エラー';
-    tag.title = session.status.error ?? '';
-    btns.append(tag);
+    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）
+    const stopBtn = button('中止');
+    stopBtn.disabled = !!current.exporting;
+    stopBtn.addEventListener('click', () => {
+      const text = done
+        ? `「${title}」のやり直しを中止します。前回の結果（~/LecScribe のフォルダ）と録音は残ります。`
+        : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
+      void askConfirm(text, '中止する').then((ok) => {
+        if (ok) void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
+      });
+    });
+    btns.append(stopBtn, tag(current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち'));
+  } else {
+    const uploadBtn = button(done ? 'やり直す' : '文字起こしする', done ? '' : 'primary');
+    uploadBtn.title = done ? '同じフォルダに文字起こしをやり直す' : 'ローカルサーバーへ送って文字起こしする（~/LecScribe に出力）';
+    uploadBtn.disabled = !!current.exporting || missing;
+    uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
+    const removeBtn = button('削除', 'remove');
+    removeBtn.disabled = !!current.exporting;
+    removeBtn.addEventListener('click', () => {
+      const text =
+        done && !missing
+          ? `「${title}」の文字起こしの結果（~/LecScribe のフォルダ）と録音を削除します。元に戻せません。`
+          : `「${title}」の録音を削除します。送信途中のデータがあればそれも消します。`;
+      void askConfirm(text, '削除する').then((ok) => {
+        if (ok) void act(() => sendToBackground.discard(session.sessionId, { output: 'delete' }));
+      });
+    });
+    if (done) {
+      const openFolderBtn = button('フォルダを開く', 'primary');
+      openFolderBtn.title = session.status?.outputDir ?? '';
+      openFolderBtn.disabled = missing;
+      openFolderBtn.addEventListener('click', () => void openOutput(session.sessionId, 'folder', session.status?.outputDir));
+      // 「非表示」は隠すだけ（データは残る）。一覧の下の「非表示のセッションを表示」で戻せる
+      const hideBtn = button(hidden ? '表示' : '非表示');
+      hideBtn.addEventListener('click', () => {
+        void setSessionHidden(session.sessionId, !hidden).then(() => renderSessions());
+      });
+      btns.append(openFolderBtn, uploadBtn, hideBtn, removeBtn);
+    } else {
+      btns.append(uploadBtn, removeBtn);
+    }
+    if (missing) btns.append(tag('データなし', '~/LecScribe にフォルダがありません（Finder で消した？）'));
+    if (hidden) btns.append(tag('非表示'));
+    if (session.status?.stage === 'capturing') btns.append(tag('中断'));
+    else if (session.status?.stage === 'error') btns.append(tag('エラー', session.status.error ?? ''));
   }
-  li.append(main, btns);
+  li.append(main, meta, btns);
   return li;
 }
 
@@ -438,6 +574,7 @@ async function act(run: () => Promise<{ state: SessionState }>) {
   message.hidden = true;
   try {
     sessionsKey = ''; // 操作後は一覧を必ず描き直す
+    outputMissing.clear(); // フォルダの有無も聞き直す
     render((await run()).state);
   } catch (e) {
     const info = toErrorInfo(e);

@@ -31,7 +31,7 @@ body {
 .panel [hidden] { display: none; }
 .panel { padding: 14px 16px 12px; display: grid; gap: 12px; max-width: 480px; min-width: 0; overflow-x: hidden; }
 .panel > * { min-width: 0; }
-body.popup { width: 320px; }
+body.popup { width: 360px; }
 .header { display: flex; align-items: baseline; justify-content: space-between; }
 h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .phase { font-size: 11px; color: var(--muted); }
@@ -84,11 +84,27 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* 一覧は全件出す。ポップアップは縦が限られるので、一覧の中でスクロールさせる（5 件目が途中で切れて続きがあると分かる高さ） */
 .popup .sessions ul { max-height: 300px; overflow-y: auto; padding-right: 2px; }
 .sessions li { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
-.sessionMain { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; min-width: 0; }
-.sessionMain > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sessionMeta { color: var(--muted); flex: none; }
+.sessionMain { display: flex; min-width: 0; }
+.sessionTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.sessionMeta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* タイトルが省略されている行で、タイトルに乗せると出る全文。文字は選んでコピーできる */
+/* body 直下に置くので .panel [hidden] が当たらない。display を指定した要素でも hidden 属性を効かせる */
+.sessionTip[hidden] { display: none; }
+/* 行のブロックと見分けがつくよう、OS のツールチップに近い濃い色（文字は反転）にして、行の中央を指す三角を付ける */
+.sessionTip { position: fixed; z-index: 20; width: fit-content; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 94%, transparent); color: var(--bg); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); font-size: 12px; line-height: 1.5; font-weight: 600; user-select: text; overflow-wrap: anywhere; }
+.sessionTip::after { content: ''; position: absolute; left: 50%; bottom: -4px; width: 9px; height: 9px; background: inherit; transform: translateX(-50%) rotate(45deg); border-radius: 1px; }
+.sessionTip.below::after { bottom: auto; top: -4px; }
 .sessionBtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sessionBtns button { padding: 4px 10px; font-size: 12px; font-weight: 500; background: transparent; border-color: var(--border); color: var(--fg); }
 .sessionBtns button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+.sessionBtns button.remove { color: var(--danger); }
+/* 削除・中止の確認ダイアログ（<dialog>）。ブラウザの confirm() は使わない */
+.confirm { border: 0; border-radius: 10px; padding: 16px; width: min(92vw, 320px); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); color: var(--fg); background: var(--bg); }
+.confirm::backdrop { background: rgba(0, 0, 0, 0.3); }
+.confirm p { margin: 0 0 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.confirmBtns { display: flex; justify-content: flex-end; gap: 8px; }
+.confirmBtns button { padding: 6px 12px; font-size: 13px; font-weight: 500; background: transparent; border-color: var(--border); color: var(--fg); }
+.confirmBtns button.danger { background: var(--danger); border-color: transparent; color: #fff; }
+.sessions .link { justify-self: start; margin-top: 6px; padding: 2px 0; background: none; border: 0; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; }
 .tag { display: inline-flex; align-items: center; font-size: 11px; line-height: 1; padding: 5px 7px; border-radius: 4px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .tag.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
