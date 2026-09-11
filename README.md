@@ -123,7 +123,7 @@ pnpm --filter @lec-scribe/server agent:restart    # コードを更新したあ�
 pnpm --filter @lec-scribe/server agent:uninstall  # 解除
 ```
 
-`agent:install` は登録時の `node` のパスと `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を書き込むので、Node を入れ替えたらやり直してください。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めます。
+`agent:install` は登録時の `PATH`（Homebrew の `whisperkit-cli` / `ffmpeg` を含む）を書き込みます。起動コマンド自体は `server/scripts/start.sh` にあり、更新で届きます。Node を入れ替えても、新しい `node` が `PATH` にあれば起動時に見つけます（見つからないときの予備として、登録時の `node` のパスも渡してあります）。ターミナルで起動したサーバーが残っているとポートが重なるので、先に止めます。
 
 ```text
 lec-scribe/

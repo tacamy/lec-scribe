@@ -6,6 +6,7 @@
 //   node server/scripts/agent.mjs status     登録状態と /health
 //   node server/scripts/agent.mjs restart    再起動（サーバーのコードを更新したあとに。処理中なら拒む。--force で強制）
 //   node server/scripts/agent.mjs print      plist の内容を表示するだけ
+//   node server/scripts/agent.mjs print-launcher  起動用アプリの中身を表示するだけ
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import os from 'node:os';
@@ -33,8 +34,35 @@ const command = process.argv[2] ?? 'status';
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 
 const escape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** /bin/sh に渡す 1 語。$ や空白を含むパス（LEC_SCRIBE_APP_DIR は利用者が決められる）でも壊れない */
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-/** ~/Applications/LecScribe Server.app を作る。中身は node でサーバーを exec するだけのスクリプト */
+/**
+ * launcher（アプリバンドルの実行ファイル）の中身。差し込むパスは必ず shq() で囲む。
+ * 中身だけ確かめられるよう関数にしてある（agent.mjs print-launcher）
+ */
+function launcherScript() {
+  return `#!/bin/sh
+# LecScribe Server: launchd から起動される。起動の中身はリポジトリの start.sh にあり、git の更新で変わる。
+# LEC_SCRIBE_NODE は予備の node（登録したときの実体）。PATH に使える node が無いときだけ使われる。
+# start.sh が無い版（2026-09-11 より前）に巻き戻っても起動できるよう、直接起動にも落とせるようにしておく。
+# これが無いと、start.sh を持たないコミットに戻した瞬間に launchd が 10 秒ごとの起動失敗を繰り返し、
+# サーバーが起動しない＝自動更新も走らないので、自力では二度と直らない
+LEC_SCRIBE_NODE=${shq(process.execPath)}
+export LEC_SCRIBE_NODE
+START=${shq(path.join(repoRoot, 'server', 'scripts', 'start.sh'))}
+[ -r "$START" ] && exec /bin/sh "$START" "$@"
+NODE="$(command -v node 2>/dev/null || true)"
+[ -x "$NODE" ] || NODE="$LEC_SCRIBE_NODE"
+exec "$NODE" --experimental-strip-types ${shq(path.join(repoRoot, 'server', 'src', 'index.ts'))} "$@"
+`;
+}
+
+/**
+ * ~/Applications/LecScribe Server.app を作る。中身はリポジトリの server/scripts/start.sh を exec するだけ。
+ * node の探し方や起動フラグのようにコードに依存するものは start.sh 側（git で届く）に置き、
+ * ここで作るものにはリポジトリの場所と予備の node しか書かない（#10）
+ */
 function writeAppBundle() {
   // 古い名前の実行ファイルが残らないように作り直す
   if (existsSync(appDir)) rmSync(appDir, { recursive: true });
@@ -58,18 +86,7 @@ function writeAppBundle() {
 </plist>
 `,
   );
-  writeFileSync(
-    appExecutable,
-    `#!/bin/sh
-# LecScribe Server: launchd から起動される。サーバー本体は Node で動く
-# node は PATH（plist に書いた登録時の PATH）から探す。登録時の実体パス（Homebrew の Cellar など）は
-# brew upgrade で消えることがあるので、見つからないときの予備にだけ使う
-NODE="$(command -v node 2>/dev/null || true)"
-[ -x "$NODE" ] || NODE="${process.execPath}"
-exec "$NODE" --experimental-strip-types "${path.join(repoRoot, 'server', 'src', 'index.ts')}"
-`,
-    { mode: 0o755 },
-  );
+  writeFileSync(appExecutable, launcherScript(), { mode: 0o755 });
   if (existsSync(LSREGISTER)) run(LSREGISTER, ['-f', appDir]);
 }
 
@@ -192,8 +209,15 @@ async function install() {
   await waitAndReport();
 }
 
+/**
+ * 起動を待つ時間。自動更新（SPEC §12.1b）が listen より前に走り、ネットワークが死んでいると
+ * git fetch の打ち切り 20 秒ぶん丸ごと待つ（実測 21 秒）。10 秒で諦めていたので、
+ * 更新そのものは成功しているのに install.sh / update.sh（set -e）が最後の行で失敗していた
+ */
+const WAIT_FOR_SERVER_MS = 45_000;
+
 async function waitAndReport() {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < WAIT_FOR_SERVER_MS / 500; i++) {
     const h = await health();
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
@@ -204,7 +228,7 @@ async function waitAndReport() {
     }
     await new Promise((r) => setTimeout(r, 500));
   }
-  console.error(`サーバーが応答しません。ログを確認してください: ${logPath}`);
+  console.error(`サーバーが ${WAIT_FOR_SERVER_MS / 1000} 秒たっても応答しません。ログを確認してください: ${logPath}`);
   process.exit(1);
 }
 
@@ -259,7 +283,10 @@ switch (command) {
   case 'print':
     process.stdout.write(plistXml());
     break;
+  case 'print-launcher':
+    process.stdout.write(launcherScript());
+    break;
   default:
-    console.error(`unknown command: ${command} (install | uninstall | status | restart | print)`);
+    console.error(`unknown command: ${command} (install | uninstall | status | restart | print | print-launcher)`);
     process.exit(1);
 }

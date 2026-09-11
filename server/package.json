@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types src/index.ts",
+    "start": "sh scripts/start.sh",
     "agent:install": "node scripts/agent.mjs install",
     "agent:uninstall": "node scripts/agent.mjs uninstall",
     "agent:status": "node scripts/agent.mjs status",
