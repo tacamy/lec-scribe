@@ -78,12 +78,15 @@ function lastLine(r: { stdout: string; stderr: string }): string {
   return lines[lines.length - 1] ?? '';
 }
 
+/** git の応答待ち。listen より前に呼ぶので、返らない git（Xcode CLT 未導入の stub 等）で止まらないようにする */
+const COMMIT_TIMEOUT_MS = 5_000;
+
 /** 動いているコードのコミット（短い SHA）。git が無い・リポジトリでない・失敗、のどれでも null（投げない） */
 export async function currentCommit(appDir: string, gitBin: string): Promise<string | null> {
   try {
     const git = await resolveBin(gitBin);
     if (!git) return null;
-    const r = await run(git, ['rev-parse', '--short', 'HEAD'], { cwd: appDir });
+    const r = await run(git, ['rev-parse', '--short', 'HEAD'], { cwd: appDir, signal: AbortSignal.timeout(COMMIT_TIMEOUT_MS) });
     const sha = r.stdout.trim();
     return r.code === 0 && /^[0-9a-f]{4,40}$/.test(sha) ? sha : null;
   } catch {

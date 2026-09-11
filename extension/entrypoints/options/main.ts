@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
+import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
@@ -12,10 +12,7 @@ const pairStatus = $('pairStatus');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
 const notesCmd = $('notesCmd');
-/** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
-const APP_DIR = '~/LecScribe-app';
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
-const UPDATE_COMMAND = `bash ${APP_DIR}/update.sh`;
 notesCmd.textContent = NOTES_COMMAND;
 bindCopyButton($<HTMLButtonElement>('copyNotesCmd'), NOTES_COMMAND);
 
@@ -44,9 +41,6 @@ function readForm(): Config {
   };
 }
 
-/** 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう 3 秒で打ち切る */
-const health = (server: Config['server']) => fetchHealth(server, { timeoutMs: 3000 });
-
 const LLM_LABEL: Record<string, string> = { codex: 'Codex CLI', openai: 'OpenAI API', ollama: 'Ollama' };
 
 /** 遅れて届いた古い /health の結果で、新しい表示を上書きしないための世代番号 */
@@ -73,7 +67,7 @@ function renderNotes(llm: string | undefined, reachable = true) {
 
 // 開いた時点のサーバーの状態を出す（接続テストを押さなくても分かるように）
 const initialCheck = ++notesGeneration;
-void health(config.server)
+void fetchHealth(config.server)
   .then((body) => {
     if (initialCheck === notesGeneration) renderNotes(body.llm);
   })
@@ -108,7 +102,7 @@ $('test').addEventListener('click', async () => {
   const { server } = readForm();
   show('接続中…');
   try {
-    const body = await health(server);
+    const body = await fetchHealth(server);
     const lines = [`サーバー v${body.version ?? '?'} に接続できました${body.commit ? `（${body.commit}）` : ''}`];
     if (serverOutdated(body)) lines.push(outdatedMessage(body));
     lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);

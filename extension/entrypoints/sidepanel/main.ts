@@ -328,8 +328,11 @@ function videoPhase(video: VideoStatus): string {
 
 /** サーバーが古いときの文（§12.1c）。状態機械の警告とは別に、このパネルが /health を見て決める */
 let serverOutdatedText: string | null = null;
+/** 直前に出した警告。サーバーの版が分かったときに、同じ内容のまま 1 行足して描き直すため */
+let lastWarningCodes: WarningCode[] = [];
 
 function renderWarnings(codes: WarningCode[]) {
+  lastWarningCodes = codes;
   const texts = [...codes.map((code) => WARNING_TEXT[code]), ...(serverOutdatedText ? [serverOutdatedText] : [])];
   warningsList.replaceChildren(
     ...texts.map((text) => {
@@ -341,20 +344,31 @@ function renderWarnings(codes: WarningCode[]) {
   warningsList.hidden = texts.length === 0;
 }
 
-/** 接続済みなら、開いたときに 1 回だけサーバーの版を見る。繋がらなければ何も出さない（別の警告が担う） */
+/**
+ * 接続済みならサーバーの版を見る。繋がらなければ何も出さない（別の警告が担う）。
+ * 開いたとき、設定が変わったとき、パネルに戻ったとき（端末で update.sh を実行して戻ってくる）に呼ぶ
+ */
 async function checkServerVersion() {
-  if (!serverConfigured) return;
-  try {
-    const body = await fetchHealth(serverTarget, { timeoutMs: 3000 });
-    const next = serverOutdated(body) ? outdatedMessage(body) : null;
-    if (next !== serverOutdatedText) {
-      serverOutdatedText = next;
-      render(current);
+  let next: string | null = null;
+  if (serverConfigured) {
+    try {
+      const body = await fetchHealth(serverTarget);
+      next = serverOutdated(body) ? outdatedMessage(body) : null;
+    } catch {
+      // 繋がらない・応答が読めない: 版は分からないので、前に出した文もそのままにする
+      return;
     }
-  } catch {
-    // 繋がらない・応答が読めない: 版は分からないので何も言わない
   }
+  if (next === serverOutdatedText) return;
+  serverOutdatedText = next;
+  // 警告の欄だけ描き直す。render() を呼ぶと、Start 前の probe の結果（Video 行と NO_VIDEO の警告）が消える
+  renderWarnings(lastWarningCodes);
 }
+
+// 端末で update.sh を実行して戻ってきたときに、古いという警告が消えるように見直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void checkServerVersion();
+});
 
 /** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
 async function showProbe() {
@@ -688,8 +702,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 onStateChange(render);
-void refreshConfig().then(checkServerVersion);
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
   if (isPopup && !isActive(state)) void showProbe();
+  // 版の確認は描画を待たせない（3 秒かかることがある）
+  void checkServerVersion();
 });

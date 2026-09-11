@@ -36,8 +36,8 @@ if (config.autoUpdate) {
   log(`自動更新: ${result.reason}`);
 }
 
-const trusted = await loadTrusted(config.trustedFile);
-const commit = await currentCommit(config.appDir, config.gitBin);
+// どちらも listen の前に要るが、互いに関係ないので並べて待つ
+const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), currentCommit(config.appDir, config.gitBin)]);
 const { server } = createApp(config, token, log, trusted, { commit });
 await recoverInterrupted(config.outDir, log);
 server.listen(config.port, config.host, () => {
