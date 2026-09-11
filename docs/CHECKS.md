@@ -240,6 +240,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | AA | `install.sh` / `update.sh` のあと、最初の文字起こしで補助コマンドのビルド待ちが起きない | 更新してから 1 本処理する | `imagefp.swift` を変えたとき |
 | AB | サーバーの自動更新: main が進んだ状態で `agent:restart` すると、ログに「新しい版があります」→「入れ替えました」と出て、新しいコードで起動し直す（`git log` が進んでいる）。更新が無いときは「最新です」、ブランチ作業中は「ブランチが main ではありません」 | main を進めてから `pnpm --filter @lec-scribe/server agent:restart`、`~/Library/Logs/lec-scribe/server.log` を見る | `agent:install` を 1 度通して plist に `LEC_SCRIBE_MANAGED` を入れてから |
 | AC | ネットワークを切って `agent:restart` しても、サーバーがクラッシュループにならず普通に起動する（ログに「自動更新: …見送る」旨が出て `/health` が返る） | Wi-Fi を切って `agent:restart` → `curl 127.0.0.1:47321/health` | 20 秒ほどで起動する |
+| AD | サーバーを止めた状態で 2 本 Stop すると、Server 行に「送信待ち 2 件」と警告が出て行列が消えない。サーバーを起動すると、間隔を空けながら自動で送られて消える（すぐ試すなら一覧の「文字起こしする」） | `agent:uninstall` → 2 本録って Stop → `agent:install` | 元に戻すには `agent:install`。#8 |
 
 ## 過去セッションの再処理
 

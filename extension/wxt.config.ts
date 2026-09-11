@@ -19,6 +19,7 @@ export default defineConfig({
       'storage', // config (local) and live state (session)
       'downloads', // export of recorded sessions (fallback path, SPEC D-07)
       'sidePanel', // the UI lives in the side panel so it stays open while the page is used
+      'alarms', // 送信に失敗した行列を時間を置いて送り直す（#8）
       'scripting', // probe と検知用 content script を Start したタブにだけ注入する
     ],
     // ローカルサーバー（Phase 7）向け。fixture ページ（127.0.0.1:8787）への
