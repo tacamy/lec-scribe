@@ -667,11 +667,21 @@ sessions/<sessionId>/
 - `pnpm install` は走らせない（サーバーはランタイム依存なし）。Vision の補助コマンドはソースのハッシュで名前が変わるので、必要なら次の処理で作り直される（`update.sh` と違って先には作らない。数十秒待つことがある）。
 - `update.sh` は手で更新したいとき用に残す。こちらは `agent.mjs install` を呼んで plist と launcher も作り直す（`restart` では作り直されないので、`LEC_SCRIBE_MANAGED` のような新しい設定が入らない）。
 
+### 12.1c 拡張とサーバーの版の突き合わせ（2026-09-11、#7）
+
+拡張はウェブストアが、サーバーは自分自身（§12.1b）が更新するので、片方だけ新しい状態が起こりうる。新しい拡張が古いサーバーに新しい項目（例: cancel の `force`）を送っても、古いサーバーは知らずに黙って無視するので、利用者は「削除したのにフォルダが残る」のような形でしか気づけなかった。
+
+- サーバーは **約束の版** `API_VERSION`（`server/src/app.ts`、整数）を `/health` の `api` で返す。上げるのは HTTP の約束が変わったときだけ（拡張が送る・受け取る項目が増える、意味が変わる）。内部の改善やノートの作り方の変更では上げない。`1` = 2026-09-11（cancel の `force`、status の 404、title 先頭のフォルダ名まで）
+- 拡張は必要な最低の版 `REQUIRED_SERVER_API`（`extension/src/health.ts`）を持ち、パネルを開いたとき（接続済みなら）と設定画面の「接続を確認」で `/health` を読んで比べる。`api` を返さないサーバー（この仕組みより前の版）は 0 とみなす。古ければ警告の欄に「Mac 側のサーバーが古く（版 N。この拡張には版 M が必要）、一部の機能が動きません。次にログインしたとき自動で更新されます。すぐに直すには … update.sh」と出す。送信は止めない（録音した分の文字起こしはできるため）
+- manifest.json / package.json の版を比べる案は採らなかった。拡張の版はウェブストアの審査ごとに、サーバーはコミットごとに動くので、そろえて上げる運用になり「どこまで一致すれば互換か」も決めねばならない。聞きたいのは「話が通じるか」なので、それに直接答える数を置く
+- `/health` の `commit` は問い合わせのとき「どのコミットが動いているか」を知るためのもので、互換の判断には使わない
+- `/health` の取得は `extension/src/health.ts` の `fetchHealth` にまとめた（パネルの未接続画面・版の確認、設定画面の 3 か所で同じ URL と打ち切りを別々に書いていた）
+
 ### 12.2 API
 
 | メソッド | パス | 内容 |
 |---|---|---|
-| GET | `/health` | `{ ok, version, ffmpeg, whisperkit, model }` |
+| GET | `/health` | `{ ok, version, api, commit, ffmpeg, whisperkit, model, llm, authorized, paired, processing }`。`api` は拡張との約束の版（§12.1c）、`commit` は動いているコードの短い SHA（診断用。分からなければ null）。 `{ ok, version, ffmpeg, whisperkit, model }` |
 | POST | `/sessions` | `session.json` 相当を受け取りディレクトリを作成 |
 | PUT | `/sessions/:id/audio` | `audio.webm`（`application/octet-stream`、ストリーム書き込み） |
 | PUT | `/sessions/:id/slides/:name` | PNG / JPEG |

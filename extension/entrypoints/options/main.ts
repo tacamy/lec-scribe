@@ -1,5 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
-import { authHeaders, loadConfig, saveConfig, type Config } from '../../src/config';
+import { loadConfig, saveConfig, type Config } from '../../src/config';
+import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
@@ -43,13 +44,8 @@ function readForm(): Config {
   };
 }
 
-type Health = { version?: string; whisperkit?: boolean; ffmpeg?: boolean; authorized?: boolean; paired?: boolean; model?: string; outDir?: string; llm?: string };
-
-async function health(server: Config['server']): Promise<Health> {
-  // 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう打ち切る
-  const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers: authHeaders(server), signal: AbortSignal.timeout(3000) });
-  return (await res.json()) as Health;
-}
+/** 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう 3 秒で打ち切る */
+const health = (server: Config['server']) => fetchHealth(server, { timeoutMs: 3000 });
 
 const LLM_LABEL: Record<string, string> = { codex: 'Codex CLI', openai: 'OpenAI API', ollama: 'Ollama' };
 
@@ -113,7 +109,8 @@ $('test').addEventListener('click', async () => {
   show('接続中…');
   try {
     const body = await health(server);
-    const lines = [`サーバー v${body.version ?? '?'} に接続できました`];
+    const lines = [`サーバー v${body.version ?? '?'} に接続できました${body.commit ? `（${body.commit}）` : ''}`];
+    if (serverOutdated(body)) lines.push(outdatedMessage(body));
     lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);

@@ -12,6 +12,14 @@ import { isAuthorized } from './token.ts';
 import { askPermission, extensionIdFromOrigin, sanitizeName, saveTrusted, trustedByToken, type Trusted } from './pairing.ts';
 
 export const VERSION = '0.1.0';
+/**
+ * 拡張とサーバーの約束（HTTP の形）の版（§12.1c、#7）。拡張は必要な最低の版を持っていて、
+ * /health で受け取って比べ、古ければ「Mac 側のサーバーが古い」と出す。
+ * 上げるのは約束が変わったときだけ（新しいフィールドを拡張が送る・受け取る、意味が変わる）。
+ * 内部の改善やノートの作り方の変更では上げない。
+ *   1: 2026-09-11。cancel の force、status の 404、title 先頭のフォルダ名、までを含む
+ */
+export const API_VERSION = 1;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
@@ -28,6 +36,8 @@ export function createApp(
   token: string,
   log: (message: string) => void = () => undefined,
   trusted: Trusted = { entries: new Map(), file: config.trustedFile },
+  /** 動いているコードのコミット（診断用。/health に載せる）。分からなければ null */
+  build: { commit: string | null } = { commit: null },
 ): App {
   const pipeline = new Pipeline(config, log);
   /** 承認ダイアログは同時に 1 つだけ */
@@ -100,6 +110,9 @@ export function createApp(
       sendJson(res, 200, {
         ok: true,
         version: VERSION,
+        // 拡張が「話が通じるか」を判断する版と、問い合わせのときに使うコミット（§12.1c）
+        api: API_VERSION,
+        commit: build.commit,
         phase: 7,
         model: config.model,
         language: config.language,

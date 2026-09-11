@@ -77,3 +77,16 @@ function lastLine(r: { stdout: string; stderr: string }): string {
   const lines = (r.stderr || r.stdout).trim().split('\n');
   return lines[lines.length - 1] ?? '';
 }
+
+/** 動いているコードのコミット（短い SHA）。git が無い・リポジトリでない・失敗、のどれでも null（投げない） */
+export async function currentCommit(appDir: string, gitBin: string): Promise<string | null> {
+  try {
+    const git = await resolveBin(gitBin);
+    if (!git) return null;
+    const r = await run(git, ['rev-parse', '--short', 'HEAD'], { cwd: appDir });
+    const sha = r.stdout.trim();
+    return r.code === 0 && /^[0-9a-f]{4,40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}

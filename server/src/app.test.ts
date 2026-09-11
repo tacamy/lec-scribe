@@ -308,6 +308,14 @@ describe('local server', () => {
     expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
   });
 
+  it('/health が拡張との約束の版（api）とコミットを返す', async () => {
+    const body = (await (await fetch(`${base}/health`, { headers })).json()) as { api?: unknown; commit?: unknown };
+    expect(typeof body.api).toBe('number');
+    expect(body.api as number).toBeGreaterThanOrEqual(1);
+    // テストでは createApp に commit を渡していないので null
+    expect(body.commit).toBeNull();
+  });
+
   it('keeps a finished session folder when a cancel asks to delete it', async () => {
     // 処理済み（notes.md あり）のセッションに対する cancel+delete は、フォルダを消さない
     const sessionId = '20260908-103005-ab12';
