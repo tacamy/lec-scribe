@@ -244,6 +244,7 @@ smoke テストでは通っているが、Mac 実機ではまだ確認・記録�
 | AE | 古いサーバー（`api` を返さない 2026-09-11 より前の版）に繋ぐと、パネルの警告に「Mac 側のサーバーが古く…」が出て、設定画面の「接続テスト」にも同じ文が出る。`update.sh` で消える | 開発機で古いコミットを checkout して `pnpm start`、拡張を開く | #7。手元では main を古いコミットに戻して試す |
 | AF | `agent:install` のあと、`agent.mjs print-launcher` の出力どおりの起動用アプリができていて、サーバーが普通に起動する（`agent:status` で `/health` が返る）。`start.sh` にログを 1 行足して `agent:restart` すると、それが server.log に出る（起動コマンドを git 側で変えられる証拠）。`start.sh` を一時的に別名にして `agent:restart` しても、直接起動に落ちて起動する（クラッシュループにならない） | `agent:install` → `agent:status` → `start.sh` を編集 → `agent:restart` → `start.sh` を退避 → `agent:restart` | **終わったら `git checkout server/scripts/start.sh` と退避の戻し**。#10 |
 | AG | 設定画面の「接続テスト」と `agent:status` に「見た目の判定（Vision）: あり」と出る。`mv ~/.lec-scribe/bin ~/.lec-scribe/bin.bak` してもう一度押すと「まだ作っていません。次の文字起こしのときに作ります」になり、`xcode-select` は勧めない。そのまま 1 本文字起こしすると作り直され、「あり」に戻る（server.log に「ビルドします」「作りました」）。`agent:restart` の直後に押すと「準備中」が出ることがある | 「接続テスト」→ `mv` → 押し直す → 1 本処理 → 押し直す | 終わったら `bin.bak` を消す。#17 |
+| AI | 前の講義を文字起こししている間に、次の講義のタブでポップアップを開くと、Video 行に「video.js 1280×720 · 再生中」のような Start 前の確認が出て、処理の段階が進んでも（Server 行が変わっても）消えない。動画の無いページなら「動画が見つかりません」の警告が残る | 1 本目を Stop → 2 本目のタブで動画を再生 → ポップアップを開いて数十秒待つ | 2026-09-17 の修正まではここで消えていた |
 
 ## 過去セッションの再処理
 
