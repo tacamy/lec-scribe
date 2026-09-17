@@ -241,6 +241,10 @@ function render(state: SessionState) {
   serverValue.textContent = describeServer(state);
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
+  // ポップアップで Start 前に調べた動画は、状態が変わって描き直しても消さない。
+  // 前の講義を文字起こししている間に次の講義のポップアップを開くと、処理の段階が進むたびにここを通る
+  if (active) lastProbe = null;
+  else if (isPopup && lastProbe) applyProbe(lastProbe);
 
   if (state.state === 'CAPTURING') {
     footer.textContent = state.processing
@@ -379,23 +383,32 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
+/** ポップアップで Start 前に調べた動画。render() のたびに描き直すために覚えておき、Start したら捨てる */
+let lastProbe: ProbeSummary | null = null;
+const PROBE_WARNINGS: WarningCode[] = ['NO_VIDEO', 'CROSS_ORIGIN_IFRAME'];
+
 async function showProbe() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) return;
     const { probe } = await sendToBackground.probe(tab.id);
     if (isActive(current)) return;
-    // Start 前の確認用に、動画が見つかったときだけ Video 行を出す（見つからなければ警告で伝える）
-    videoValue.textContent = describeProbe(probe);
-    videoRow.hidden = !probe.chosen;
-    if (!probe.chosen) {
-      const codes: WarningCode[] = ['NO_VIDEO'];
-      if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
-      renderWarnings(codes);
-    }
+    lastProbe = probe;
+    applyProbe(probe);
   } catch {
     // 内部ページなど、調べられないタブでは何も出さない
   }
+}
+
+/** Start 前の確認用に、動画が見つかったときだけ Video 行を出す（見つからなければ警告で伝える） */
+function applyProbe(probe: ProbeSummary) {
+  videoValue.textContent = describeProbe(probe);
+  videoRow.hidden = !probe.chosen;
+  if (probe.chosen) return;
+  const codes: WarningCode[] = ['NO_VIDEO'];
+  if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
+  // 状態から出している警告（接続できない等）は残し、動画の警告だけ入れ替える
+  renderWarnings([...lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)), ...codes]);
 }
 
 function describeProbe(probe: ProbeSummary): string {
