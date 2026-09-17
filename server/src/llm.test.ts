@@ -145,3 +145,58 @@ describe('polish の分割リトライ', () => {
     expect(errors).toEqual([]);
   });
 });
+
+describe('1 回の呼び出しの打ち切り（2026-09-17）', () => {
+  /** 合図が abort されるまで返らない偽の呼び出し先。スリープで途切れた要求を待ち続ける codex の代わり */
+  const hangUntilAborted = (signal?: AbortSignal) =>
+    new Promise<string>((_, reject) => {
+      const fail = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (signal?.aborted) fail();
+      else signal?.addEventListener('abort', fail, { once: true });
+    });
+  const answer = (prompt: string) => {
+    const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]);
+    return JSON.stringify({ sections: ids.map((id) => ({ id, text: `${id} の本文` })) });
+  };
+
+  it('返ってこない呼び出しは打ち切られ、分けてやり直して完成する', async () => {
+    const calls: string[] = [];
+    const backend = {
+      name: 'fake',
+      async complete(prompt: string, _schema: unknown, signal?: AbortSignal) {
+        calls.push(prompt);
+        // 最初の 1 回（2 節まとめて）だけ返ってこない。分けたあとの呼び出しは普通に返る
+        if (calls.length === 1) return hangUntilAborted(signal);
+        return answer(prompt);
+      },
+    };
+    const logs: string[] = [];
+    const two = sections.slice(0, 2);
+    const { results, errors } = await polish(two, backend, { ...settings, charsPerCall: 1000, callTimeoutMs: 30 }, (m) => logs.push(m));
+    expect(calls).toHaveLength(3); // 2 節まとめて → 打ち切り → 1 節ずつ
+    expect([...results.keys()]).toEqual(['intro', 'slide_001']);
+    expect(errors).toEqual([]);
+    expect(logs.some((l) => l.includes('秒たっても返ってこない'))).toBe(true);
+  });
+
+  it('利用者の中止は打ち切りとは別の理由で記録し、残りは呼ばない', async () => {
+    const controller = new AbortController();
+    const backend = {
+      name: 'fake',
+      async complete(_prompt: string, _schema: unknown, signal?: AbortSignal) {
+        controller.abort(); // 呼ばれている最中に中止された
+        return hangUntilAborted(signal);
+      },
+    };
+    const { results, errors } = await polish(sections.slice(0, 2), backend, { ...settings, charsPerCall: 1000, callTimeoutMs: 10_000, signal: controller.signal });
+    expect(results.size).toBe(0);
+    expect(errors).toEqual(['batch 1/1: cancelled']);
+  });
+
+  it('要点の呼び出しも同じ打ち切りが効く', async () => {
+    const backend = { name: 'fake', async complete(_p: string, _s: unknown, signal?: AbortSignal) { return hangUntilAborted(signal); } };
+    const r = await outline([{ id: 'intro', text: '本文' }], backend, { ...settings, callTimeoutMs: 30 });
+    expect(r.outline).toBeUndefined();
+    expect(r.error).toContain('秒たっても返ってこない');
+  });
+});

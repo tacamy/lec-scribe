@@ -29,7 +29,32 @@ export type LlmSettings = {
   charsPerCall: number;
   /** 中止用。abort されると実行中の呼び出しを止め、残りのバッチは呼ばない */
   signal?: AbortSignal;
+  /** 1 回の呼び出しの打ち切り（ms）。省略時は LLM_CALL_TIMEOUT_MS。テストで短くする */
+  callTimeoutMs?: number;
 };
+
+/**
+ * 1 回の呼び出しの打ち切り。普段は 1〜4 分で返る（72 節・10,658 字で 4 分）。
+ * Mac がスリープすると途中の要求が途切れ、codex は諦めずに待ち続けるので、打ち切らないとそのセッションは
+ * 永久に「ノート作成中」のままになる（2026-09-17、10 章で 2 時間）。スリープ中はタイマーも止まるが、
+ * 復帰した瞬間に期限切れとして処理されるので、復帰と同時に打ち切って「分けてやり直す」に入る
+ */
+export const LLM_CALL_TIMEOUT_MS = 10 * 60_000;
+
+/** 中止の合図と打ち切りを 1 つの合図にする */
+function callSignal(settings: LlmSettings): AbortSignal {
+  const timeout = AbortSignal.timeout(settings.callTimeoutMs ?? LLM_CALL_TIMEOUT_MS);
+  return settings.signal ? AbortSignal.any([settings.signal, timeout]) : timeout;
+}
+
+/** 失敗の理由を 1 行に。中止と打ち切りは区別して書く */
+function describeFailure(e: unknown, settings: LlmSettings): string {
+  if (settings.signal?.aborted) return 'cancelled';
+  if (e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
+    return `${Math.round((settings.callTimeoutMs ?? LLM_CALL_TIMEOUT_MS) / 1000)} 秒たっても返ってこない（スリープで途切れた可能性）`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 export type PolishInput = { id: string; heading: string; text: string };
 export type PolishOutput = { id: string; text: string };
@@ -183,8 +208,8 @@ export function batchSections(sections: readonly PolishInput[], charsPerCall: nu
 
 export interface LlmBackend {
   readonly name: string;
-  /** prompt を送り、schema に従う JSON の文字列を返す */
-  complete(prompt: string, schema: JsonSchema): Promise<string>;
+  /** prompt を送り、schema に従う JSON の文字列を返す。signal が abort されたら止める（中止・打ち切り） */
+  complete(prompt: string, schema: JsonSchema, signal?: AbortSignal): Promise<string>;
 }
 
 export function createBackend(settings: LlmSettings): LlmBackend | null {
@@ -204,7 +229,7 @@ export function createBackend(settings: LlmSettings): LlmBackend | null {
 function codexBackend(settings: LlmSettings): LlmBackend {
   return {
     name: `codex${settings.model ? ` (${settings.model})` : ''}`,
-    async complete(prompt, schema) {
+    async complete(prompt, schema, signal = settings.signal) {
       const tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-codex-'));
       try {
         const schemaFile = path.join(tmp, 'schema.json');
@@ -227,7 +252,7 @@ function codexBackend(settings: LlmSettings): LlmBackend {
         ];
         if (settings.model) args.push('--model', settings.model);
         args.push(prompt);
-        const r = await run(settings.codexBin, args, { signal: settings.signal });
+        const r = await run(settings.codexBin, args, { signal });
         if (r.code !== 0) {
           throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
         }
@@ -243,11 +268,11 @@ function openaiBackend(settings: LlmSettings): LlmBackend {
   const model = settings.model || 'gpt-5-mini';
   return {
     name: `openai (${model})`,
-    async complete(prompt, schema) {
+    async complete(prompt, schema, signal = settings.signal) {
       if (!settings.openaiApiKey) throw new Error('OPENAI_API_KEY が設定されていません');
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        signal: settings.signal,
+        signal,
         headers: { authorization: `Bearer ${settings.openaiApiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           model,
@@ -266,10 +291,10 @@ function ollamaBackend(settings: LlmSettings): LlmBackend {
   const model = settings.model || 'qwen2.5:32b';
   return {
     name: `ollama (${model})`,
-    async complete(prompt, schema) {
+    async complete(prompt, schema, signal = settings.signal) {
       const res = await fetch(`${settings.ollamaUrl.replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
-        signal: settings.signal,
+        signal,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], format: schema, stream: false }),
       });
@@ -304,7 +329,7 @@ export async function polish(
     // この呼び出しで答えが返った節だけを数える（前の試行の結果を成功と数えないため）
     const answered = new Set<string>();
     try {
-      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA);
+      const raw = await backend.complete(buildPrompt(batch), POLISH_SCHEMA, callSignal(settings));
       for (const out of parseResponse(raw, ids)) {
         results.set(out.id, out);
         answered.add(out.id);
@@ -312,7 +337,7 @@ export async function polish(
       const missing = ids.filter((id) => !answered.has(id));
       if (missing.length > 0) failure = `no result for ${missing.join(', ')}`;
     } catch (e) {
-      failure = e instanceof Error ? e.message : String(e);
+      failure = describeFailure(e, settings);
     }
     if (!failure) return;
     if (canSplit && batch.length > 1 && !settings.signal?.aborted) {
@@ -349,11 +374,11 @@ export async function outline(
   const ids = sections.map((s) => s.id);
   log(`${backend.name}: outline (${ids.length} sections, ${sections.reduce((n, s) => n + s.text.length, 0)} chars)`);
   try {
-    const raw = await backend.complete(buildOutlinePrompt(sections), OUTLINE_SCHEMA);
+    const raw = await backend.complete(buildOutlinePrompt(sections), OUTLINE_SCHEMA, callSignal(settings));
     const result = parseOutline(raw, ids);
     if (result.overview.length === 0 && result.topics.length === 0) return { error: 'outline: empty' };
     return { outline: result };
   } catch (e) {
-    return { error: `outline: ${e instanceof Error ? e.message : String(e)}` };
+    return { error: `outline: ${describeFailure(e, settings)}` };
   }
 }
