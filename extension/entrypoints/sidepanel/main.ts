@@ -2,7 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
@@ -237,7 +237,7 @@ function render(state: SessionState) {
         : '—';
   }
 
-  videoValue.textContent = active ? describeVideo(state) : '—';
+  renderVideoRow(state);
   serverValue.textContent = describeServer(state);
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
@@ -311,10 +311,18 @@ function shortPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+\//, '~/');
 }
 
+/** Video 行。render() と統計の拍子（startStatsLoop）の両方から同じ規則で描く */
+function renderVideoRow(state: SessionState) {
+  videoValue.textContent = isActive(state) ? describeVideo(state) : '—';
+}
+
 function describeVideo(state: SessionState): string {
+  // 開始処理中は追跡する動画がまだ決まっていない（frameSource が無い）。「動画なし」と言い切らない
+  if (state.state === 'STARTING') return '—';
   const video = state.video;
   if (state.frameSource !== 'direct' || !video) return '動画なし（音声のみ）';
-  const parts = [formatVideo(video), `${video.playbackRate}x`, videoPhase(video), formatElapsed(video.currentTime * 1000)];
+  // 報告は 5 秒ごとなので、そのまま出すと 5 秒に 1 回しか進まない。再生中は報告からの経過を足して見せる
+  const parts = [formatVideo(video), `${video.playbackRate}x`, videoPhase(video), formatElapsed(videoTimeNow(video) * 1000)];
   if (video.detect) parts.push(`変化 ${(video.detect.diffPrev * 100).toFixed(1)}%`);
   return parts.join(' · ');
 }
@@ -433,6 +441,8 @@ function applyStats(stats: CaptureStats) {
 function startStatsLoop() {
   if (statsTimer !== undefined) return;
   const tick = async () => {
+    // Video 行の再生位置も同じ拍子で進める（値は検知スクリプトの報告から補う。描き直すだけで問い合わせはしない）
+    renderVideoRow(current);
     try {
       applyStats(await sendToOffscreen.getStats());
     } catch {

@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest';
 import { forgetResolvedBins, resolveBin, run } from './exec.ts';
 import { ensureVisionHelper, existingHelper, helperPath, visionDistances, visionStatus } from './vision.ts';
 
+/**
+ * swiftc でビルドすることがあるテストの待ち時間（距離のテストは ffmpeg と Vision も動かす）。
+ * 単体では 1〜4 秒だが、suite 全体を並列に走らせると CPU を取り合って既定の 5 秒を超えることがある
+ */
+const BUILD_TEST_TIMEOUT_MS = 120_000;
+
 describe('vision', () => {
   /** HOME を一時的に差し替える。戻すときに undefined を代入しない（文字列 "undefined" が入る） */
   const withHome = async (home: string, fn: () => Promise<void>) => {
@@ -45,13 +51,17 @@ describe('vision', () => {
     }
   });
 
-  it('覚えたパスが消えていたら作り直す（置き場を退避しても、次の文字起こしで戻る。#17）', async () => {
+  it('覚えたパスが消えていたら作り直す（置き場を退避しても、次の文字起こしで戻る。#17）', { timeout: BUILD_TEST_TIMEOUT_MS }, async () => {
     if (process.platform !== 'darwin' || !(await resolveBin('swiftc'))) return; // CI などでは飛ばす
     const home = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-home-'));
     try {
       await withHome(home, async () => {
+        // 1 回目は置き場に実行できるファイルを置いて済ませる。確かめたいのは消えたあとの作り直しなので、ビルドは 1 回で足りる
+        const bin = await helperPath();
+        await mkdir(path.dirname(bin), { recursive: true });
+        await writeFile(bin, '#!/bin/sh\n', { mode: 0o755 });
         const first = await ensureVisionHelper();
-        expect(first).toBeTruthy();
+        expect(first).toBe(bin);
         await rm(first!);
         expect(await visionStatus({ sceneVision: 0.2, sceneVisionPhoto: 0 })).toEqual({ state: 'idle' });
         const again = await ensureVisionHelper();
@@ -63,7 +73,7 @@ describe('vision', () => {
     }
   });
 
-  it('作れなかったときは覚えず、次に呼ばれたらやり直す（#10）', async () => {
+  it('作れなかったときは覚えず、次に呼ばれたらやり直す（#10）', { timeout: BUILD_TEST_TIMEOUT_MS }, async () => {
     // 補助コマンドがまだ無い HOME と、swiftc が見つからない PATH にして 1 回目を失敗させる。
     // 覚えてしまうと、あとから Command Line Tools を入れても常駐サーバーは気づけない（何日も動くので）
     const originalPath = process.env['PATH'];
@@ -94,7 +104,7 @@ describe('vision', () => {
     }
   });
 
-  it('macOS で swiftc があれば補助コマンドを作り、似た画像は近く・違う画像は遠い', async () => {
+  it('macOS で swiftc があれば補助コマンドを作り、似た画像は近く・違う画像は遠い', { timeout: BUILD_TEST_TIMEOUT_MS }, async () => {
     if (process.platform !== 'darwin' || !(await resolveBin('swiftc')) || !(await resolveBin('ffmpeg'))) return; // CI などでは飛ばす
     const bin = await ensureVisionHelper();
     expect(bin).toBeTruthy();
@@ -117,5 +127,5 @@ describe('vision', () => {
     // 文字のない画像は空文字（読めなかった場合だけ undefined）
     expect(['string', 'undefined']).toContain(typeof measure!.text(0));
     expect(measure!.text(0) ?? '').toBe('');
-  }, 120_000);
+  });
 });
