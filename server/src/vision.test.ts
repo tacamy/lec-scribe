@@ -97,7 +97,7 @@ describe('vision', () => {
     }
   });
 
-  it('macOS で swiftc があれば補助コマンドを作り、似た画像は近く・違う画像は遠い', { timeout: BUILD_TEST_TIMEOUT_MS }, async () => {
+  it('macOS で swiftc があれば補助コマンドを作り、似た画像は近く・違う画像は遠い', async () => {
     if (process.platform !== 'darwin' || !(await resolveBin('swiftc')) || !(await resolveBin('ffmpeg'))) return; // CI などでは飛ばす
     const bin = await ensureVisionHelper();
     expect(bin).toBeTruthy();
