@@ -2,7 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
@@ -310,7 +310,8 @@ function shortPath(p: string): string {
 function describeVideo(state: SessionState): string {
   const video = state.video;
   if (state.frameSource !== 'direct' || !video) return '動画なし（音声のみ）';
-  const parts = [formatVideo(video), `${video.playbackRate}x`, videoPhase(video), formatElapsed(video.currentTime * 1000)];
+  // 報告は 5 秒ごとなので、そのまま出すと 5 秒に 1 回しか進まない。再生中は報告からの経過を足して見せる
+  const parts = [formatVideo(video), `${video.playbackRate}x`, videoPhase(video), formatElapsed(videoTimeNow(video) * 1000)];
   if (video.detect) parts.push(`変化 ${(video.detect.diffPrev * 100).toFixed(1)}%`);
   return parts.join(' · ');
 }
@@ -420,6 +421,8 @@ function applyStats(stats: CaptureStats) {
 function startStatsLoop() {
   if (statsTimer !== undefined) return;
   const tick = async () => {
+    // Video 行の再生位置も同じ拍子で進める（値は検知スクリプトの報告から補う。描き直すだけで問い合わせはしない）
+    if (current.state === 'CAPTURING' && current.video) videoValue.textContent = describeVideo(current);
     try {
       applyStats(await sendToOffscreen.getStats());
     } catch {

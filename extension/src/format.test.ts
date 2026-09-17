@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatElapsed, formatSessionId, makeSessionId } from './format';
+import { formatBytes, formatElapsed, formatSessionId, makeSessionId, VIDEO_TIME_EXTRAPOLATE_MAX_MS, videoTimeNow } from './format';
 
 describe('formatElapsed', () => {
   it('formats hours, minutes and seconds with zero padding', () => {
@@ -46,5 +46,24 @@ describe('formatSessionId', () => {
 
   it('leaves unknown ids alone', () => {
     expect(formatSessionId('smoke-1')).toBe('smoke-1');
+  });
+});
+
+describe('videoTimeNow（報告の間を補った再生位置）', () => {
+  const at = 1_000_000;
+  const playing = { currentTime: 100, playing: true, playbackRate: 1, updatedAt: at };
+  it('再生中は報告からの経過を足す。再生速度も掛ける', () => {
+    expect(videoTimeNow(playing, at)).toBe(100);
+    expect(videoTimeNow(playing, at + 1_500)).toBe(101.5);
+    expect(videoTimeNow({ ...playing, playbackRate: 1.5 }, at + 2_000)).toBe(103);
+  });
+  it('止まっていれば報告の値のまま', () => {
+    expect(videoTimeNow({ ...playing, playing: false }, at + 3_000)).toBe(100);
+  });
+  it('報告が途切れても上限までしか進めない', () => {
+    expect(videoTimeNow(playing, at + 60_000)).toBe(100 + VIDEO_TIME_EXTRAPOLATE_MAX_MS / 1000);
+  });
+  it('時計が戻っていたら足さない', () => {
+    expect(videoTimeNow(playing, at - 5_000)).toBe(100);
   });
 });

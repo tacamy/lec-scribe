@@ -38,3 +38,24 @@ export function formatSessionId(sessionId: string): string {
   if (!m) return sessionId;
   return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
 }
+
+/**
+ * 検知スクリプトの報告が途切れたときに、進み続けないための上限。
+ * 定期報告は 5 秒ごと（detector.ts の HEARTBEAT_MS）なので、それより少し長く
+ */
+export const VIDEO_TIME_EXTRAPOLATE_MAX_MS = 6_000;
+
+/**
+ * いま表示する再生位置（秒）。検知スクリプトの報告は 5 秒ごと（と再生・停止・シークなどのイベント時）
+ * なので、そのまま出すと 5 秒に 1 回しか進まない。再生中なら、報告からの経過に再生速度を掛けて足す。
+ * 停止・バッファリング・シークはイベントで即報告されるので、ずれは次の報告で直る。
+ * 報告が止まっても上限までしか進めない。時計が戻っていたら（経過が負）足さない
+ */
+export function videoTimeNow(
+  video: { currentTime: number; playing: boolean; playbackRate: number; updatedAt: number },
+  now: number = Date.now(),
+): number {
+  if (!video.playing) return video.currentTime;
+  const sinceReport = Math.min(Math.max(0, now - video.updatedAt), VIDEO_TIME_EXTRAPOLATE_MAX_MS);
+  return video.currentTime + (sinceReport / 1000) * video.playbackRate;
+}
