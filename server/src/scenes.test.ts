@@ -311,3 +311,69 @@ describe('同じ場面の最後の画像を載せる（既定）', () => {
     ]);
   });
 });
+
+describe('まとまりの前の方の画像との比較と、文字の読み取りが安定しない場面（2026-09-17）', () => {
+  const slideLike = (shade: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let p = 0; p < PIXELS; p += 7) {
+      f[p * 4] = shade;
+      f[p * 4 + 1] = shade;
+      f[p * 4 + 2] = shade;
+    }
+    return f;
+  };
+  const photo = (seed: number) => {
+    const f = new Uint8Array(PIXELS * 4);
+    let x = seed;
+    for (let i = 0; i < PIXELS * 4; i++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      f[i] = i % 4 === 3 ? 255 : (x >> 16) & 0xff;
+    }
+    return f;
+  };
+  const four = [1, 2, 3, 4].map((n) => slide(n, 0.9));
+  // 隣り合う濃さの差を PIXEL_DIFF（24）より大きくして、「中身が同じ」の規則が先に効かないようにする
+  const slideThumbs = new Map<string, Uint8Array>([1, 2, 3, 4].map((n) => [`slide_00${n}.png`, slideLike(20 + 50 * n)]));
+  const photoThumbs = new Map<string, Uint8Array>([1, 2, 3, 4].map((n) => [`slide_00${n}.png`, photo(n)]));
+  const withVision = (distances: Record<string, number>, texts: Array<string | undefined>) => ({
+    distance: (a: number, b: number) => distances[`${Math.min(a, b)}-${Math.max(a, b)}`],
+    text: (i: number) => texts[i],
+    tight: 0.2,
+    photo: 0.45,
+  });
+
+  it('基準とも直前とも離れていても、まとまりの前の方の画像と見た目がごく近ければ外す', () => {
+    // 2・3 は 1 と 0.15 で同じまとまり。4 は 1（基準）とも 3（直前）とも 0.3 だが、2 とは 0.15
+    const d = pickShownSlides(four, slideThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.15, '0-3': 0.3, '2-3': 0.3, '1-3': 0.15 }, []), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, false, false]);
+    expect(d[3]!.via).toBe('slide_002.png');
+    expect(d[3]!.reason).toBe('vision');
+  });
+
+  it('まとまりの前の方の画像とは、文字の規則では比べない（同じ型の別スライドは見出しやフッターが共通）', () => {
+    // 4 の文字は 2 と同じだが、見た目は 2 と 0.3。直前（3）とも基準（1）とも文字が違う → 載せる
+    const texts = ['見出し 赤', '見出し 黄色', '見出し 青', '見出し 黄色'];
+    const d = pickShownSlides(four, slideThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.15, '0-3': 0.3, '2-3': 0.3, '1-3': 0.3 }, texts), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, false, true]);
+  });
+
+  it('まとまりの中で文字の読み取りが食い違っていたら、文字の違いを別の写真の根拠にしない（手書きの板書）', () => {
+    // 2 は 1 と 0.15 で同じまとまりだが、同じ板書が別の文字に読まれている → この場面の文字は信用しない。
+    // 3 は 1 と 0.4（写真同士の広い判定の範囲）で、文字はまた違って読まれているが、外す
+    const noisy = ['PLOT BAsceT KEN', 'PLOT EAsckET Gれした KEN', 'PLOT 54SsceT KEN'];
+    const d = pickShownSlides(four.slice(0, 3), photoThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.4, '1-2': 0.4 }, noisy), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, false]);
+    expect(d[2]!.reason).toBe('vision');
+    // 読み取りが安定していれば（2 の文字が 1 と同じ）、別のラベルは今までどおり残す
+    const stable = ['カメラ本体', 'カメラ本体', '粗微動ユニット'];
+    const e = pickShownSlides(four.slice(0, 3), photoThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.4, '1-2': 0.4 }, stable), 'first');
+    expect(e.map((x) => x.shown)).toEqual([true, false, true]);
+  });
+
+  it('文字を信用しない状態は、基準が変わればリセットされる', () => {
+    // 1 のまとまりは読み取りが食い違っている。3 は 0.6 で別の場面（新しい基準）。4 は 3 と 0.4 で、ラベルが違う → 残す
+    const texts = ['PLOT BAsceT KEN', 'PLOT EAsckET KEN', 'レンズ本体', 'レンズ台座'];
+    const d = pickShownSlides(four, photoThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.6, '1-2': 0.6, '0-3': 0.6, '2-3': 0.4, '1-3': 0.6 }, texts), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, false, true, true]);
+  });
+});

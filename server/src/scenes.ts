@@ -204,6 +204,8 @@ type Verdict = { reason?: SceneReason; metrics: Metrics };
 /**
  * 順に見て、最後に載せた画像と「同じ」なら載せない。基準の画像とは離れてしまっても、
  * 直前の（外した）画像と強い根拠で同じなら、場面が少しずつ変わっているだけとみなして外す。
+ * さらに前の（外した）画像とも、文字を使わない根拠（中身が同じ・見た目がごく近い）だけで比べる
+ * （講師が動く画面で、2 つ前の画像とは 0.145 なのに直前とは 0.27 だった。2026-09-17）。
  * サムネイルが取れなかった画像は載せる。
  */
 export function pickShownSlides(
@@ -226,10 +228,18 @@ export function pickShownSlides(
     return e;
   };
   /**
-   * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
-   * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する
+   * 基準の画像の文字が、まとまりの中で安定して読めているか。手書きの板書は読み取りが毎回変わり
+   * （同じ板書が BAsceT / EAsckET / 54SsceT と読まれた）、そのたびに「別のラベルの別の写真」と
+   * 誤って残していた。まとまりに加えた画像の文字が基準と食い違ったら、その場面では文字を拒否の根拠にしない
    */
-  const compare = (index: number, against: number, strongOnly: boolean): Verdict | null => {
+  let anchorTextStable = true;
+  /**
+   * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
+   * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する。
+   * tightOnly なら、そのうち文字を使わないもの（中身が同じ・見た目がごく近い）だけ。
+   * 同じ型のスライドは見出しやフッターの文字が共通なので、文字の規則を遠くの画像まで広げると別のスライドがまとまる
+   */
+  const compare = (index: number, against: number, strongOnly: boolean, tightOnly = false): Verdict | null => {
     const slide = slides[index]!;
     const other = slides[against]!;
     const thumb = thumbs.get(slide.filename);
@@ -247,6 +257,7 @@ export function pickShownSlides(
     if (vision && d !== undefined) {
       // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ
       if (vision.tight > 0 && d <= vision.tight) return { reason: 'vision', metrics };
+      if (tightOnly) return { metrics };
       if (vision.photo > 0 && d <= vision.photo) {
         // 3. 字幕や見出しの文字が同じ（両方に文字がない場合や、一方が他方に含まれる場合も）で見た目も近ければ、同じ場面。
         //    同じテンプレートで文字だけ違うスライドはここで残る
@@ -263,10 +274,11 @@ export function pickShownSlides(
         // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。
         //    ただし両方に文字があって中身が違うなら、別のラベルが付いた別の写真なのでまとめない
         const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
-        const differentText = hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && !contained;
+        const differentText = anchorTextStable && hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && !contained;
         if (!strongOnly && bothPhoto && !differentText) return { reason: 'vision', metrics };
       }
     }
+    if (tightOnly) return { metrics };
     // 5. 画素がほとんど同じで文字が同じか一方に含まれるなら、同じスライドの途中の状態
     if (diff <= GROWN_MAX_DIFF && hasText && text && otherText && (textSim! >= SAME_TEXT_SIM || textContained(text, otherText))) {
       return { reason: 'grown', metrics };
@@ -286,20 +298,30 @@ export function pickShownSlides(
       const last = lastShown;
       let verdict = compare(index, last.index, false);
       let via: string | undefined;
-      if (verdict && !verdict.reason && index - 1 !== last.index) {
-        const previous = compare(index, index - 1, true);
-        if (previous?.reason) {
-          verdict = previous;
-          via = slides[index - 1]!.filename;
+      if (verdict && !verdict.reason) {
+        // 基準と同じでなければ、まとまりに入れた画像（直前から順に前へ）とも比べる
+        for (let j = index - 1; j > last.index; j--) {
+          const member = compare(index, j, true, j !== index - 1);
+          if (member?.reason) {
+            verdict = member;
+            via = slides[j]!.filename;
+            break;
+          }
         }
       }
       if (verdict?.reason) {
         decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
+        const text = vision?.text?.(index);
+        const anchorText = vision?.text?.(last.index);
+        if (text && anchorText && (textSimilarity(text, anchorText) ?? 1) < SAME_TEXT_SIM && !textContained(text, anchorText)) anchorTextStable = false;
         return;
       }
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
       // サムネイルが読めなかった画像を基準にすると、以後すべての比較ができなくなる。前の基準を残す
-      if (verdict) lastShown = { slide, index };
+      if (verdict) {
+        lastShown = { slide, index };
+        anchorTextStable = true;
+      }
     } else {
       decisions.push({ filename: slide.filename, shown: true });
       lastShown = { slide, index };
