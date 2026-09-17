@@ -237,7 +237,7 @@ function render(state: SessionState) {
         : '—';
   }
 
-  videoValue.textContent = active ? describeVideo(state) : '—';
+  renderVideoRow(state);
   serverValue.textContent = describeServer(state);
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
@@ -307,7 +307,14 @@ function shortPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+\//, '~/');
 }
 
+/** Video 行。render() と統計の拍子（startStatsLoop）の両方から同じ規則で描く */
+function renderVideoRow(state: SessionState) {
+  videoValue.textContent = isActive(state) ? describeVideo(state) : '—';
+}
+
 function describeVideo(state: SessionState): string {
+  // 開始処理中は追跡する動画がまだ決まっていない（frameSource が無い）。「動画なし」と言い切らない
+  if (state.state === 'STARTING') return '—';
   const video = state.video;
   if (state.frameSource !== 'direct' || !video) return '動画なし（音声のみ）';
   // 報告は 5 秒ごとなので、そのまま出すと 5 秒に 1 回しか進まない。再生中は報告からの経過を足して見せる
@@ -422,7 +429,7 @@ function startStatsLoop() {
   if (statsTimer !== undefined) return;
   const tick = async () => {
     // Video 行の再生位置も同じ拍子で進める（値は検知スクリプトの報告から補う。描き直すだけで問い合わせはしない）
-    if (current.state === 'CAPTURING' && current.video) videoValue.textContent = describeVideo(current);
+    renderVideoRow(current);
     try {
       applyStats(await sendToOffscreen.getStats());
     } catch {

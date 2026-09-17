@@ -1,3 +1,5 @@
+import { DETECT_STATUS_HEARTBEAT_MS } from './probe';
+
 /** 0 → "00:00:00", 3_723_000 → "01:02:03". Negative values clamp to zero. */
 export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -40,22 +42,26 @@ export function formatSessionId(sessionId: string): string {
 }
 
 /**
- * 検知スクリプトの報告が途切れたときに、進み続けないための上限。
- * 定期報告は 5 秒ごと（detector.ts の HEARTBEAT_MS）なので、それより少し長く
+ * 検知スクリプトの報告が途切れたときに、進み続けないための上限（報告からの経過時間）。
+ * 定期報告の間隔より少し長くして、次の報告が少し遅れても止まって見えないようにする
  */
-export const VIDEO_TIME_EXTRAPOLATE_MAX_MS = 6_000;
+const VIDEO_TIME_EXTRAPOLATE_MAX_MS = DETECT_STATUS_HEARTBEAT_MS + 1_000;
 
 /**
- * いま表示する再生位置（秒）。検知スクリプトの報告は 5 秒ごと（と再生・停止・シークなどのイベント時）
- * なので、そのまま出すと 5 秒に 1 回しか進まない。再生中なら、報告からの経過に再生速度を掛けて足す。
- * 停止・バッファリング・シークはイベントで即報告されるので、ずれは次の報告で直る。
- * 報告が止まっても上限までしか進めない。時計が戻っていたら（経過が負）足さない
+ * いま表示する再生位置（秒）。検知スクリプトの報告は定期報告（DETECT_STATUS_HEARTBEAT_MS ごと）と再生・停止・シークなどの
+ * イベント時だけなので、そのまま出すと数秒に 1 回しか進まない。再生中なら、報告からの経過に再生速度を掛けて足す（SPEC §15.1）。
+ * 足すのは報告から上限の時間ぶんまで（足す秒数は上限 × 再生速度で止まる）で、動画の長さは超えない。時計が戻っていたら（経過が負）足さない。
+ * 停止・シークの報告も service worker の直列の処理を通るので、送信などが走っている間は届くのが遅れ、
+ * その間は実際より先に進んで見えて、届いた時点で戻る
  */
 export function videoTimeNow(
-  video: { currentTime: number; playing: boolean; playbackRate: number; updatedAt: number },
+  video: { currentTime: number; duration: number | null; playing: boolean; playbackRate: number; updatedAt: number },
   now: number = Date.now(),
 ): number {
   if (!video.playing) return video.currentTime;
   const sinceReport = Math.min(Math.max(0, now - video.updatedAt), VIDEO_TIME_EXTRAPOLATE_MAX_MS);
-  return video.currentTime + (sinceReport / 1000) * video.playbackRate;
+  const extrapolated = video.currentTime + (sinceReport / 1000) * video.playbackRate;
+  // ended の報告が遅れても動画の長さは超えない。長さが分からない（ライブなど）ときは抑えない
+  if (video.duration === null) return extrapolated;
+  return Math.min(extrapolated, Math.max(video.currentTime, video.duration));
 }

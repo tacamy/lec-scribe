@@ -14,7 +14,7 @@ import {
   type ToContent,
 } from '../src/messages';
 import type { SlideMeta } from '../src/opfs/session-store';
-import type { VideoStatus } from '../src/probe';
+import { DETECT_STATUS_HEARTBEAT_MS, type VideoStatus } from '../src/probe';
 import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
 
 /**
@@ -25,7 +25,6 @@ import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventTyp
  * 追跡して状態を service worker へ報告するところまで。フレーム取得と
  * 変化検知は Phase 4〜5、タイムライン記録は Phase 6 で足す。
  */
-const HEARTBEAT_MS = 5000;
 /** マスクが効いていないときに最終状態の上書きを認める差分率（ワイプの動き 0.4〜0.9% より上） */
 const UNMASKED_UPDATE_THRESHOLD = 0.012;
 
@@ -191,7 +190,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
   };
   for (const name of VIDEO_EVENTS) video.addEventListener(name, current.onEvent);
   document.addEventListener('visibilitychange', current.onVisibility);
-  current.heartbeat = window.setInterval(() => void report(current), HEARTBEAT_MS);
+  current.heartbeat = window.setInterval(() => void report(current), DETECT_STATUS_HEARTBEAT_MS);
   current.sampleTimer = window.setInterval(() => sampleOnce(current), msg.detect.sampleIntervalMs);
   // 再生中は定期的に記録して、バッファリングなどによるずれの上限を抑える
   current.tickTimer = window.setInterval(() => {
