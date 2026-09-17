@@ -63,6 +63,12 @@ export type VideoStatus = {
   updatedAt: number;
 };
 
+/**
+ * 検知用 content script が VideoStatus を定期的に送る間隔（SPEC §6.6 DETECT_STATUS。再生イベントの時にも送る）。
+ * パネルが報告の間の再生位置を補う上限（format.ts の videoTimeNow）もこの間隔から決める
+ */
+export const DETECT_STATUS_HEARTBEAT_MS = 5_000;
+
 export function probeVideos(): ProbeResult {
   const videos = Array.from(document.querySelectorAll('video'));
   const vjsCount = videos.filter((v) => v.classList.contains('vjs-tech')).length;
