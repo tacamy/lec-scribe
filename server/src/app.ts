@@ -7,7 +7,7 @@ import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
 import { visionStatus } from './vision.ts';
 import { slugify } from './format.ts';
-import { NOTES_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
+import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
 import { askPermission, extensionIdFromOrigin, sanitizeName, saveTrusted, trustedByToken, type Trusted } from './pairing.ts';
@@ -28,8 +28,8 @@ export const API_VERSION = 2;
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
 
 const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
-/** PUT /sessions/:id/files/<name> で受け付けるファイル */
-const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|slides\/slide_[0-9]{3,}\.(png|jpg))$/;
+/** PUT /sessions/:id/files/<name> で受け付ける作業ファイル。画像は slides/<SLIDE_FILE> */
+const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json)$/;
 const MAX_JSON_BODY = 5 * 1024 * 1024;
 
 export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
@@ -143,12 +143,9 @@ export function createApp(
         sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: '拡張機能からの要求ではありません。' } });
         return;
       }
-      const known = trusted.entries.get(id);
-      if (known) {
-        // 承認済み。Origin はブラウザが付けるので、この拡張だけがトークンを受け取れる
-        sendJson(res, 200, { ok: true, paired: true, already: true, token: known.token });
-        return;
-      }
+      // 承認済みの拡張でも、ダイアログなしでトークンを返さない。Origin を偽れないのはブラウザだけで、
+      // curl などは承認済みの ID を名乗れる（拡張 ID は秘密ではない）。許可されたら新しいトークンに替える
+      const known = trusted.entries.has(id);
       if (pairing) {
         sendJson(res, 429, { ok: false, error: { code: 'BUSY', message: '承認ダイアログを表示中です。Mac の画面で「許可」を押してください。' } });
         return;
@@ -157,10 +154,11 @@ export function createApp(
       try {
         const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
         const name = sanitizeName(body.name) || 'Chrome 拡張';
-        log(`pair request from ${id} (${name})`);
+        log(`pair request from ${id} (${name})${known ? '、接続済みの拡張' : ''}`);
         const allowed = await askPermission(
           config.osascriptBin,
-          `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。\n\n許可すると、この拡張は録音を送って文字起こしを始めたり、${config.outDir} のフォルダを開いたり消したりできます。`,
+          `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。\n\n許可すると、この拡張は録音を送って文字起こしを始めたり、${config.outDir} のフォルダを開いたり消したりできます。` +
+            (known ? '\n\nこの拡張はすでに接続済みです。拡張の画面で「このMacと接続」を押し直したのでなければ、「許可しない」を押してください。' : ''),
         );
         if (!allowed) {
           log(`pair denied: ${id}`);
@@ -223,12 +221,13 @@ export function createApp(
     // PUT /sessions/:id/files/<name>
     if (req.method === 'PUT' && parts[2] === 'files') {
       const name = decodeURIComponent(parts.slice(3).join('/'));
-      if (!UPLOAD_NAME.test(name)) {
+      const isSlide = name.startsWith(`${SLIDES_DIR}/`) && SLIDE_FILE.test(name.slice(SLIDES_DIR.length + 1));
+      if (!isSlide && !UPLOAD_NAME.test(name)) {
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
         return;
       }
       // 画像はユーザー向けの slides/ に、それ以外の作業ファイルは .lecscribe/ に置く
-      const target = name.startsWith(`${SLIDES_DIR}/`) ? path.join(dir, name) : workPath(dir, name);
+      const target = isSlide ? path.join(dir, name) : workPath(dir, name);
       const tmp = `${target}.part`;
       await mkdir(path.dirname(target), { recursive: true });
       await streamPipeline(req, createWriteStream(tmp));

@@ -20,7 +20,8 @@ import { ensureVisionHelper } from './vision.ts';
 const config = loadConfig();
 const log = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
 
-await mkdir(config.outDir, { recursive: true });
+// 出力先を新しく作るときは本人だけが読めるようにする（既にあるフォルダの権限は変えない。§18）
+await mkdir(config.outDir, { recursive: true, mode: 0o700 });
 const { token, created } = await loadOrCreateToken(config.tokenFile);
 
 const missing: string[] = [];
@@ -56,7 +57,8 @@ server.listen(config.port, config.host, () => {
   console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
   console.log('');
   console.log('  拡張機能の設定（オプション）で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');
-  console.log(`  トークンで繋ぐ場合は次を貼り付けます: ${token}`);
+  // トークンそのものはログに残さない（server.log は問い合わせで人に渡すことがある）。場所だけ示す
+  console.log(`  トークンで繋ぐ場合は ${config.tokenFile} の中身を貼り付けます。`);
   console.log('');
   if (missing.length > 0) {
     console.log(`  ⚠ 見つからないコマンド: ${missing.join(', ')}`);

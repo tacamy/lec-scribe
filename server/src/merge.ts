@@ -1,5 +1,6 @@
 import type { Outline } from './llm.ts';
 import { formatTimestamp, type Segment } from './format.ts';
+import { SLIDE_FILE } from './layout.ts';
 
 /**
  * スライドと文字起こしの統合（SPEC §13.4, D-14）。
@@ -115,10 +116,18 @@ export function assignSlides<T extends { videoStart: number; videoEnd?: number; 
   return out;
 }
 
+/** slides.json の中身か。ファイル名はパスにして読むので、拡張が付ける形（slide_001.png）以外があれば受け付けない */
 export function isSlideList(value: unknown): value is SlideEntry[] {
   return (
     Array.isArray(value) &&
-    value.every((s) => s && typeof s === 'object' && typeof (s as SlideEntry).filename === 'string' && typeof (s as SlideEntry).videoTime === 'number')
+    value.every(
+      (s) =>
+        s &&
+        typeof s === 'object' &&
+        typeof (s as SlideEntry).filename === 'string' &&
+        SLIDE_FILE.test((s as SlideEntry).filename) &&
+        typeof (s as SlideEntry).videoTime === 'number',
+    )
   );
 }
 

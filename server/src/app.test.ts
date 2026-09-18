@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -40,8 +40,8 @@ beforeAll(async () => {
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
-  // osascript スタブ: pair-answer.txt の中身（allowed / denied）を返す
-  const osascript = await writeStub('osascript', `cat "${path.join(tmp, 'pair-answer.txt')}"`);
+  // osascript スタブ: 受け取った引数（AppleScript とダイアログの本文）を pair-args.txt に残し、pair-answer.txt の中身（allowed / denied）を返す
+  const osascript = await writeStub('osascript', `printf '%s\\n' "$@" > "${path.join(tmp, 'pair-args.txt')}"; cat "${path.join(tmp, 'pair-answer.txt')}"`);
   // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
@@ -141,6 +141,8 @@ describe('local server', () => {
     expect(created.status).toBe(201);
     const { outputDir } = (await created.json()) as { outputDir: string };
     expect(path.basename(outputDir)).toBe('テスト_動画_1_20260908-103005-ab12');
+    // 録音やノートが入るので、本人だけが読める
+    expect((await stat(outputDir)).mode & 0o777).toBe(0o700);
 
     const put = (name: string, body: string | Uint8Array) =>
       fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
@@ -155,6 +157,7 @@ describe('local server', () => {
     expect((await put('timeline.json', JSON.stringify(timeline))).status).toBe(200);
     expect((await put('..%2Fescape.txt', 'x')).status).toBe(400);
     expect((await put('slides/evil.sh', 'x')).status).toBe(400);
+    expect((await put('slides%2F..%2F..%2Fslide_001.png', 'x')).status).toBe(400);
 
     const finalized = await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
     expect(finalized.status).toBe(202);
@@ -325,9 +328,24 @@ describe('local server', () => {
     expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ authorized: false, paired: false });
     const saved = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ id: string; name: string; token: string }> };
     expect(saved.extensions).toMatchObject([{ id: ORIGIN.slice('chrome-extension://'.length), name: 'LecScribe<x>', token: issued.token }]);
-    // 承認済みなら再度 pair してもダイアログは出ず、同じトークンが返る
+    // Return で押される既定のボタンは「許可しない」
+    expect(await readFile(path.join(tmp, 'pair-args.txt'), 'utf8')).toContain('default button "許可しない"');
+
+    // 承認済みの ID を名乗っても（curl なら Origin は偽れる）、ダイアログなしではトークンを返さない。
+    // 「許可しない」なら 403 で、前のトークンはそのまま使える
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
-    expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+    const again = await fetch(`${base}/pair`, { method: 'POST', headers: noToken });
+    expect(again.status).toBe(403);
+    expect(JSON.stringify(await again.json())).not.toContain(issued.token);
+    expect(await readFile(path.join(tmp, 'pair-args.txt'), 'utf8')).toContain('すでに接続済みです');
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: withIssued })).status).toBe(200);
+    // 「許可」なら新しいトークンに替わり、前のトークンは使えなくなる
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'allowed\n');
+    const renewed = (await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()) as { paired: boolean; token: string };
+    expect(renewed.paired).toBe(true);
+    expect(renewed.token).not.toBe(issued.token);
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: withIssued })).status).toBe(401);
+    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: { authorization: `Bearer ${renewed.token}` } })).status).toBe(200);
   });
 
   it('/health が拡張との約束の版（api）とコミットを返す', async () => {

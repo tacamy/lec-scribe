@@ -296,6 +296,9 @@ export class Pipeline {
         const events = isTimeline(timeline) ? timeline : null;
         const slidesJson = await readJson(workPath(dir, 'slides.json'));
         const allSlides = isSlideList(slidesJson) ? slidesJson : [];
+        if (Array.isArray(slidesJson) && slidesJson.length > 0 && allSlides.length === 0) {
+          this.log(`slides.json の形が違う（画像の名前が slide_001.png の形でないなど）ので、画像なしでノートを作ります: ${dir}`);
+        }
         // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
         const slides = await this.pickScenes(dir, allSlides, signal);
         const session = (await readJson(workPath(dir, 'session.json'))) as

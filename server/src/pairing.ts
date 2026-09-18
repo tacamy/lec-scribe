@@ -8,9 +8,11 @@ import { run } from './exec.ts';
  * 拡張の設定画面の「このMacと接続」で POST /pair が来たら、macOS のダイアログで
  * ユーザーに許可を求め、許可されたらその拡張 ID を trusted.json に記録する。
  * 承認した拡張には専用のトークンを発行して返す（拡張はそれを保存して Bearer で送る）。
- * Origin（chrome-extension://<id>）はブラウザが付けるので Web ページや別の拡張には偽装できず、
- * トークンは承認された拡張だけが受け取る。GET 要求には Origin が付かない（host_permissions のある
- * 拡張ページからの fetch は CORS 扱いにならない）ため、認可はトークンで行う。
+ * Origin（chrome-extension://<id>）はブラウザが付けるので Web ページや別の拡張には偽装できない。
+ * ただしブラウザ以外（curl など）は Origin を自由に書けるので、トークンを渡すのは毎回ダイアログで
+ * 許可されたときだけにする（承認済みの ID を名乗っても、ダイアログなしでは受け取れない）。
+ * GET 要求には Origin が付かない（host_permissions のある拡張ページからの fetch は CORS 扱いにならない）
+ * ため、認可はトークンで行う。
  */
 export type TrustedEntry = { id: string; token: string; name: string; at: string };
 export type Trusted = { entries: Map<string, TrustedEntry>; file: string };
@@ -30,7 +32,7 @@ export async function loadTrusted(file: string): Promise<Trusted> {
   return { entries, file };
 }
 
-/** 拡張を承認して専用トークンを発行し、ファイルに残す */
+/** 拡張を承認して専用トークンを発行し、ファイルに残す。承認済みの拡張なら前のトークンは使えなくなる */
 export async function saveTrusted(trusted: Trusted, id: string, name: string): Promise<TrustedEntry> {
   const entry: TrustedEntry = { id, token: randomBytes(24).toString('base64url'), name, at: new Date().toISOString() };
   trusted.entries.set(id, entry);
@@ -69,13 +71,14 @@ export function sanitizeName(name: unknown): string {
 
 /**
  * macOS のダイアログで許可を求める。osascript に本文は引数で渡す（文字列を AppleScript に埋め込まない）。
- * 「許可」で true、「許可しない」・2 分放置で false
+ * 「許可」で true、「許可しない」・2 分放置で false。ダイアログは同じ Mac の別のプログラムからも出させられるので、
+ * 既定のボタン（Return で押される方）は「許可しない」にして、別の作業中の Return で許可されないようにする
  */
 export async function askPermission(osascriptBin: string, message: string): Promise<boolean> {
   const script = [
     'on run argv',
     'try',
-    'set r to display dialog (item 1 of argv) with title "LecScribe Server" buttons {"許可しない", "許可"} default button "許可" cancel button "許可しない" with icon caution giving up after 120',
+    'set r to display dialog (item 1 of argv) with title "LecScribe Server" buttons {"許可しない", "許可"} default button "許可しない" cancel button "許可しない" with icon caution giving up after 120',
     'if gave up of r then return "denied"',
     'return "allowed"',
     'on error',
