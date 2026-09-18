@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { outdatedMessage, REQUIRED_SERVER_API, serverOutdated, visionLine } from './health';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fetchHealth, ForeignServerError, isLecScribeReply, outdatedMessage, REQUIRED_SERVER_API, serverOutdated, visionLine } from './health';
 
 describe('サーバーの版の突き合わせ', () => {
   it('api を返さない古いサーバーは古いと判定する', () => {
@@ -39,5 +39,38 @@ describe('見た目の判定の 1 行（#17）', () => {
     const odd = visionLine({ vision: 'false' as unknown as 'ready' });
     expect(odd).toContain('分かりません');
     expect(odd).not.toContain('xcode-select');
+  });
+});
+
+describe('ポートをほかのアプリが使っているとき（§12.1d）', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const reply = (body: string, status = 200) => vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status })));
+  const server = { port: 47321, token: '' };
+
+  it('LecScribe の応答は JSON の ok（true / false）で見分ける', () => {
+    expect(isLecScribeReply({ ok: true, version: '0.1.0' })).toBe(true);
+    expect(isLecScribeReply({ ok: false, error: { code: 'UNAUTHORIZED' } })).toBe(true);
+    expect(isLecScribeReply({ status: 'up' })).toBe(false);
+    expect(isLecScribeReply(undefined)).toBe(false);
+  });
+
+  it('HTML や別の形の JSON が返ったら、ほかのアプリを止めるよう案内する', async () => {
+    reply('<!doctype html><title>Vite</title>');
+    const error = await fetchHealth(server).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ForeignServerError);
+    expect((error as Error).message).toBe(
+      'ポート 47321 をほかのアプリが使っているため、LecScribe のサーバーを起動できません。そのアプリを終了するか、そのアプリのポートを変えてください。',
+    );
+    reply('{"status":"up"}', 404);
+    await expect(fetchHealth(server)).rejects.toBeInstanceOf(ForeignServerError);
+  });
+
+  it('LecScribe の失敗の応答は、ほかのアプリとは扱わない', async () => {
+    reply('{"ok":false,"error":{"code":"INTERNAL","message":"boom"}}', 500);
+    const error = await fetchHealth(server).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ForeignServerError);
+    expect((error as Error).message).toBe('HTTP 500: boom');
+    reply('{"ok":true,"version":"0.1.0","api":3}');
+    expect(await fetchHealth(server)).toMatchObject({ version: '0.1.0', api: 3 });
   });
 });

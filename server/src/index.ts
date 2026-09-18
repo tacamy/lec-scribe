@@ -14,6 +14,7 @@ import { loadConfig, usesVision } from './config.ts';
 import { resolveBin } from './exec.ts';
 import { loadOrCreateToken } from './token.ts';
 import { loadTrusted } from './pairing.ts';
+import { portHolder, portInUseMessage } from './port.ts';
 import { currentCommit, selfUpdate } from './update.ts';
 import { ensureVisionHelper } from './vision.ts';
 
@@ -47,22 +48,54 @@ const { server } = createApp(config, token, log, trusted, { commit });
 if (config.managed && usesVision(config)) void ensureVisionHelper(log);
 
 await recoverInterrupted(config.outDir, log);
-server.listen(config.port, config.host, () => {
-  console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${commit}` : ''}）`);
-  console.log(`  listening : http://${config.host}:${config.port}`);
-  console.log(`  output    : ${config.outDir}`);
-  console.log(`  model     : ${config.model} (${config.language})`);
-  console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
-  console.log(`  trusted   : ${trusted.entries.length} 件の接続を承認済み（${config.trustedFile}）`);
-  console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
-  console.log('');
-  console.log('  拡張機能の設定（オプション）で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');
-  // トークンそのものはログに残さない（server.log は問い合わせで人に渡すことがある）。場所だけ示す
-  console.log(`  トークンで繋ぐ場合は ${config.tokenFile} の中身を貼り付けます。`);
-  console.log('');
-  if (missing.length > 0) {
-    console.log(`  ⚠ 見つからないコマンド: ${missing.join(', ')}`);
-    console.log('    brew install whisperkit-cli ffmpeg  で導入できます。受信はできますが文字起こしは失敗します。');
-    console.log('');
+
+/** ポートが使われていたときに試し直す間隔。1 回目はすぐ（再起動の直後に前のプロセスがまだ放していないだけのことがある） */
+const PORT_RETRY_FIRST_MS = 1_000;
+const PORT_RETRY_MS = 10_000;
+
+/**
+ * 待ち受けを始める。ポートがほかのアプリに使われていたら（EADDRINUSE）、相手の名前をログに書いて試し直す（§12.1d）。
+ * 終了して launchd に起動し直させると、そのたびに自動更新の git fetch が走り、ログにも同じ失敗が 10 秒ごとに並ぶ。
+ * ここで待てば、相手が終わった時点で何もしなくても繋がる。知らせは 2 回続けて失敗したときから、相手が変わったときだけ書く
+ */
+async function listen(): Promise<void> {
+  let reported = '';
+  for (let failures = 0; ; failures++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(config.port, config.host, () => {
+          server.off('error', reject);
+          resolve();
+        });
+      });
+      return;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e;
+      if (failures > 0) {
+        const message = portInUseMessage(config.port, await portHolder(config.port));
+        if (message !== reported) log(message);
+        reported = message;
+      }
+      await new Promise((r) => setTimeout(r, failures === 0 ? PORT_RETRY_FIRST_MS : PORT_RETRY_MS));
+      server.close();
+    }
   }
-});
+}
+
+await listen();
+console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${commit}` : ''}）`);
+console.log(`  listening : http://${config.host}:${config.port}`);
+console.log(`  output    : ${config.outDir}`);
+console.log(`  model     : ${config.model} (${config.language})`);
+console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
+console.log(`  trusted   : ${trusted.entries.length} 件の接続を承認済み（${config.trustedFile}）`);
+console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
+console.log('');
+console.log('  拡張機能の設定（オプション）で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');
+console.log('');
+if (missing.length > 0) {
+  console.log(`  ⚠ 見つからないコマンド: ${missing.join(', ')}`);
+  console.log('    brew install whisperkit-cli ffmpeg  で導入できます。受信はできますが文字起こしは失敗します。');
+  console.log('');
+}

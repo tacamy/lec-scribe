@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
-import { fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
+import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
@@ -167,9 +167,11 @@ async function checkServerPresence() {
     installHint.hidden = true;
     pairBtn.hidden = false;
     pairBtn.disabled = false;
-  } catch {
-    setupStatus.textContent = 'Mac 側の LecScribe サーバーが見つかりません。';
-    installHint.hidden = false;
+  } catch (e) {
+    // ほかのアプリがポートを使っているなら、入れ直しても直らないので install の 1 行は出さない
+    const foreign = e instanceof ForeignServerError;
+    setupStatus.textContent = foreign ? e.message : 'Mac 側の LecScribe サーバーが見つかりません。';
+    installHint.hidden = foreign;
     pairBtn.hidden = true;
   }
 }
@@ -338,14 +340,14 @@ function videoPhase(video: VideoStatus): string {
   return video.playing ? '再生中' : '待機中';
 }
 
-/** サーバーが古いときの文（§12.1c）。状態機械の警告とは別に、このパネルが /health を見て決める */
-let serverOutdatedText: string | null = null;
+/** サーバーについての知らせ（古い §12.1c、ポートをほかのアプリが使っている §12.1d）。状態機械の警告とは別に、このパネルが /health を見て決める */
+let serverNoticeText: string | null = null;
 /** 直前に出した警告。サーバーの版が分かったときに、同じ内容のまま 1 行足して描き直すため */
 let lastWarningCodes: WarningCode[] = [];
 
 function renderWarnings(codes: WarningCode[]) {
   lastWarningCodes = codes;
-  const texts = [...codes.map((code) => WARNING_TEXT[code]), ...(serverOutdatedText ? [serverOutdatedText] : [])];
+  const texts = [...codes.map((code) => WARNING_TEXT[code]), ...(serverNoticeText ? [serverNoticeText] : [])];
   warningsList.replaceChildren(
     ...texts.map((text) => {
       const li = document.createElement('li');
@@ -357,7 +359,7 @@ function renderWarnings(codes: WarningCode[]) {
 }
 
 /**
- * 接続済みならサーバーの版を見る。繋がらなければ何も出さない（別の警告が担う）。
+ * 接続済みならサーバーの版を見る。繋がらなければ何も出さない（別の警告が担う）。ほかのアプリが応答したらそう出す。
  * 開いたとき、設定が変わったとき、パネルに戻ったとき（端末で update.sh を実行して戻ってくる）に呼ぶ
  */
 async function checkServerVersion() {
@@ -366,13 +368,14 @@ async function checkServerVersion() {
     try {
       const body = await fetchHealth(serverTarget);
       next = serverOutdated(body) ? outdatedMessage(body) : null;
-    } catch {
-      // 繋がらない・応答が読めない: 版は分からないので、前に出した文もそのままにする
-      return;
+    } catch (e) {
+      // 繋がらない: 版は分からないので、前に出した文もそのままにする
+      if (!(e instanceof ForeignServerError)) return;
+      next = e.message;
     }
   }
-  if (next === serverOutdatedText) return;
-  serverOutdatedText = next;
+  if (next === serverNoticeText) return;
+  serverNoticeText = next;
   // 警告の欄だけ描き直す。render() を呼ぶと、Start 前の probe の結果（Video 行と NO_VIDEO の警告）が消える
   renderWarnings(lastWarningCodes);
 }

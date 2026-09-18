@@ -41,7 +41,32 @@ export type Health = {
 };
 
 /**
+ * ポートを LecScribe でないアプリが使っているときの文（SPEC §12.1d。サーバーはログにアプリの名前付きで書く）。
+ * 設定画面にポートの欄は置かないので、利用者にできるのは相手のアプリを止めるか、相手のポートを変えること
+ */
+export function portInUseMessage(port: number): string {
+  return `ポート ${port} をほかのアプリが使っているため、LecScribe のサーバーを起動できません。そのアプリを終了するか、そのアプリのポートを変えてください。`;
+}
+
+/**
+ * LecScribe の応答か。サーバーはどの API も JSON で ok（true / false）を返す（失敗なら error も）。
+ * ほかのアプリの応答（HTML、別の形の JSON）と見分ける
+ */
+export function isLecScribeReply(body: unknown): body is { ok: boolean; error?: { code?: string; message?: string } } {
+  return !!body && typeof body === 'object' && typeof (body as { ok?: unknown }).ok === 'boolean';
+}
+
+/** そのポートで LecScribe でないアプリが応答した。message は portInUseMessage */
+export class ForeignServerError extends Error {
+  constructor(port: number) {
+    super(portInUseMessage(port));
+    this.name = 'ForeignServerError';
+  }
+}
+
+/**
  * /health を読む。繋がらなければ投げる（呼び出し側が「見つからない」として扱う）。
+ * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
  * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
  */
 export async function fetchHealth(
@@ -50,8 +75,10 @@ export async function fetchHealth(
 ): Promise<Health> {
   const headers = options.auth === false ? {} : authHeaders(server);
   const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers, signal: AbortSignal.timeout(options.timeoutMs ?? 3000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as Health;
+  const body: unknown = await res.json().catch(() => undefined);
+  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
+  if (!res.ok || !body.ok) throw new Error(`HTTP ${res.status}${body.error?.message ? `: ${body.error.message}` : ''}`);
+  return body as Health;
 }
 
 /** サーバーが古くて、この拡張の一部の機能が通じないか */

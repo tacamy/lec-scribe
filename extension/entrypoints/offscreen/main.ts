@@ -1,5 +1,6 @@
 import { authHeaders, type Config } from '../../src/config';
 import { LecError, toErrorInfo } from '../../src/errors';
+import { isLecScribeReply, portInUseMessage } from '../../src/health';
 import {
   hasTarget,
   replyWith,
@@ -192,6 +193,8 @@ function serverApi(server: ServerTarget, signal?: AbortSignal): ServerApi {
       );
     }
     const json = (await res.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    // ほかのアプリがポートを使っている（§12.1d）。そのアプリが終われば送れるので、送り直せる失敗にする
+    if (!isLecScribeReply(json)) throw new LecError('SERVER_UNREACHABLE', portInUseMessage(server.port), true);
     if (!res.ok) {
       const err = json?.['error'] as { message?: string } | undefined;
       const message = err?.message ?? `HTTP ${res.status}`;

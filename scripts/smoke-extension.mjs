@@ -4,6 +4,7 @@
 // Usage: pnpm --filter @lec-scribe/extension build && node scripts/smoke-extension.mjs
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -662,12 +663,12 @@ try {
   assert.ok(smokeHealth.vision === null || VISION_STATES.includes(smokeHealth.vision), `health.vision is ${JSON.stringify(smokeHealth.vision)}`);
 
   // #17: 設定画面の「接続テスト」に、/health の vision に対応する行が出る。
-  // 設定画面は module の先頭で設定を await してから listener を付けるので、port 欄が埋まるのを待ってから押す。
+  // 設定画面は module の先頭で設定を await してから listener を付けるので、接続の状態が出るのを待ってから押す。
   // この smoke サーバーは launchd 管理でないので起動時にビルドせず、状態は idle か ready で安定している（CI は null）
   const optionsPage = await context.newPage();
   optionsPage.on('pageerror', (e) => errors.push(String(e)));
   await optionsPage.goto(`chrome-extension://${extensionId}/options.html`);
-  await optionsPage.waitForFunction((port) => document.querySelector('#port')?.value === String(port), SERVER_PORT, { timeout: 5_000 });
+  await optionsPage.waitForFunction(() => !!document.getElementById('pairStatus')?.textContent, null, { timeout: 5_000 });
   await optionsPage.click('#test');
   const visionLine = await (
     await optionsPage.waitForFunction(
@@ -764,6 +765,46 @@ try {
   assert.equal(revoked.authorized, false, `unpaired token still accepted: ${JSON.stringify(revoked)}`);
   await unpairPage.close();
   console.log('unpair: the options page revoked this extension on the server and cleared its token');
+
+  // §12.1d: ポートをほかのアプリが使っているとき。設定画面の「接続テスト」はそのアプリを止めるよう案内し、
+  // サーバーは相手の名前をログに書いて試し直し、相手が終われば何もしなくても待ち受けを始める
+  localServer.kill();
+  await new Promise((r) => setTimeout(r, 500));
+  const foreign = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>another dev server</title>');
+  });
+  await new Promise((resolve) => foreign.listen(SERVER_PORT, '127.0.0.1', resolve));
+  const portPage = await context.newPage();
+  portPage.on('pageerror', (e) => errors.push(String(e)));
+  await portPage.goto(`chrome-extension://${extensionId}/options.html`);
+  await portPage.waitForFunction(() => !!document.getElementById('pairStatus')?.textContent, null, { timeout: 5_000 });
+  await portPage.click('#test');
+  const portText = await (
+    await portPage.waitForFunction(
+      () => {
+        const text = document.getElementById('result')?.textContent ?? '';
+        return text.startsWith('ポート ') ? text : null;
+      },
+      null,
+      { timeout: 5_000 },
+    )
+  ).jsonValue();
+  assert.ok(String(portText).includes(`ポート ${SERVER_PORT} をほかのアプリが使っているため`), `options page said ${JSON.stringify(portText)}`);
+  await portPage.close();
+  let serverLog = '';
+  localServer = spawn(process.execPath, localServerArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  localServer.stdout.on('data', (chunk) => (serverLog += chunk));
+  for (let i = 0; i < 50 && !serverLog.includes('LecScribe のサーバーを起動できません'); i++) await new Promise((r) => setTimeout(r, 200));
+  assert.ok(serverLog.includes(`ポート ${SERVER_PORT} を「node」が使っているため`), `no port-in-use message in the server log:\n${serverLog}`);
+  await new Promise((resolve) => foreign.close(resolve));
+  let upAgain = false;
+  for (let i = 0; i < 75 && !upAgain; i++) {
+    upAgain = await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false);
+    if (!upAgain) await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.ok(upAgain, `server did not start after the port was freed:\n${serverLog}`);
+  console.log('port: a foreign app on the port is named in the server log and the options page; the server starts once it is gone');
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');

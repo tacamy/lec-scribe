@@ -13,9 +13,8 @@
       h1 { margin: 0; font-size: 20px; }
       h2 { margin: 0 0 8px; font-size: 15px; }
       section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
-      label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
-      input { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 100%; }
-      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      /* 複数行の結果（接続テスト）でも、ボタンの文字と 1 行目がそろうように baseline でそろえる */
+      .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
       button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
       button.primary { background: var(--accent); color: #fff; }
       button.secondary { background: transparent; border-color: var(--border); color: var(--fg); }
@@ -24,8 +23,6 @@
       .result.ng { color: var(--danger); }
       code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
       p { margin: 0; color: var(--muted); font-size: 13px; }
-      details { display: grid; gap: 10px; }
-      summary { cursor: pointer; color: var(--muted); font-size: 13px; }
       code#notesCmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; }
     </style>
   </head>
@@ -45,14 +42,6 @@
           <button id="unpair" class="secondary" type="button" hidden>接続を解除</button>
           <span id="pairStatus" class="result"></span>
         </div>
-        <details>
-          <summary>詳細設定（ポート / トークン）</summary>
-          <label>ポート <input id="port" type="number" min="1024" max="65535" /></label>
-          <label>トークン（「このMacと接続」で自動で入ります。<code>~/.lec-scribe/token</code> の値を手で貼ることもできます） <input id="token" type="text" autocomplete="off" spellcheck="false" /></label>
-          <div class="row">
-            <button id="save" class="secondary" type="button">保存</button>
-          </div>
-        </details>
         <div class="row">
           <button id="test" class="secondary" type="button">接続テスト</button>
           <span id="result" class="result"></span>

@@ -6,7 +6,7 @@ export type Config = {
   /** Mac ローカルサーバー（SPEC §12）。paired（設定画面の「このMacと接続」で承認済み）か token があれば送信する */
   server: {
     port: number;
-    /** Bearer で送るトークン。「このMacと接続」で承認されたときにサーバーが発行したもの（手で貼ることもできる） */
+    /** Bearer で送るトークン。「このMacと接続」で承認されたときにサーバーが発行したもの（手で貼る欄は 2026-09-18 に外した） */
     token: string;
     /** 「このMacと接続」で承認済み（token はそのとき発行されたもの） */
     paired: boolean;

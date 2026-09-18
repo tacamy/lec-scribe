@@ -8,7 +8,7 @@
 //   node server/scripts/agent.mjs print      plist の内容を表示するだけ
 //   node server/scripts/agent.mjs print-launcher  起動用アプリの中身を表示するだけ
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,6 @@ const appExecutable = path.join(appDir, 'Contents', 'MacOS', APP_NAME);
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 const logDir = path.join(home, 'Library', 'Logs', 'lec-scribe');
 const logPath = path.join(logDir, 'server.log');
-const tokenPath = path.join(home, '.lec-scribe', 'token');
 const port = Number(process.env.LEC_SCRIBE_PORT ?? 47321);
 const domain = `gui/${os.userInfo().uid}`;
 
@@ -164,13 +163,40 @@ const unescapeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace
 const notesLine = (h) =>
   `ノート作成: ${h?.llm && h.llm !== 'none' ? h.llm : `なし（notes.md は文字起こしそのまま。bash "${repoRoot}/enable-notes.sh" で有効にできます）`}`;
 
+/** LecScribe の /health。応答しない、または LecScribe でないアプリが応答したら null */
 async function health() {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
-    return await res.json();
+    const h = await res.json();
+    return h?.ok === true && typeof h.version === 'string' ? h : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * ポートがほかのアプリに使われていてサーバーが待ち受けられないときの知らせ（server/src/port.ts の PORT_IN_USE_MARK）。
+ * サーバーはログに書いて試し直し続けるので、ここではログから拾ってターミナルに出す
+ */
+const PORT_IN_USE_MARK = 'LecScribe のサーバーを起動できません';
+/** 起動の知らせ（server/src/index.ts）。これより後に出た知らせだけが今の状態 */
+const STARTED_MARK = 'LecScribe server v';
+
+const logSize = () => (existsSync(logPath) ? statSync(logPath).size : 0);
+
+/** ログの from バイト目以降に、ポートの知らせがあればその文（先頭の時刻を除く）。その後で起動していれば null */
+function portInUseSince(from) {
+  if (!existsSync(logPath)) return null;
+  const text = readFileSync(logPath).subarray(from).toString('utf8');
+  const at = text.lastIndexOf(PORT_IN_USE_MARK);
+  if (at < 0 || text.lastIndexOf(STARTED_MARK) > at) return null;
+  const end = text.indexOf('\n', at);
+  return text.slice(text.lastIndexOf('\n', at) + 1, end === -1 ? undefined : end).replace(/^\S+Z /, '');
+}
+
+function reportPortInUse(message) {
+  console.error(message);
+  console.error('そのアプリが終われば、LecScribe のサーバーは自動で起動します（10 秒ごとに試し直しています）。');
 }
 
 function isLoaded() {
@@ -193,6 +219,7 @@ async function install() {
   writeFileSync(plistPath, plistXml(), { mode: 0o600 }); // OPENAI_API_KEY などを含むので本人だけ読める
   chmodSync(plistPath, 0o600); // 既存ファイルの mode は writeFileSync では変わらない
   if (isLoaded()) run('launchctl', ['bootout', `${domain}/${LABEL}`]);
+  const logFrom = logSize();
   // bootout の直後は launchd 側の後始末が終わっておらず bootstrap が "5: Input/output error" で失敗することがあるので少し待って再試行する
   let boot = run('launchctl', ['bootstrap', domain, plistPath]);
   for (let i = 0; boot.status !== 0 && i < 10; i++) {
@@ -206,7 +233,7 @@ async function install() {
   console.log(`登録しました: ${plistPath}`);
   console.log(`起動用アプリ: ${appDir}（「ログイン項目と機能拡張」には「${APP_NAME}」として表示されます）`);
   console.log(`ログ: ${logPath}`);
-  await waitAndReport();
+  await waitAndReport(logFrom);
 }
 
 /**
@@ -235,9 +262,17 @@ function visionText(h) {
   }
 }
 
-async function waitAndReport() {
+/** 起動を待って報告する。logFrom は起動をかける前のログの大きさ（それより後の知らせだけを見る） */
+async function waitAndReport(logFrom) {
   for (let i = 0; i < WAIT_FOR_SERVER_MS / 500; i++) {
     const h = await health();
+    if (!h) {
+      const inUse = portInUseSince(logFrom);
+      if (inUse) {
+        reportPortInUse(inUse);
+        process.exit(1);
+      }
+    }
     if (h) {
       console.log(`サーバー v${h.version} が http://127.0.0.1:${port} で動いています（model: ${h.model}, whisperkit: ${h.whisperkit ? 'あり' : 'なし'}, ffmpeg: ${h.ffmpeg ? 'あり' : 'なし'}）`);
       console.log(notesLine(h));
@@ -250,7 +285,6 @@ async function waitAndReport() {
       const vision = visionText(latest);
       if (vision) console.log(vision);
       console.log('Chrome の LecScribe アイコンを押して「このMacと接続」→ Mac のダイアログで「許可」してください。');
-      if (existsSync(tokenPath)) console.log(`（トークンで繋ぐ場合: ${readFileSync(tokenPath, 'utf8').trim()}）`);
       return;
     }
     await new Promise((r) => setTimeout(r, 500));
@@ -275,6 +309,9 @@ async function status() {
   console.log(`launchd: ${isLoaded() ? '読み込み済み' : '未読み込み'}`);
   const h = await health();
   console.log(h ? `サーバー: v${h.version} が http://127.0.0.1:${port} で応答（model: ${h.model}）` : `サーバー: http://127.0.0.1:${port} は応答なし`);
+  // 登録が外れて止まっているなら、ログに残った知らせは今の状態ではない
+  const inUse = !h && isLoaded() ? portInUseSince(0) : null;
+  if (inUse) reportPortInUse(inUse);
   if (h) console.log(notesLine(h));
   const vision = h ? visionText(h) : null;
   if (vision) console.log(vision);
@@ -292,8 +329,9 @@ async function restart() {
     console.error(`サーバーは ${h.processing} 件を処理中です。終わってから再起動するか、--force を付けてください。`);
     process.exit(1);
   }
+  const logFrom = logSize();
   run('launchctl', ['kickstart', '-k', `${domain}/${LABEL}`]);
-  await waitAndReport();
+  await waitAndReport(logFrom);
 }
 
 switch (command) {

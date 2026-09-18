@@ -1,12 +1,10 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { APP_DIR, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, visionLine, type Health } from '../../src/health';
+import { APP_DIR, ForeignServerError, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, visionLine, type Health } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
-/** 設定画面（SPEC §15.2）。ローカルサーバーとの接続 */
+/** 設定画面（SPEC §15.2）。ローカルサーバーとの接続。ポートとトークンの欄は置かない（2026-09-18） */
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const port = $<HTMLInputElement>('port');
-const token = $<HTMLInputElement>('token');
 const result = $('result');
 const pairStatus = $('pairStatus');
 const unpairBtn = $<HTMLButtonElement>('unpair');
@@ -18,8 +16,6 @@ notesCmd.textContent = NOTES_COMMAND;
 bindCopyButton($<HTMLButtonElement>('copyNotesCmd'), NOTES_COMMAND);
 
 let config: Config = await loadConfig();
-port.value = String(config.server.port);
-token.value = config.server.token;
 renderPairStatus();
 
 function show(text: string, ok: boolean | null = null) {
@@ -29,19 +25,12 @@ function show(text: string, ok: boolean | null = null) {
 
 function renderPairStatus() {
   const connected = config.server.paired && config.server.token.length > 0;
+  // トークンだけあって承認の記録がないのは、手で貼っていた頃（2026-09-09 より前）の設定
   pairStatus.textContent = connected ? '接続済み（この Mac のサーバーが承認済み）' : config.server.token ? 'トークンで接続' : '未接続';
   pairStatus.className = `result${connected ? ' ok' : ''}`;
   unpairBtn.hidden = !config.server.token;
 }
 
-function readForm(): Config {
-  const value = token.value.trim();
-  // トークンを消したら承認済みの記録も外す（次はポップアップの「このMacと接続」からやり直す）
-  return {
-    ...config,
-    server: { ...config.server, port: Number(port.value) || 47321, token: value, paired: value.length > 0 && config.server.paired },
-  };
-}
 
 const LLM_LABEL: Record<string, string> = { codex: 'Codex CLI', openai: 'OpenAI API', ollama: 'Ollama' };
 
@@ -83,14 +72,11 @@ void fetchHealth(config.server)
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
 $('pair').addEventListener('click', async () => {
-  config = readForm();
-  await saveConfig(config);
   show('Mac の画面に確認ダイアログが出ます。「許可」を押してください…');
   try {
     // 承認と保存は service worker が行う（ポップアップからも同じ経路）
     await sendToBackground.pair();
     config = await loadConfig();
-    token.value = config.server.token;
     renderPairStatus();
     show('接続しました。', true);
   } catch (e) {
@@ -107,7 +93,6 @@ unpairBtn.addEventListener('click', async () => {
   try {
     await sendToBackground.unpair();
     config = await loadConfig();
-    token.value = config.server.token;
     renderPairStatus();
     show('接続を解除しました。', true);
   } catch (e) {
@@ -115,20 +100,17 @@ unpairBtn.addEventListener('click', async () => {
   }
 });
 
-$('save').addEventListener('click', async () => {
-  config = readForm();
-  await saveConfig(config);
-  show('保存しました', true);
-});
-
 $('test').addEventListener('click', async () => {
-  const { server } = readForm();
+  // ほかの画面（ポップアップの接続・解除）で変わっているかもしれないので読み直す
+  config = await loadConfig();
+  const { server } = config;
   show('接続中…');
   try {
     const body = await fetchHealth(server);
     const lines = [`サーバー v${body.version ?? '?'} に接続できました${body.commit ? `（${body.commit}）` : ''}`];
     if (serverOutdated(body)) lines.push(outdatedMessage(body));
-    lines.push(`承認: ${body.paired ? '済み' : server.token ? (body.authorized ? 'トークンで OK' : 'トークンが一致しません') : '未承認（「このMacと接続」を押してください）'}`);
+    // トークンを手で直す欄は無いので、通らなければ「このMacと接続」に案内する（サーバーの trusted.json を消したときなど）
+    lines.push(`承認: ${body.paired ? '済み' : body.authorized ? 'トークンで OK' : '未承認（「このMacと接続」を押してください）'}`);
     lines.push(`whisperkit-cli: ${body.whisperkit ? 'あり' : 'なし'} / ffmpeg: ${body.ffmpeg ? 'あり' : 'なし'}`);
     // 見た目の判定（同じ場面の画像をまとめる）。無くても動くので「接続できた」の判定には混ぜない（#17）
     const vision = visionLine(body);
@@ -144,6 +126,8 @@ $('test').addEventListener('click', async () => {
     }
     show(lines.join('\n'), body.authorized === true && body.whisperkit === true && body.ffmpeg === true);
   } catch (e) {
-    show(`接続できません（127.0.0.1:${server.port}）。サーバーを起動してください。\n${e instanceof Error ? e.message : String(e)}`, false);
+    // ほかのアプリがポートを使っているなら、「サーバーを起動してください」は当てはまらない（§12.1d）
+    if (e instanceof ForeignServerError) show(e.message, false);
+    else show(`接続できません（127.0.0.1:${server.port}）。サーバーを起動してください。\n${e instanceof Error ? e.message : String(e)}`, false);
   }
 });
