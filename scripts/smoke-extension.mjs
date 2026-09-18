@@ -796,7 +796,9 @@ try {
   localServer = spawn(process.execPath, localServerArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
   localServer.stdout.on('data', (chunk) => (serverLog += chunk));
   for (let i = 0; i < 50 && !serverLog.includes('LecScribe のサーバーを起動できません'); i++) await new Promise((r) => setTimeout(r, 200));
-  assert.ok(serverLog.includes(`ポート ${SERVER_PORT} を「node」が使っているため`), `no port-in-use message in the server log:\n${serverLog}`);
+  // 相手の名前は macOS の /usr/sbin/lsof で調べる。CI（Linux）には無いので「ほかのアプリ」になる
+  const holder = process.platform === 'darwin' ? '「node」が' : 'ほかのアプリが';
+  assert.ok(serverLog.includes(`ポート ${SERVER_PORT} を${holder}使っているため`), `no port-in-use message in the server log:\n${serverLog}`);
   await new Promise((resolve) => foreign.close(resolve));
   let upAgain = false;
   for (let i = 0; i < 75 && !upAgain; i++) {
