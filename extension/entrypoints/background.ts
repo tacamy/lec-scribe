@@ -140,6 +140,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return { state: await readState() };
     case 'PAIR':
       return pair();
+    case 'UNPAIR':
+      return { state: await unpair() };
     case 'EXPORT':
       return { state: await exportSession(msg.sessionId) };
     case 'DISCARD':
@@ -641,7 +643,8 @@ async function discardSession(sessionId: string, options: { output?: 'keep' | 'd
 
 /**
  * ローカルサーバーと接続する。サーバーが Mac のダイアログで承認を求め、「許可」なら拡張専用のトークンを返すので保存する。
- * ポップアップはダイアログにフォーカスを取られて閉じるため、fetch はここ（service worker）で行う
+ * ポップアップはダイアログにフォーカスを取られて閉じるため、fetch はここ（service worker）で行う。
+ * 今のトークンを添える。サーバーがまだ承認しているトークンなら、ダイアログを出さずに接続済みと返る（押し直しで切れない）
  */
 async function pair(): Promise<{ state: SessionState; paired: boolean }> {
   const config = await loadConfig();
@@ -649,7 +652,7 @@ async function pair(): Promise<{ state: SessionState; paired: boolean }> {
   try {
     res = await fetch(`http://127.0.0.1:${config.server.port}/pair`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...authHeaders(config.server), 'content-type': 'application/json' },
       body: JSON.stringify({ name: chrome.runtime.getManifest().name }),
     });
   } catch (e) {
@@ -665,6 +668,23 @@ async function pair(): Promise<{ state: SessionState; paired: boolean }> {
   await saveConfig({ ...config, server: { ...config.server, paired: true, token: body.token } });
   const current = await readState();
   return { state: { ...current, error: undefined, warnings: current.warnings.filter((w) => w !== 'SERVER_UNREACHABLE') }, paired: true };
+}
+
+/**
+ * 接続を解除する（設定画面）。サーバーにはこの拡張のトークンの承認だけを取り消させ、保存したトークンを消す。
+ * サーバーに繋がらなくても拡張の側は解除する（トークンを持つ者がいなくなるので、サーバーに残った記録は使われない）
+ */
+async function unpair(): Promise<SessionState> {
+  const config = await loadConfig();
+  if (config.server.token) {
+    try {
+      await fetch(`http://127.0.0.1:${config.server.port}/unpair`, { method: 'POST', headers: authHeaders(config.server), signal: AbortSignal.timeout(5_000) });
+    } catch {
+      // 止まっているサーバーは待たない
+    }
+  }
+  await saveConfig({ ...config, server: { ...config.server, paired: false, token: '' } });
+  return readState();
 }
 
 /** サーバーの処理を止める。remove でフォルダも消す（force なら notes.md があっても）。繋がらなくても破棄は続ける */

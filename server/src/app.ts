@@ -10,7 +10,7 @@ import { slugify } from './format.ts';
 import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
-import { askPermission, extensionIdFromOrigin, sanitizeName, saveTrusted, trustedByToken, type Trusted } from './pairing.ts';
+import { addTrusted, askPermission, extensionIdFromOrigin, pairMessage, removeTrusted, sanitizeName, trustedByToken, type Trusted } from './pairing.ts';
 
 export const VERSION = '0.1.0';
 /**
@@ -21,8 +21,10 @@ export const VERSION = '0.1.0';
  *   1: 2026-09-11。cancel の force、status の 404、title 先頭のフォルダ名、までを含む
  *   2: 2026-09-11。/health に vision（見た目の判定の補助コマンドの状態）と visionReason（#17）。
  *      見せるだけの項目なので、拡張が必要とする最低の版は 1 のまま
+ *   3: 2026-09-18。/pair は承認済みのトークンを持つ押し直しにだけダイアログなしで答え、それ以外は毎回ダイアログを出す。
+ *      POST /unpair（接続を解除）。古いサーバーでも拡張は自分の保存分を消せば済むので、最低の版は 1 のまま
  */
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
@@ -38,7 +40,7 @@ export function createApp(
   config: ServerConfig,
   token: string,
   log: (message: string) => void = () => undefined,
-  trusted: Trusted = { entries: new Map(), file: config.trustedFile },
+  trusted: Trusted = { entries: [], file: config.trustedFile },
   /** 動いているコードのコミット（診断用。/health に載せる）。分からなければ null */
   build: { commit: string | null } = { commit: null },
 ): App {
@@ -143,9 +145,14 @@ export function createApp(
         sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: '拡張機能からの要求ではありません。' } });
         return;
       }
-      // 承認済みの拡張でも、ダイアログなしでトークンを返さない。Origin を偽れないのはブラウザだけで、
-      // curl などは承認済みの ID を名乗れる（拡張 ID は秘密ではない）。許可されたら新しいトークンに替える
-      const known = trusted.entries.has(id);
+      // すでにこの拡張の承認済みトークンを持っている（押し直し）。新しく渡すものはないので、ダイアログなしで接続済みと返す
+      const held = trustedByToken(trusted, req.headers.authorization);
+      if (held?.id === id) {
+        sendJson(res, 200, { ok: true, paired: true, already: true, token: held.token });
+        return;
+      }
+      // それ以外は、ダイアログで許可されたときだけ新しいトークンを渡す。Origin を偽れないのはブラウザだけで、
+      // curl などは承認済みの ID を名乗れる（拡張 ID は秘密ではない）
       if (pairing) {
         // 表示中のダイアログは別のプログラムが出したものかもしれないので、「許可」を促さない
         sendJson(res, 429, {
@@ -158,18 +165,14 @@ export function createApp(
       try {
         const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
         const name = sanitizeName(body.name) || 'Chrome 拡張';
-        log(`pair request from ${id} (${name})${known ? '、接続済みの拡張' : ''}`);
-        const allowed = await askPermission(
-          config.osascriptBin,
-          `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。\n\n許可すると、この拡張は録音を送って文字起こしを始めたり、${config.outDir} のフォルダを開いたり消したりできます。` +
-            (known ? '\n\nこの拡張はすでに接続済みです。拡張の画面で「このMacと接続」を押し直したのでなければ、「許可しない」を押してください。' : ''),
-        );
+        log(`pair request from ${id} (${name})${trusted.entries.some((e) => e.id === id) ? '、接続済みの ID' : ''}`);
+        const allowed = await askPermission(config.osascriptBin, pairMessage(name, id, config.outDir, trusted.entries));
         if (!allowed) {
           log(`pair denied: ${id}`);
           sendJson(res, 403, { ok: false, paired: false, error: { code: 'DENIED', message: '接続が許可されませんでした。' } });
           return;
         }
-        const entry = await saveTrusted(trusted, id, name);
+        const entry = await addTrusted(trusted, id, name);
         log(`paired: ${id} (${name}) → ${trusted.file}`);
         sendJson(res, 200, { ok: true, paired: true, token: entry.token });
       } finally {
@@ -180,6 +183,18 @@ export function createApp(
 
     if (!authorized(req)) {
       sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: '接続が承認されていません。拡張の設定画面で「このMacと接続」を押してください。' } });
+      return;
+    }
+
+    // POST /unpair — 設定画面の「接続を解除」。送ってきたトークンの承認だけを取り消す（ほかの承認には触らない）。
+    // 共有トークン（手で貼ったもの）は取り消さず removed: false を返す。どちらでも拡張は自分の保存分を消す
+    if (req.method === 'POST' && url.pathname === '/unpair') {
+      const held = trustedByToken(trusted, req.headers.authorization);
+      if (held) {
+        await removeTrusted(trusted, held);
+        log(`unpaired: ${held.id} (${held.name})`);
+      }
+      sendJson(res, 200, { ok: true, removed: held !== null });
       return;
     }
 

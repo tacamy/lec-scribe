@@ -6,24 +6,29 @@ import { run } from './exec.ts';
 /**
  * 拡張との接続承認（トークンの代わり）。
  * 拡張の設定画面の「このMacと接続」で POST /pair が来たら、macOS のダイアログで
- * ユーザーに許可を求め、許可されたらその拡張 ID を trusted.json に記録する。
+ * ユーザーに許可を求め、許可されたらその拡張 ID とトークンを trusted.json に記録する。
  * 承認した拡張には専用のトークンを発行して返す（拡張はそれを保存して Bearer で送る）。
  * Origin（chrome-extension://<id>）はブラウザが付けるので Web ページや別の拡張には偽装できない。
- * ただしブラウザ以外（curl など）は Origin を自由に書けるので、トークンを渡すのは毎回ダイアログで
+ * ただしブラウザ以外（curl など）は Origin を自由に書けるので、新しいトークンを渡すのは毎回ダイアログで
  * 許可されたときだけにする（承認済みの ID を名乗っても、ダイアログなしでは受け取れない）。
+ *
+ * トークンは承認 1 回ごとに 1 つ（2026-09-18）。サーバーには同じ ID の拡張（別の Chrome プロファイル、
+ * 入れ直し）を見分けられないので、ID ごとに 1 つにして作り直すと、同じ ID で動いているほかの拡張や
+ * 処理中の監視まで切れる。承認を足してもほかの承認には触らず、取り消すのは「接続を解除」だけにする。
  * GET 要求には Origin が付かない（host_permissions のある拡張ページからの fetch は CORS 扱いにならない）
  * ため、認可はトークンで行う。
  */
+/** 承認 1 回分の記録。同じ拡張 ID でも承認ごとに別の行になる */
 export type TrustedEntry = { id: string; token: string; name: string; at: string };
-export type Trusted = { entries: Map<string, TrustedEntry>; file: string };
+export type Trusted = { entries: TrustedEntry[]; file: string };
 
 export async function loadTrusted(file: string): Promise<Trusted> {
-  const entries = new Map<string, TrustedEntry>();
+  const entries: TrustedEntry[] = [];
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8')) as { extensions?: Array<Partial<TrustedEntry>> };
     for (const e of parsed.extensions ?? []) {
       if (typeof e.id === 'string' && EXTENSION_ID.test(e.id) && typeof e.token === 'string' && e.token.length >= 32) {
-        entries.set(e.id, { id: e.id, token: e.token, name: e.name ?? '', at: e.at ?? '' });
+        entries.push({ id: e.id, token: e.token, name: e.name ?? '', at: e.at ?? '' });
       }
     }
   } catch {
@@ -32,23 +37,32 @@ export async function loadTrusted(file: string): Promise<Trusted> {
   return { entries, file };
 }
 
-/** 拡張を承認して専用トークンを発行し、ファイルに残す。承認済みの拡張なら前のトークンは使えなくなる */
-export async function saveTrusted(trusted: Trusted, id: string, name: string): Promise<TrustedEntry> {
+/** 承認を 1 件足して専用トークンを発行し、ファイルに残す。ほかの承認（同じ ID のものも）には触らない */
+export async function addTrusted(trusted: Trusted, id: string, name: string): Promise<TrustedEntry> {
   const entry: TrustedEntry = { id, token: randomBytes(24).toString('base64url'), name, at: new Date().toISOString() };
-  // ファイルに書けてから差し替える。先に差し替えると、書き込みに失敗したとき（ディスクがいっぱいなど）承認済みの拡張の
-  // 今のトークンだけが使えなくなり、新しいトークンも拡張に届かない
-  const next = new Map(trusted.entries).set(id, entry);
-  await mkdir(path.dirname(trusted.file), { recursive: true, mode: 0o700 });
-  await writeFile(trusted.file, `${JSON.stringify({ extensions: [...next.values()] }, null, 2)}\n`, { mode: 0o600 });
-  trusted.entries.set(id, entry);
+  // ファイルに書けてからメモリに足す（書けなかった承認で通ってしまわないように）
+  await writeTrusted(trusted.file, [...trusted.entries, entry]);
+  trusted.entries = [...trusted.entries, entry];
   return entry;
+}
+
+/** その承認だけを取り消す（設定画面の「接続を解除」）。ほかの承認には触らない */
+export async function removeTrusted(trusted: Trusted, entry: TrustedEntry): Promise<void> {
+  const next = trusted.entries.filter((e) => e !== entry);
+  await writeTrusted(trusted.file, next);
+  trusted.entries = next;
+}
+
+async function writeTrusted(file: string, entries: readonly TrustedEntry[]): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, `${JSON.stringify({ extensions: entries }, null, 2)}\n`, { mode: 0o600 });
 }
 
 /** `Authorization: Bearer <token>` が承認済みの拡張のものなら、その記録を返す */
 export function trustedByToken(trusted: Trusted, header: string | undefined): TrustedEntry | null {
   if (!header?.startsWith('Bearer ')) return null;
   const given = Buffer.from(header.slice(7).trim());
-  for (const entry of trusted.entries.values()) {
+  for (const entry of trusted.entries) {
     const expected = Buffer.from(entry.token);
     if (given.length === expected.length && timingSafeEqual(given, expected)) return entry;
   }
@@ -62,6 +76,30 @@ export function extensionIdFromOrigin(origin: string | undefined): string | null
   if (!origin?.startsWith('chrome-extension://')) return null;
   const id = origin.slice('chrome-extension://'.length);
   return EXTENSION_ID.test(id) ? id : null;
+}
+
+/**
+ * 承認ダイアログの本文。すでに接続済みの拡張があれば一文を足す。
+ * 承認済みの ID を名乗る要求（入れ直しや別プロファイルでなければなりすまし）も、「LecScribe」を名乗る別の ID の要求も、
+ * 初めての接続と同じ見た目にしない。人は 32 文字の ID を見比べないため
+ */
+export function pairMessage(name: string, id: string, outDir: string, entries: readonly TrustedEntry[]): string {
+  const lines = [
+    `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。`,
+    `許可すると、この拡張は録音を送って文字起こしを始めたり、${outDir} のフォルダを開いたり消したりできます。`,
+  ];
+  if (entries.some((e) => e.id === id)) {
+    lines.push('この ID の拡張はすでに接続済みです。拡張を入れ直したか、別の Chrome プロファイルで使い始めたのでなければ、「許可しない」を押してください。');
+  } else if (entries.length > 0) {
+    const others = [...new Map(entries.map((e) => [e.id, e])).values()];
+    const list = others
+      .slice(0, 2)
+      .map((e) => `${e.name || 'Chrome 拡張'}（ID: ${e.id}）`)
+      .join('、');
+    const more = others.length > 2 ? ` ほか ${others.length - 2} 件` : '';
+    lines.push(`この Mac ではすでに別の拡張が接続済みです: ${list}${more}。拡張を入れ直したのでなければ、「許可しない」を押してください。`);
+  }
+  return lines.join('\n\n');
 }
 
 /** 拡張名は表示にしか使わないが、相手が送ってくる文字列なので短くして制御文字を落とす */

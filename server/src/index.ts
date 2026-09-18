@@ -53,7 +53,7 @@ server.listen(config.port, config.host, () => {
   console.log(`  output    : ${config.outDir}`);
   console.log(`  model     : ${config.model} (${config.language})`);
   console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
-  console.log(`  trusted   : ${trusted.entries.size} 件の拡張を承認済み（${config.trustedFile}）`);
+  console.log(`  trusted   : ${trusted.entries.length} 件の接続を承認済み（${config.trustedFile}）`);
   console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
   console.log('');
   console.log('  拡張機能の設定（オプション）で「このMacと接続」を押し、Mac のダイアログで「許可」してください。');

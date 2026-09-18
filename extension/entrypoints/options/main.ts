@@ -9,6 +9,7 @@ const port = $<HTMLInputElement>('port');
 const token = $<HTMLInputElement>('token');
 const result = $('result');
 const pairStatus = $('pairStatus');
+const unpairBtn = $<HTMLButtonElement>('unpair');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
 const notesCmd = $('notesCmd');
@@ -30,6 +31,7 @@ function renderPairStatus() {
   const connected = config.server.paired && config.server.token.length > 0;
   pairStatus.textContent = connected ? '接続済み（この Mac のサーバーが承認済み）' : config.server.token ? 'トークンで接続' : '未接続';
   pairStatus.className = `result${connected ? ' ok' : ''}`;
+  unpairBtn.hidden = !config.server.token;
 }
 
 function readForm(): Config {
@@ -91,6 +93,23 @@ $('pair').addEventListener('click', async () => {
     token.value = config.server.token;
     renderPairStatus();
     show('接続しました。', true);
+  } catch (e) {
+    show(e instanceof Error ? e.message : String(e), false);
+  }
+});
+
+/** 「接続を解除」: サーバーにこの拡張の承認を取り消させ、保存したトークンを消す。戻すには「このMacと接続」を押し直す */
+unpairBtn.addEventListener('click', async () => {
+  const ok = confirm(
+    'この Mac との接続を解除しますか？\n\n解除すると、録音を送って文字起こしすることができなくなります（録音とスライドの保存は続けます）。文字起こし中の講義は Mac で最後まで処理されますが、進み具合は表示されなくなります。\n\nもう一度「このMacと接続」を押せば戻せます。',
+  );
+  if (!ok) return;
+  try {
+    await sendToBackground.unpair();
+    config = await loadConfig();
+    token.value = config.server.token;
+    renderPairStatus();
+    show('接続を解除しました。', true);
   } catch (e) {
     show(e instanceof Error ? e.message : String(e), false);
   }

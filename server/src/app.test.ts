@@ -333,23 +333,50 @@ describe('local server', () => {
     // Return で押される既定のボタンは「許可しない」。初めての拡張には「接続済み」の一文を付けない
     const firstArgs = await readFile(path.join(tmp, 'pair-args.txt'), 'utf8');
     expect(firstArgs).toContain('default button "許可しない"');
-    expect(firstArgs).not.toContain('すでに接続済みです');
+    expect(firstArgs).not.toContain('接続済みです');
+    const status = (auth: Record<string, string>) => fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: auth }).then((r) => r.status);
+    const pairArgs = () => readFile(path.join(tmp, 'pair-args.txt'), 'utf8');
+    await writeFile(path.join(tmp, 'pair-args.txt'), '');
 
-    // 承認済みの ID を名乗っても（curl なら Origin は偽れる）、ダイアログなしではトークンを返さない。
-    // 「許可しない」なら 403 で、前のトークンはそのまま使える
+    // 押し直し: 自分のトークンを添えてくる拡張には、ダイアログを出さずに同じトークンを返す
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
-    const again = await fetch(`${base}/pair`, { method: 'POST', headers: noToken });
-    expect(again.status).toBe(403);
-    expect(JSON.stringify(await again.json())).not.toContain(issued.token);
-    expect(await readFile(path.join(tmp, 'pair-args.txt'), 'utf8')).toContain('すでに接続済みです');
-    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: withIssued })).status).toBe(200);
-    // 「許可」なら新しいトークンに替わり、前のトークンは使えなくなる
+    expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: { ...noToken, ...withIssued } })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+    expect(await pairArgs()).toBe('');
+
+    // 承認済みの ID を名乗っても（curl なら Origin は偽れる）、トークンを添えなければダイアログを出す。
+    // 「許可しない」なら 403 で、何も渡さず、今のトークンはそのまま使える
+    const spoofed = await fetch(`${base}/pair`, { method: 'POST', headers: noToken });
+    expect(spoofed.status).toBe(403);
+    expect(JSON.stringify(await spoofed.json())).not.toContain(issued.token);
+    expect(await pairArgs()).toContain('この ID の拡張はすでに接続済みです');
+    expect(await status(withIssued)).toBe(200);
+
+    // 「許可」なら、その要求専用のトークンを足す（別の Chrome プロファイルなど）。今のトークンも使え続ける
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'allowed\n');
-    const renewed = (await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()) as { paired: boolean; token: string };
-    expect(renewed.paired).toBe(true);
-    expect(renewed.token).not.toBe(issued.token);
-    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: withIssued })).status).toBe(401);
-    expect((await fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: { authorization: `Bearer ${renewed.token}` } })).status).toBe(200);
+    const second = (await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()) as { paired: boolean; token: string };
+    expect(second.paired).toBe(true);
+    expect(second.token).not.toBe(issued.token);
+    const withSecond = { authorization: `Bearer ${second.token}` };
+    expect(await status(withIssued)).toBe(200);
+    expect(await status(withSecond)).toBe(200);
+
+    // 別の ID が「LecScribe」を名乗ってきたら、すでに接続済みの拡張があることをダイアログに書く
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
+    const otherId = `chrome-extension://${'b'.repeat(32)}`;
+    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { origin: otherId, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'LecScribe' }) })).status).toBe(403);
+    const otherArgs = await pairArgs();
+    expect(otherArgs).toContain('この Mac ではすでに別の拡張が接続済みです');
+    expect(otherArgs).toContain(ORIGIN.slice('chrome-extension://'.length));
+
+    // 接続を解除: 送ってきたトークンの承認だけを消す。ほかの承認と共有トークンは残る
+    expect((await fetch(`${base}/unpair`, { method: 'POST', headers: noToken })).status).toBe(401);
+    expect(await (await fetch(`${base}/unpair`, { method: 'POST', headers: { ...noToken, ...withSecond } })).json()).toMatchObject({ ok: true, removed: true });
+    expect(await status(withSecond)).toBe(401);
+    expect(await status(withIssued)).toBe(200);
+    expect(await (await fetch(`${base}/unpair`, { method: 'POST', headers })).json()).toMatchObject({ ok: true, removed: false });
+    expect(await status(headers)).toBe(200);
+    const left = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ token: string }> };
+    expect(left.extensions.map((e) => e.token)).toEqual([issued.token]);
   });
 
   it('/health が拡張との約束の版（api）とコミットを返す', async () => {
