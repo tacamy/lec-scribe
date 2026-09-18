@@ -85,7 +85,8 @@ export async function readPipelineStatus(dir: string): Promise<PipelineStatus | 
 }
 
 export async function writeStatus(dir: string, status: PipelineStatus): Promise<PipelineStatus> {
-  await mkdir(workPath(dir), { recursive: true });
+  // 処理中に Finder でフォルダが消されると、ここでセッションフォルダごと作り直す。ensureLayout と同じく本人だけが読めるように（§18）
+  await mkdir(workPath(dir), { recursive: true, mode: 0o700 });
   await writeFile(workPath(dir, PIPELINE_FILE), JSON.stringify(status, null, 2));
   return status;
 }
@@ -295,7 +296,12 @@ export class Pipeline {
         const timeline = await readJson(workPath(dir, 'timeline.json'));
         const events = isTimeline(timeline) ? timeline : null;
         const slidesJson = await readJson(workPath(dir, 'slides.json'));
-        const allSlides = isSlideList(slidesJson) ? slidesJson : [];
+        const validSlides = isSlideList(slidesJson);
+        const allSlides = validSlides ? slidesJson : [];
+        // 配列でない形（オブジェクトなど）も黙って画像なしにしない。ファイルが無い・JSON として読めないときは undefined
+        if (!validSlides && slidesJson !== undefined) {
+          this.log(`slides.json の形が違う（画像の名前が slide_001.png の形でないなど）ので、画像なしでノートを作ります: ${dir}`);
+        }
         // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
         const slides = await this.pickScenes(dir, allSlides, signal);
         const session = (await readJson(workPath(dir, 'session.json'))) as

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -14,6 +14,19 @@ describe('slideStart', () => {
     expect(slideStart(slides[1]!)).toBe(60);
     expect(slideStart(slides[2]!)).toBe(120);
     expect(slideStart({ filename: 'x.png', videoTime: 1, reason: 'change' })).toBe(0);
+  });
+});
+
+describe('isSlideList', () => {
+  it('拡張が付ける名前（slide_001.png / .jpg）だけを受け付ける', () => {
+    expect(isSlideList([{ filename: 'slide_001.png', videoTime: 0 }, { filename: 'slide_1234.jpg', videoTime: 5 }])).toBe(true);
+    expect(isSlideList([])).toBe(true);
+    // 名前はそのままパスにして ffmpeg や Vision に渡すので、フォルダの外を指す名前が 1 つでもあれば全体を捨てる
+    for (const filename of ['../slide_001.png', '/etc/passwd', 'slide_001.png/../../x', 'slide_001.gif', 'x.png']) {
+      expect(isSlideList([{ filename: 'slide_001.png', videoTime: 0 }, { filename, videoTime: 1 }])).toBe(false);
+    }
+    expect(isSlideList([{ filename: 'slide_001.png' }])).toBe(false);
+    expect(isSlideList({ filename: 'slide_001.png', videoTime: 0 })).toBe(false);
   });
 });
 

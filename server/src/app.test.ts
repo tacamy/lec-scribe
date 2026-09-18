@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -40,8 +40,8 @@ beforeAll(async () => {
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
-  // osascript スタブ: pair-answer.txt の中身（allowed / denied）を返す
-  const osascript = await writeStub('osascript', `cat "${path.join(tmp, 'pair-answer.txt')}"`);
+  // osascript スタブ: 受け取った引数（AppleScript とダイアログの本文）を pair-args.txt に残し、pair-answer.txt の中身（allowed / denied）を返す
+  const osascript = await writeStub('osascript', `printf '%s\\n' "$@" > "${path.join(tmp, 'pair-args.txt')}"; cat "${path.join(tmp, 'pair-answer.txt')}"`);
   // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
@@ -141,6 +141,8 @@ describe('local server', () => {
     expect(created.status).toBe(201);
     const { outputDir } = (await created.json()) as { outputDir: string };
     expect(path.basename(outputDir)).toBe('テスト_動画_1_20260908-103005-ab12');
+    // 録音やノートが入るので、本人だけが読める
+    expect((await stat(outputDir)).mode & 0o777).toBe(0o700);
 
     const put = (name: string, body: string | Uint8Array) =>
       fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
@@ -155,6 +157,9 @@ describe('local server', () => {
     expect((await put('timeline.json', JSON.stringify(timeline))).status).toBe(200);
     expect((await put('..%2Fescape.txt', 'x')).status).toBe(400);
     expect((await put('slides/evil.sh', 'x')).status).toBe(400);
+    expect((await put('slides%2F..%2F..%2Fslide_001.png', 'x')).status).toBe(400);
+    // 壊れた %xx は 500 ではなく 400
+    expect((await put('%E0%A4%A', 'x')).status).toBe(400);
 
     const finalized = await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
     expect(finalized.status).toBe(202);
@@ -325,9 +330,53 @@ describe('local server', () => {
     expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ authorized: false, paired: false });
     const saved = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ id: string; name: string; token: string }> };
     expect(saved.extensions).toMatchObject([{ id: ORIGIN.slice('chrome-extension://'.length), name: 'LecScribe<x>', token: issued.token }]);
-    // 承認済みなら再度 pair してもダイアログは出ず、同じトークンが返る
+    // Return で押される既定のボタンは「許可しない」。初めての拡張には「接続済み」の一文を付けない
+    const firstArgs = await readFile(path.join(tmp, 'pair-args.txt'), 'utf8');
+    expect(firstArgs).toContain('default button "許可しない"');
+    expect(firstArgs).not.toContain('接続済みです');
+    const status = (auth: Record<string, string>) => fetch(`${base}/sessions/20260908-103005-ab12/status`, { headers: auth }).then((r) => r.status);
+    const pairArgs = () => readFile(path.join(tmp, 'pair-args.txt'), 'utf8');
+    await writeFile(path.join(tmp, 'pair-args.txt'), '');
+
+    // 押し直し: 自分のトークンを添えてくる拡張には、ダイアログを出さずに同じトークンを返す
     await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
-    expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+    expect(await (await fetch(`${base}/pair`, { method: 'POST', headers: { ...noToken, ...withIssued } })).json()).toMatchObject({ paired: true, already: true, token: issued.token });
+    expect(await pairArgs()).toBe('');
+
+    // 承認済みの ID を名乗っても（curl なら Origin は偽れる）、トークンを添えなければダイアログを出す。
+    // 「許可しない」なら 403 で、何も渡さず、今のトークンはそのまま使える
+    const spoofed = await fetch(`${base}/pair`, { method: 'POST', headers: noToken });
+    expect(spoofed.status).toBe(403);
+    expect(JSON.stringify(await spoofed.json())).not.toContain(issued.token);
+    expect(await pairArgs()).toContain('この ID の拡張はすでに接続済みです');
+    expect(await status(withIssued)).toBe(200);
+
+    // 「許可」なら、その要求専用のトークンを足す（別の Chrome プロファイルなど）。今のトークンも使え続ける
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'allowed\n');
+    const second = (await (await fetch(`${base}/pair`, { method: 'POST', headers: noToken })).json()) as { paired: boolean; token: string };
+    expect(second.paired).toBe(true);
+    expect(second.token).not.toBe(issued.token);
+    const withSecond = { authorization: `Bearer ${second.token}` };
+    expect(await status(withIssued)).toBe(200);
+    expect(await status(withSecond)).toBe(200);
+
+    // 別の ID が「LecScribe」を名乗ってきたら、すでに接続済みの拡張があることをダイアログに書く
+    await writeFile(path.join(tmp, 'pair-answer.txt'), 'denied\n');
+    const otherId = `chrome-extension://${'b'.repeat(32)}`;
+    expect((await fetch(`${base}/pair`, { method: 'POST', headers: { origin: otherId, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'LecScribe' }) })).status).toBe(403);
+    const otherArgs = await pairArgs();
+    expect(otherArgs).toContain('この Mac ではすでに別の拡張が接続済みです');
+    expect(otherArgs).toContain(ORIGIN.slice('chrome-extension://'.length));
+
+    // 接続を解除: 送ってきたトークンの承認だけを消す。ほかの承認と共有トークンは残る
+    expect((await fetch(`${base}/unpair`, { method: 'POST', headers: noToken })).status).toBe(401);
+    expect(await (await fetch(`${base}/unpair`, { method: 'POST', headers: { ...noToken, ...withSecond } })).json()).toMatchObject({ ok: true, removed: true });
+    expect(await status(withSecond)).toBe(401);
+    expect(await status(withIssued)).toBe(200);
+    expect(await (await fetch(`${base}/unpair`, { method: 'POST', headers })).json()).toMatchObject({ ok: true, removed: false });
+    expect(await status(headers)).toBe(200);
+    const left = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ token: string }> };
+    expect(left.extensions.map((e) => e.token)).toEqual([issued.token]);
   });
 
   it('/health が拡張との約束の版（api）とコミットを返す', async () => {

@@ -43,6 +43,8 @@ export type ToBackground =
   | { target: 'sw'; type: 'GET_STATE' }
   /** ローカルサーバーと接続する（サーバーが Mac のダイアログで承認を求め、拡張専用トークンを返す） */
   | { target: 'sw'; type: 'PAIR' }
+  /** 接続を解除する（サーバーにこの拡張の承認を取り消させ、保存したトークンを消す） */
+  | { target: 'sw'; type: 'UNPAIR' }
   | { target: 'sw'; type: 'EXPORT'; sessionId: string }
   /**
    * 一覧の行を消す。output: 'delete' で ~/LecScribe のフォルダも消す（notes.md があっても）、'keep' で残す、
@@ -192,6 +194,7 @@ export const sendToBackground = {
   stop: () => send<StateReply>({ target: 'sw', type: 'STOP' }),
   getState: () => send<StateReply>({ target: 'sw', type: 'GET_STATE' }),
   pair: () => send<StateReply & { paired: boolean }>({ target: 'sw', type: 'PAIR' }),
+  unpair: () => send<StateReply>({ target: 'sw', type: 'UNPAIR' }),
   export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
   discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
     send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),

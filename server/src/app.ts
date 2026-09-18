@@ -7,10 +7,10 @@ import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
 import { visionStatus } from './vision.ts';
 import { slugify } from './format.ts';
-import { NOTES_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
+import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
-import { askPermission, extensionIdFromOrigin, sanitizeName, saveTrusted, trustedByToken, type Trusted } from './pairing.ts';
+import { addTrusted, askPermission, extensionIdFromOrigin, pairMessage, removeTrusted, sanitizeName, trustedByToken, type Trusted } from './pairing.ts';
 
 export const VERSION = '0.1.0';
 /**
@@ -21,15 +21,17 @@ export const VERSION = '0.1.0';
  *   1: 2026-09-11。cancel の force、status の 404、title 先頭のフォルダ名、までを含む
  *   2: 2026-09-11。/health に vision（見た目の判定の補助コマンドの状態）と visionReason（#17）。
  *      見せるだけの項目なので、拡張が必要とする最低の版は 1 のまま
+ *   3: 2026-09-18。/pair は承認済みのトークンを持つ押し直しにだけダイアログなしで答え、それ以外は毎回ダイアログを出す。
+ *      POST /unpair（接続を解除）。古いサーバーでも拡張は自分の保存分を消せば済むので、最低の版は 1 のまま
  */
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
 
 const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
-/** PUT /sessions/:id/files/<name> で受け付けるファイル */
-const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|slides\/slide_[0-9]{3,}\.(png|jpg))$/;
+/** PUT /sessions/:id/files/<name> で受け付ける作業ファイル。画像は slides/<SLIDE_FILE> */
+const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json)$/;
 const MAX_JSON_BODY = 5 * 1024 * 1024;
 
 export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
@@ -38,7 +40,7 @@ export function createApp(
   config: ServerConfig,
   token: string,
   log: (message: string) => void = () => undefined,
-  trusted: Trusted = { entries: new Map(), file: config.trustedFile },
+  trusted: Trusted = { entries: [], file: config.trustedFile },
   /** 動いているコードのコミット（診断用。/health に載せる）。分からなければ null */
   build: { commit: string | null } = { commit: null },
 ): App {
@@ -143,31 +145,34 @@ export function createApp(
         sendJson(res, 403, { ok: false, error: { code: 'FORBIDDEN_ORIGIN', message: '拡張機能からの要求ではありません。' } });
         return;
       }
-      const known = trusted.entries.get(id);
-      if (known) {
-        // 承認済み。Origin はブラウザが付けるので、この拡張だけがトークンを受け取れる
-        sendJson(res, 200, { ok: true, paired: true, already: true, token: known.token });
+      // すでにこの拡張の承認済みトークンを持っている（押し直し）。新しく渡すものはないので、ダイアログなしで接続済みと返す
+      const held = trustedByToken(trusted, req.headers.authorization);
+      if (held?.id === id) {
+        sendJson(res, 200, { ok: true, paired: true, already: true, token: held.token });
         return;
       }
+      // それ以外は、ダイアログで許可されたときだけ新しいトークンを渡す。Origin を偽れないのはブラウザだけで、
+      // curl などは承認済みの ID を名乗れる（拡張 ID は秘密ではない）
       if (pairing) {
-        sendJson(res, 429, { ok: false, error: { code: 'BUSY', message: '承認ダイアログを表示中です。Mac の画面で「許可」を押してください。' } });
+        // 表示中のダイアログは別のプログラムが出したものかもしれないので、「許可」を促さない
+        sendJson(res, 429, {
+          ok: false,
+          error: { code: 'BUSY', message: '承認ダイアログがすでに表示されています。Mac の画面のダイアログを閉じてから、もう一度押してください（自分で出したものか分からなければ「許可しない」を押してください）。' },
+        });
         return;
       }
       pairing = true; // body を読む間に別の要求が来ても 2 つ目のダイアログを出さない
       try {
         const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
         const name = sanitizeName(body.name) || 'Chrome 拡張';
-        log(`pair request from ${id} (${name})`);
-        const allowed = await askPermission(
-          config.osascriptBin,
-          `Chrome 拡張「${name}」（ID: ${id}）が LecScribe サーバーへの接続を求めています。\n\n許可すると、この拡張は録音を送って文字起こしを始めたり、${config.outDir} のフォルダを開いたり消したりできます。`,
-        );
+        log(`pair request from ${id} (${name})${trusted.entries.some((e) => e.id === id) ? '、接続済みの ID' : ''}`);
+        const allowed = await askPermission(config.osascriptBin, pairMessage(name, id, config.outDir, trusted.entries));
         if (!allowed) {
           log(`pair denied: ${id}`);
           sendJson(res, 403, { ok: false, paired: false, error: { code: 'DENIED', message: '接続が許可されませんでした。' } });
           return;
         }
-        const entry = await saveTrusted(trusted, id, name);
+        const entry = await addTrusted(trusted, id, name);
         log(`paired: ${id} (${name}) → ${trusted.file}`);
         sendJson(res, 200, { ok: true, paired: true, token: entry.token });
       } finally {
@@ -178,6 +183,18 @@ export function createApp(
 
     if (!authorized(req)) {
       sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: '接続が承認されていません。拡張の設定画面で「このMacと接続」を押してください。' } });
+      return;
+    }
+
+    // POST /unpair — 設定画面の「接続を解除」。送ってきたトークンの承認だけを取り消す（ほかの承認には触らない）。
+    // 共有トークン（手で貼ったもの）は取り消さず removed: false を返す。どちらでも拡張は自分の保存分を消す
+    if (req.method === 'POST' && url.pathname === '/unpair') {
+      const held = trustedByToken(trusted, req.headers.authorization);
+      if (held) {
+        await removeTrusted(trusted, held);
+        log(`unpaired: ${held.id} (${held.name})`);
+      }
+      sendJson(res, 200, { ok: true, removed: held !== null });
       return;
     }
 
@@ -222,13 +239,21 @@ export function createApp(
 
     // PUT /sessions/:id/files/<name>
     if (req.method === 'PUT' && parts[2] === 'files') {
-      const name = decodeURIComponent(parts.slice(3).join('/'));
-      if (!UPLOAD_NAME.test(name)) {
+      let name: string;
+      try {
+        name = decodeURIComponent(parts.slice(3).join('/'));
+      } catch {
+        // 壊れた %xx（%E0%A4%A など）。URIError のまま投げると 500 になる
+        sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'ファイル名の %xx が壊れています。' } });
+        return;
+      }
+      const isSlide = name.startsWith(`${SLIDES_DIR}/`) && SLIDE_FILE.test(name.slice(SLIDES_DIR.length + 1));
+      if (!isSlide && !UPLOAD_NAME.test(name)) {
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
         return;
       }
       // 画像はユーザー向けの slides/ に、それ以外の作業ファイルは .lecscribe/ に置く
-      const target = name.startsWith(`${SLIDES_DIR}/`) ? path.join(dir, name) : workPath(dir, name);
+      const target = isSlide ? path.join(dir, name) : workPath(dir, name);
       const tmp = `${target}.part`;
       await mkdir(path.dirname(target), { recursive: true });
       await streamPipeline(req, createWriteStream(tmp));

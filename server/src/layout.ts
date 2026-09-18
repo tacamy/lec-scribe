@@ -12,6 +12,11 @@ import path from 'node:path';
  */
 export const WORK_DIR = '.lecscribe';
 export const SLIDES_DIR = 'slides';
+/**
+ * slides/ に置く画像の名前。拡張が付ける slide_001.png / .jpg の形だけ。受け取るときと slides.json を読むときに確かめる
+ * （slides.json の名前はそのままパスにして ffmpeg や Vision に渡すので、フォルダの外を指させない）
+ */
+export const SLIDE_FILE = /^slide_[0-9]{3,}\.(png|jpg)$/;
 export const NOTES_FILE = 'notes.md';
 
 /** 作業ファイルの名前（トップレベルから .lecscribe/ へ移す対象） */
@@ -36,7 +41,9 @@ export function workPath(sessionDir: string, ...parts: string[]): string {
 }
 
 export async function ensureLayout(sessionDir: string): Promise<void> {
-  await mkdir(workPath(sessionDir), { recursive: true });
+  // 録音・文字起こし・ノートが入るので、新しく作るセッションフォルダは本人だけが読めるようにする。
+  // ホームは同じ Mac の別のアカウント（グループ staff）が通れる権限なので、既定の 755 だと中身を読まれる
+  await mkdir(workPath(sessionDir), { recursive: true, mode: 0o700 });
   await mkdir(path.join(sessionDir, SLIDES_DIR), { recursive: true });
 }
 

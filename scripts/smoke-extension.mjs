@@ -549,11 +549,19 @@ try {
   assert.notEqual(paired.server.token, SERVER_TOKEN, 'issued token replaces the shared one');
   assert.equal(paired.health.authorized, true, JSON.stringify(paired.health));
   assert.equal(paired.health.paired, true, JSON.stringify(paired.health));
+  // 押し直し: 拡張は今のトークンを添えるので、サーバーはダイアログを出さず同じトークンを返す（作り直さない。処理中の監視が切れないように）
+  const repaired = await popup.evaluate(async () => {
+    const reply = await chrome.runtime.sendMessage({ target: 'sw', type: 'PAIR' });
+    const { config } = await chrome.storage.local.get('config');
+    return { reply, token: config.server.token };
+  });
+  assert.equal(repaired.reply.ok, true, JSON.stringify(repaired));
+  assert.equal(repaired.token, paired.server.token, 'pressing pair again replaced the token');
   await popup.reload();
   await popup.waitForSelector('#startBtn', { state: 'attached' });
   assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), true, 'setup view still visible after pairing');
   assert.equal(await popup.evaluate(() => document.getElementById('actions').hidden), false, 'Start hidden after pairing');
-  console.log('pairing: approved via dialog stub through the service worker, issued token authorizes /health');
+  console.log('pairing: approved via dialog stub through the service worker, issued token authorizes /health, pressing again keeps it');
 
   // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
   // サーバー側の処理が止まってフォルダが消え、拡張内のセッションも消えること。
@@ -737,6 +745,25 @@ try {
     assert.ok(readdirSync(serverOut).some((d) => d === id || d.endsWith(`_${id}`)), `no server output for ${id}: ${readdirSync(serverOut)}`);
   }
   console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
+
+  // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
+  // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる
+  const unpairPage = await context.newPage();
+  unpairPage.on('pageerror', (e) => errors.push(String(e)));
+  unpairPage.on('dialog', (dialog) => void dialog.accept());
+  await unpairPage.goto(`chrome-extension://${extensionId}/options.html`);
+  await unpairPage.waitForSelector('#unpair:not([hidden])', { timeout: 5_000 });
+  const heldToken = await unpairPage.evaluate(async () => (await chrome.storage.local.get('config')).config.server.token);
+  await unpairPage.click('#unpair');
+  await unpairPage.waitForFunction(() => document.getElementById('result')?.textContent === '接続を解除しました。', null, { timeout: 5_000 });
+  const afterUnpair = await unpairPage.evaluate(async () => (await chrome.storage.local.get('config')).config.server);
+  assert.equal(afterUnpair.token, '', JSON.stringify(afterUnpair));
+  assert.equal(afterUnpair.paired, false, JSON.stringify(afterUnpair));
+  assert.equal(await unpairPage.evaluate(() => document.getElementById('unpair').hidden), true, 'unpair button still shown');
+  const revoked = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`, { headers: { authorization: `Bearer ${heldToken}` } })).json();
+  assert.equal(revoked.authorized, false, `unpaired token still accepted: ${JSON.stringify(revoked)}`);
+  await unpairPage.close();
+  console.log('unpair: the options page revoked this extension on the server and cleared its token');
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
   console.log('smoke ok');
