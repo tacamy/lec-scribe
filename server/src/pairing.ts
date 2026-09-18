@@ -35,9 +35,12 @@ export async function loadTrusted(file: string): Promise<Trusted> {
 /** 拡張を承認して専用トークンを発行し、ファイルに残す。承認済みの拡張なら前のトークンは使えなくなる */
 export async function saveTrusted(trusted: Trusted, id: string, name: string): Promise<TrustedEntry> {
   const entry: TrustedEntry = { id, token: randomBytes(24).toString('base64url'), name, at: new Date().toISOString() };
-  trusted.entries.set(id, entry);
+  // ファイルに書けてから差し替える。先に差し替えると、書き込みに失敗したとき（ディスクがいっぱいなど）承認済みの拡張の
+  // 今のトークンだけが使えなくなり、新しいトークンも拡張に届かない
+  const next = new Map(trusted.entries).set(id, entry);
   await mkdir(path.dirname(trusted.file), { recursive: true, mode: 0o700 });
-  await writeFile(trusted.file, `${JSON.stringify({ extensions: [...trusted.entries.values()] }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(trusted.file, `${JSON.stringify({ extensions: [...next.values()] }, null, 2)}\n`, { mode: 0o600 });
+  trusted.entries.set(id, entry);
   return entry;
 }
 

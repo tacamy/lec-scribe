@@ -158,6 +158,8 @@ describe('local server', () => {
     expect((await put('..%2Fescape.txt', 'x')).status).toBe(400);
     expect((await put('slides/evil.sh', 'x')).status).toBe(400);
     expect((await put('slides%2F..%2F..%2Fslide_001.png', 'x')).status).toBe(400);
+    // 壊れた %xx は 500 ではなく 400
+    expect((await put('%E0%A4%A', 'x')).status).toBe(400);
 
     const finalized = await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
     expect(finalized.status).toBe(202);
@@ -328,8 +330,10 @@ describe('local server', () => {
     expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ authorized: false, paired: false });
     const saved = JSON.parse(await readFile(path.join(tmp, 'trusted.json'), 'utf8')) as { extensions: Array<{ id: string; name: string; token: string }> };
     expect(saved.extensions).toMatchObject([{ id: ORIGIN.slice('chrome-extension://'.length), name: 'LecScribe<x>', token: issued.token }]);
-    // Return で押される既定のボタンは「許可しない」
-    expect(await readFile(path.join(tmp, 'pair-args.txt'), 'utf8')).toContain('default button "許可しない"');
+    // Return で押される既定のボタンは「許可しない」。初めての拡張には「接続済み」の一文を付けない
+    const firstArgs = await readFile(path.join(tmp, 'pair-args.txt'), 'utf8');
+    expect(firstArgs).toContain('default button "許可しない"');
+    expect(firstArgs).not.toContain('すでに接続済みです');
 
     // 承認済みの ID を名乗っても（curl なら Origin は偽れる）、ダイアログなしではトークンを返さない。
     // 「許可しない」なら 403 で、前のトークンはそのまま使える

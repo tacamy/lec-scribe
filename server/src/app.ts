@@ -147,7 +147,11 @@ export function createApp(
       // curl などは承認済みの ID を名乗れる（拡張 ID は秘密ではない）。許可されたら新しいトークンに替える
       const known = trusted.entries.has(id);
       if (pairing) {
-        sendJson(res, 429, { ok: false, error: { code: 'BUSY', message: '承認ダイアログを表示中です。Mac の画面で「許可」を押してください。' } });
+        // 表示中のダイアログは別のプログラムが出したものかもしれないので、「許可」を促さない
+        sendJson(res, 429, {
+          ok: false,
+          error: { code: 'BUSY', message: '承認ダイアログがすでに表示されています。Mac の画面のダイアログを閉じてから、もう一度押してください（自分で出したものか分からなければ「許可しない」を押してください）。' },
+        });
         return;
       }
       pairing = true; // body を読む間に別の要求が来ても 2 つ目のダイアログを出さない
@@ -220,7 +224,14 @@ export function createApp(
 
     // PUT /sessions/:id/files/<name>
     if (req.method === 'PUT' && parts[2] === 'files') {
-      const name = decodeURIComponent(parts.slice(3).join('/'));
+      let name: string;
+      try {
+        name = decodeURIComponent(parts.slice(3).join('/'));
+      } catch {
+        // 壊れた %xx（%E0%A4%A など）。URIError のまま投げると 500 になる
+        sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'ファイル名の %xx が壊れています。' } });
+        return;
+      }
       const isSlide = name.startsWith(`${SLIDES_DIR}/`) && SLIDE_FILE.test(name.slice(SLIDES_DIR.length + 1));
       if (!isSlide && !UPLOAD_NAME.test(name)) {
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
