@@ -525,6 +525,9 @@ async function renderSessions() {
 /** 「すべて表示」の表示と文言を、今の一覧に合わせる。行は描き直さない（スクロール位置とサーバーへの問い合わせを保つ） */
 function renderMoreToggle() {
   const folded = sessionList.querySelectorAll('li.extra:not(.pinned)').length;
+  // 畳む行が無くなったら「すべて表示」の記憶も戻す。残したままだと、削除で 10 件以下になったあとに
+  // また増えたとき、押していないのに畳まれないままになる
+  if (folded === 0) showAllSessions = false;
   moreToggle.hidden = folded === 0;
   sessionList.classList.toggle('collapsed', folded > 0 && !showAllSessions);
   moreToggle.textContent = showAllSessions ? `${SESSIONS_SHOWN} 件だけ表示` : `すべて表示（残り ${folded} 件）`;
