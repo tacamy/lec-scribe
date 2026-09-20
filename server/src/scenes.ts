@@ -26,6 +26,13 @@ const FOOTAGE_MAX_STILL = 0.5;
 const IDENTICAL_MAX_DIFF = 0.05;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
+/** RGBA の並びの中の 2 画素（a の i 番目、b の j 番目）が「違う」か。pixelDiff と panResidual で同じ判定を使う */
+function pixelDiffers(a: Uint8Array, i: number, b: Uint8Array, j: number): boolean {
+  const dr = a[i]! - b[j]!;
+  const dg = a[i + 1]! - b[j + 1]!;
+  const db = a[i + 2]! - b[j + 2]!;
+  return dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF;
+}
 /** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
 const PHOTO_ENTROPY_BITS = 3.0;
 /** 文字のそろい具合がこれ以上なら同じ文字とみなす（文字認識の読み違いを許す） */
@@ -81,14 +88,8 @@ export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left:
   const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
   // 短い配列が来ても移動先を読み外さないよう、実際にある行数までにする（読み外すと差が NaN になり「合った」ことになる）
   const H = Math.floor(pixels / W);
-  const differs = (src: Uint8Array, i: number, dst: Uint8Array, j: number) => {
-    const dr = src[i]! - dst[j]!;
-    const dg = src[i + 1]! - dst[j + 1]!;
-    const db = src[i + 2]! - dst[j + 2]!;
-    return dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF;
-  };
   const changed: number[] = [];
-  for (let p = 0; p < pixels; p++) if (differs(a, p * 4, b, p * 4)) changed.push(p);
+  for (let p = 0; p < pixels; p++) if (pixelDiffers(a, p * 4, b, p * 4)) changed.push(p);
   if (pixels === 0 || changed.length === 0) return { diff: 0, left: 0, dx: 0, dy: 0 };
   /** src の画素 p が、dst の (cx, cy) の周り 1 画素のどれかと合うか */
   const near = (src: Uint8Array, dst: Uint8Array, p: number, cx: number, cy: number) => {
@@ -97,7 +98,7 @@ export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left:
       if (y < 0 || y >= H) continue;
       for (let ox = -1; ox <= 1; ox++) {
         const x = cx + ox;
-        if (x >= 0 && x < W && !differs(src, p * 4, dst, (y * W + x) * 4)) return true;
+        if (x >= 0 && x < W && !pixelDiffers(src, p * 4, dst, (y * W + x) * 4)) return true;
       }
     }
     return false;
@@ -163,10 +164,7 @@ export function pixelDiff(a: Uint8Array, b: Uint8Array): number {
   let pixels = 0;
   for (let i = 0; i + 3 < n; i += 4) {
     pixels++;
-    const dr = a[i]! - b[i]!;
-    const dg = a[i + 1]! - b[i + 1]!;
-    const db = a[i + 2]! - b[i + 2]!;
-    if (dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF) changed++;
+    if (pixelDiffers(a, i, b, i)) changed++;
   }
   return pixels === 0 ? 0 : changed / pixels;
 }
@@ -369,7 +367,7 @@ export function pickShownSlides(
     //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
     //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
     //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
-    if (vision && d !== undefined && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
       const pan = panResidual(thumb, otherThumb);
       metrics.panLeft = round(pan.left);
       // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない

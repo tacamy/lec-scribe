@@ -442,6 +442,9 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
     expect(Math.abs(Math.abs(d[1]!.panShift![0]) - 9)).toBeLessThanOrEqual(1);
     // 見た目が離れている組（0.35 超）には使わない
     expect(pickShownSlides([slide(1, 1), slide(2, 1)], thumbs, 0.65, vision(0.4), 'first').map((x) => x.shown)).toEqual([true, true]);
+    // --scene-vision-photo 0（見た目での判定を止める設定）ではこの規則も効かない
+    const off = { distance: () => 0, tight: 0, photo: 0 };
+    expect(pickShownSlides([slide(1, 1), slide(2, 1)], thumbs, 0.65, off, 'first').map((x) => x.shown)).toEqual([true, true]);
   });
 
   it('本文だけが違うスライドや、図形を描き直した画面は、見た目の距離が同じくらいでも残す', () => {
