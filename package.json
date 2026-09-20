@@ -2,7 +2,7 @@
   "name": "lec-scribe",
   "version": "0.1.0",
   "private": true,
-  "description": "Capture university lecture videos in Chrome: local audio recording, slide-change screenshots, and on-device Japanese transcription with WhisperKit.",
+  "description": "A general-purpose Chrome extension for taking notes while you watch a video: local audio recording, slide-change screenshots, and on-device Japanese transcription with WhisperKit. For personal study; follow the terms of the site you watch.",
   "license": "MIT",
   "packageManager": "pnpm@10.33.0",
   "engines": {
