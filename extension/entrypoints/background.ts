@@ -25,6 +25,9 @@ import {
 } from '../src/state';
 
 /**
+ * LecScribe は動画を見ながらノートを取るための汎用の道具（SPEC §3.0）。個人の学習用で、利用するサイトの
+ * 規約に従うのは使う人の責任。特定のサイト向けの処理や、サイト側の検知を回避する処理はここにも入れない。
+ *
  * Service worker: owns the state machine and wires popup ⇄ offscreen ⇄ content.
  * It may be terminated at any time, so nothing here is kept in memory
  * across events; the live state is in chrome.storage.session and the

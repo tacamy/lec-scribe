@@ -10,8 +10,10 @@ export default defineConfig({
   imports: false,
   manifest: {
     name: 'LecScribe',
+    // ストアにも出る説明（132 文字まで）。特定のサイト向けではない汎用のノート取りの道具で、個人の学習用。
+    // 利用するサイトの規約に従うのは使う人の責任（README「使う前に」、SPEC §3.0）
     description:
-      'Record the audio of a slide video embedded in the page and capture the slides as they change. Nothing leaves your Mac.',
+      'Take notes from a video you watch: records tab audio and saves slides on your Mac. Personal study only; follow the site terms.',
     permissions: [
       'tabCapture', // getMediaStreamId
       'offscreen', // offscreen document that owns the MediaStream
