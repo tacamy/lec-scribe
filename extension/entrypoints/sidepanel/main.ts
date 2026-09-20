@@ -51,6 +51,7 @@ installCmd.textContent = INSTALL_COMMAND;
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const hiddenToggle = $<HTMLButtonElement>('hiddenToggle');
+const moreToggle = $<HTMLButtonElement>('moreToggle');
 const footer = $('footer');
 // 未接続のときに隠す通常 UI
 const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSection];
@@ -466,6 +467,10 @@ function stopStatsLoop() {
 
 /** 「非表示」にした行も一覧に出すか（パネルを開いている間だけ覚える） */
 let showHidden = false;
+/** 一覧で最初から見せる件数。全件を描いたうえで、これを超える行は見た目だけ畳む（§15.1、2026-09-20） */
+const SESSIONS_SHOWN = 10;
+/** 「すべて表示」を押して開いているか。パネルを開き直すと畳んだ状態に戻る */
+let showAllSessions = false;
 /**
  * 削除・中止の確認ダイアログ（HTML の <dialog>）。
  * ブラウザの confirm() はポップアップ・サイドパネルでは表示されずに閉じられることがあるので使わない
@@ -504,11 +509,39 @@ async function renderSessions() {
   const sessions = showHidden ? all : all.filter((s) => !s.status?.hidden);
   sessionsSection.hidden = all.length === 0 || !setupSection.hidden;
   hideSessionTip(false);
-  sessionList.replaceChildren(...sessions.map(sessionItem));
+  const items = sessions.map(sessionItem);
+  // SESSIONS_SHOWN 件目より後ろの行に印を付ける。畳むのは CSS（ul.collapsed li.extra）。
+  // 処理中・送信待ちの行（pinned）は、古い講義を「やり直す」したときに進み具合と「中止」が見えなくならないよう畳まない
+  items.forEach((li, i) => li.classList.toggle('extra', i >= SESSIONS_SHOWN));
+  // 描き直しで入れ替わった行まで「開いた瞬間」の動きをしないように、印を外してから入れ替える
+  sessionList.classList.remove('reveal');
+  sessionList.replaceChildren(...items);
+  renderMoreToggle();
   hiddenToggle.hidden = hiddenCount === 0;
   hiddenToggle.textContent = showHidden ? `非表示のセッションを隠す（${hiddenCount}）` : `非表示のセッションを表示（${hiddenCount}）`;
   void checkOutputs(sessions);
 }
+
+/** 「すべて表示」の表示と文言を、今の一覧に合わせる。行は描き直さない（スクロール位置とサーバーへの問い合わせを保つ） */
+function renderMoreToggle() {
+  const folded = sessionList.querySelectorAll('li.extra:not(.pinned)').length;
+  // 畳む行が無くなったら「すべて表示」の記憶も戻す。残したままだと、削除で 10 件以下になったあとに
+  // また増えたとき、押していないのに畳まれないままになる
+  if (folded === 0) showAllSessions = false;
+  moreToggle.hidden = folded === 0;
+  sessionList.classList.toggle('collapsed', folded > 0 && !showAllSessions);
+  moreToggle.textContent = showAllSessions ? `${SESSIONS_SHOWN} 件だけ表示` : `すべて表示（残り ${folded} 件）`;
+  moreToggle.setAttribute('aria-expanded', String(showAllSessions));
+}
+
+moreToggle.addEventListener('click', () => {
+  showAllSessions = !showAllSessions;
+  // 開くときだけ、出てくる行をふわっと出す（reveal は @starting-style の対象を開いた瞬間だけに絞るための印）
+  sessionList.classList.toggle('reveal', showAllSessions);
+  renderMoreToggle();
+  // 畳むと一覧が短くなって、押したボタンが画面の外へ飛ぶことがある
+  if (!showAllSessions) moreToggle.scrollIntoView({ block: 'nearest' });
+});
 
 hiddenToggle.addEventListener('click', () => {
   showHidden = !showHidden;
@@ -569,6 +602,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   const hidden = session.status?.hidden === true;
   const missing = done && outputMissing.get(session.sessionId) === true;
   const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
+  li.classList.toggle('pinned', inFlight);
   const button = (label: string, className = '') => {
     const b = document.createElement('button');
     b.type = 'button';
