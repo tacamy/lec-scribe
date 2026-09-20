@@ -104,6 +104,8 @@ try {
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
   // サーバー未接続のうちは「このMacと接続」がポップアップに出る
   assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
+  // 使い始める前の画面に、位置づけの 1 行が出ている（SPEC §3.0）
+  assert.equal(await popup.evaluate(() => document.getElementById('termsNote')?.textContent), '個人の学習用です。利用するサイトの規約に従ってください。');
   // hidden 属性が CSS の display 指定に負けていないこと（計算後のスタイルで見る）
   const setupDisplay = await popup.evaluate(() =>
     Object.fromEntries(['status', 'rows', 'actions', 'footer', 'setup'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),

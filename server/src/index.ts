@@ -5,6 +5,9 @@
  * ~/LecScribe/<セッション>/ に置き、ffmpeg → whisperkit-cli で文字起こしして
  * transcript.json / .txt / .srt / .vtt を書く。
  *
+ * 動画を見ながらノートを取るための汎用の道具の Mac 側（SPEC §3.0）。個人の学習用で、利用するサイトの
+ * 規約に従うのは使う人の責任。受け取った録音・画像・ノートを Mac の外へ送る処理は入れない（§3.2）。
+ *
  *   pnpm --filter @lec-scribe/server start -- --port 47321 --out ~/LecScribe --model large-v3
  */
 import { mkdir } from 'node:fs/promises';
