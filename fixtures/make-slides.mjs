@@ -1,24 +1,24 @@
-// Generates fixtures/slides.webm: a synthetic lecture video made of N slides
+// Generates fixtures/slides.webm (or --out <name>.webm): a synthetic lecture video made of N slides
 // that switch every S seconds, with a small moving box in a corner (a stand-in
 // for the lecturer's camera wipe) and a short beep at each slide change.
 // Rendered with a canvas + MediaRecorder inside headless Chromium (Playwright),
 // so it works wherever the E2E tests run. If `ffmpeg` is on PATH the result is
 // remuxed so the file gets duration/cues and seeks properly in <video>.
 //
-// Usage: node fixtures/make-slides.mjs [--slides 10] [--seconds 5] [--width 1280] [--height 720] [--clock]
+// Usage: node fixtures/make-slides.mjs [--slides 10] [--seconds 5] [--width 1280] [--height 720] [--clock] [--out slides.webm]
 import { spawnSync } from 'node:child_process';
 import { rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { fixtureStamp } from './version.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
-const out = path.join(here, 'slides.webm');
-const raw = path.join(here, 'slides.raw.webm');
-
-/** 描画内容を変えたら上げる。スモークテストは古い世代の動画を作り直す */
-export const FIXTURE_VERSION = 3;
+// 出力先は fixtures/ の中のファイル名で選べる（--out）。スモークテストは自分用の slides.smoke.webm を作るので、
+// 手作業の確認に使う slides.webm（既定の 10 枚 × 5 秒）と上書きし合わない
+const out = path.join(here, opts.out);
+const raw = path.join(here, opts.out.replace(/\.webm$/, '.raw.webm'));
 
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
@@ -66,8 +66,11 @@ const base64 = await page.evaluate(async ({ slides, seconds, width, height, cloc
       const y = height * (0.28 + line * 0.11);
       ctx.fillText(`• 項目 ${line + 1}: スライド ${i + 1} の本文テキスト（${'あいうえお'.repeat(1 + ((i + line) % 3))}）`, width * 0.36, y);
     }
-    // スライド 2 は表示から 1.8 秒後に 1 行増える（文字が後から出るスライドの代わり。最終状態の上書きを確かめる）
-    if (i === 1 && t - i * seconds * 1000 >= 1800) {
+    // スライド 2 は表示時間の 65% が過ぎたところで 1 行増える（文字が後から出るスライドの代わり。最終状態の上書きを確かめる）。
+    // 検知は 0.5 秒ごとに見て、切り替わりから 1.0〜1.5 秒後に保存する。増える行は「保存より後」に出て、
+    // 「次の切り替わりまでに 1 回は必ず見られる」必要があるので、スライドは 3 秒以上にする（3 秒なら 1.95 秒後に出て 1.05 秒残る）。
+    // 2 秒のスライドで 1.8 秒後に出していた頃は、残りの 0.2 秒にたまたま 1 回見たときだけ通っていた
+    if (i === 1 && t - i * seconds * 1000 >= seconds * 1000 * 0.65) {
       ctx.fillText('• 追加の行（あとから表示）', width * 0.36, height * 0.83);
     }
     // Wipe: a small box whose contents move every frame.
@@ -132,15 +135,18 @@ if (ffmpeg.status === 0) {
   await rename(raw, out);
   console.log(`wrote ${path.relative(process.cwd(), out)} (ffmpeg not found: file has no duration/cues, seeking may be limited)`);
 }
-await writeFile(`${out}.version`, `${FIXTURE_VERSION}\n`);
+await writeFile(`${out}.version`, `${fixtureStamp(opts)}\n`);
 
 function parseArgs(argv) {
-  const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false };
+  const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false, out: 'slides.webm' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--clock') o.clock = true;
+    else if (a === '--out') o.out = String(argv[++i] ?? '');
     else if (a.startsWith('--') && a.slice(2) in o) o[a.slice(2)] = Number(argv[++i]);
     else throw new Error(`unknown argument: ${a}`);
   }
+  // fixtures/ の外へ書かせない（パスではなくファイル名だけを受け付ける）
+  if (!/^[\w.-]+\.webm$/.test(o.out)) throw new Error(`--out は fixtures/ の中の .webm のファイル名にしてください: ${o.out}`);
   return o;
 }
