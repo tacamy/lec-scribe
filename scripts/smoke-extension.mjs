@@ -16,10 +16,14 @@ const ext = path.resolve('extension/dist/chrome-mv3');
 // 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
 const FIXTURE_PORT = 8791;
 const FIXTURE_VERSION = 4; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
+// 時刻の確認はこの引数に合わせてあるので、引数まで含めて突き合わせる（`pnpm fixtures:make` の既定は 10 枚 × 5 秒）
+const FIXTURE_ARGS = { slides: 3, seconds: 3, width: 640, height: 360 };
+const FIXTURE_STAMP = `${FIXTURE_VERSION} ${FIXTURE_ARGS.slides}x${FIXTURE_ARGS.seconds}s ${FIXTURE_ARGS.width}x${FIXTURE_ARGS.height}`;
 const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
-if (!existsSync('fixtures/slides.webm') || fixtureVersion !== String(FIXTURE_VERSION)) {
+if (!existsSync('fixtures/slides.webm') || fixtureVersion !== FIXTURE_STAMP) {
   console.log('generating fixtures/slides.webm…');
-  const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', '--slides', '3', '--seconds', '3', '--width', '640', '--height', '360'], { stdio: 'inherit' });
+  const args = Object.entries(FIXTURE_ARGS).flatMap(([k, v]) => [`--${k}`, String(v)]);
+  const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', ...args], { stdio: 'inherit' });
   assert.equal(made.status, 0, 'fixture generation failed');
 }
 const fixtureServer = spawn(process.execPath, ['fixtures/serve.mjs', String(FIXTURE_PORT)], { stdio: 'ignore' });
@@ -310,7 +314,7 @@ try {
 
   // 診断用: 検知を始めるのを遅らせて、0.5 秒ごとのサンプルが動画のどこに当たるか（位相）をずらす。
   // 位相に左右される確認（最終状態の上書きなど）を直したときは、0〜400 で振って確かめる
-  await lecture.waitForTimeout(Number(process.env.SMOKE_DETECT_DELAY_MS ?? 0));
+  await lecture.waitForTimeout(Number(process.env.SMOKE_DETECT_DELAY_MS) || 0);
 
   // 検知スクリプトを注入し、frame 宛のメッセージで直接動かす
   const detectConfig = {

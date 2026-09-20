@@ -135,7 +135,9 @@ if (ffmpeg.status === 0) {
   await rename(raw, out);
   console.log(`wrote ${path.relative(process.cwd(), out)} (ffmpeg not found: file has no duration/cues, seeking may be limited)`);
 }
-await writeFile(`${out}.version`, `${FIXTURE_VERSION}\n`);
+// 世代だけでなく生成時の引数も残す。スモークテストの時刻の確認は枚数・秒数・大きさに合わせてあるので、
+// `pnpm fixtures:make`（既定の 10 枚 × 5 秒）で作った動画が世代だけ合って使い回されると、確認が落ちる
+await writeFile(`${out}.version`, `${FIXTURE_VERSION} ${opts.slides}x${opts.seconds}s ${opts.width}x${opts.height}\n`);
 
 function parseArgs(argv) {
   const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false };
