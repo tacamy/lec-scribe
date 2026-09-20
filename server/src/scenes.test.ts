@@ -562,6 +562,30 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     expect(d.map((x) => x.shown)).toEqual([true, true, false, false, true, true]);
   });
 
+  it('戻った先から少しずつ離れていったら、離れた時点で載せる（戻りの扱いを引きずらない）', () => {
+    // 画素の 4% ずつ変わっていく画面。直前の 1 枚とだけ比べて連ねると、戻った先とは似ていない画像まで
+    // ずっと「戻っただけ」として外れ続け、その区間に載る画像が 1 枚も無くなっていた
+    const step = Math.floor(PIXELS * 0.04);
+    const drift = (flipped: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
+      return f;
+    };
+    const flat = (v: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      return f;
+    };
+    const frames: [Uint8Array, number][] = [[drift(0), 0], [flat(0), 30], [drift(0), 60], [drift(step), 62], [drift(step * 2), 64], [flat(120), 200]];
+    const slides = frames.map(([, videoTime], i) => ({ ...slide(i + 1, 1), videoTime }));
+    const thumbs = new Map(frames.map(([img], i) => [slides[i]!.filename, img] as [string, Uint8Array]));
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
+    // 60 秒に戻った 2 枚は外れるが、そこから離れた 64 秒の画面は載る（60〜200 秒が画像なしにならない）
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [true, undefined], [false, 'revisit'], [false, 'revisit'], [true, undefined], [true, undefined],
+    ]);
+  });
+
   it('最後の 1 枚を載せる設定でも、戻っただけの画像は今の画面の代わりに選ばない', () => {
     // B のまとまりは [B, 戻っただけの A]。載せるのは B のまま
     const d = pick([1, 2, 1, 3], [0, 36, 58, 63], 'last');

@@ -321,7 +321,7 @@ export function pickShownSlides(
   /** 1 つ前のまとまり（基準の画像と、最後に加えた画像）。前の画面に短く戻っただけの画像を見分けるのに使う */
   let previousGroup: { first: number; last: number } | null = null;
   /** 今のまとまりに最後に加えた画像 */
-  let lastMember = 0;
+  let lastInGroup = 0;
   /** 「前の画面に短く戻っただけ」として外した画像。まとまりの最後の 1 枚には選ばない */
   const revisits = new Set<number>();
   /**
@@ -409,18 +409,23 @@ export function pickShownSlides(
     return undefined;
   };
   /**
-   * 1 つ前のまとまりの画面（基準か、最後に加えた画像）に戻っただけで、すぐ（REVISIT_MAX_SECONDS 未満で）また離れるか。
+   * index の画像が、1 つ前のまとまりの画面（基準か、最後に加えた画像）と今も同じか。
    * 同じ画面かどうかは、文字を使わない間違えにくい規則（中身が同じ・見た目がごく近い）だけで決める
    */
-  const briefRevisit = (index: number): { verdict: Verdict; to: number } | null => {
+  const matchPreviousGroup = (index: number): { verdict: Verdict; to: number } | null => {
     if (!previousGroup) return null;
     for (const to of new Set([previousGroup.last, previousGroup.first])) {
       const verdict = compare(index, to, true, true);
-      if (!verdict?.reason) continue;
-      const seconds = sceneSeconds(index);
-      return seconds !== undefined && seconds < REVISIT_MAX_SECONDS ? { verdict, to } : null;
+      if (verdict?.reason) return { verdict, to };
     }
     return null;
+  };
+  /** 1 つ前のまとまりの画面に戻っただけで、すぐ（REVISIT_MAX_SECONDS 未満で）また離れるか */
+  const briefRevisit = (index: number): { verdict: Verdict; to: number } | null => {
+    const match = matchPreviousGroup(index);
+    if (!match) return null;
+    const seconds = sceneSeconds(index);
+    return seconds !== undefined && seconds < REVISIT_MAX_SECONDS ? match : null;
   };
   slides.forEach((slide, index) => {
     if (lastShown) {
@@ -455,13 +460,19 @@ export function pickShownSlides(
         }
       }
       if (verdict?.reason && viaRevisit) {
-        // 短く戻っていた間に撮れた続きの画像。戻った画像と同じ扱いにする（今のまとまりの 1 枚として載せない）
-        revisits.add(index);
-        decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', ...(via ? { via } : {}), ...verdict.metrics });
-        return;
+        // 短く戻っていた間に撮れた続きの画像。戻った先の画面と今も同じなら、戻った画像と同じ扱いにする
+        // （今のまとまりの 1 枚として載せない）。直前の 1 枚とだけ比べて連ねると、画面が少しずつ変わっていく間
+        // ずっと外れ続けて、その区間の画像が 1 枚も残らない（戻った先とは似ても似つかない画像まで外れる）
+        if (matchPreviousGroup(index)) {
+          revisits.add(index);
+          decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', ...(via ? { via } : {}), ...verdict.metrics });
+          return;
+        }
+        // 戻った先から離れた＝新しい画面。今のまとまりに入れず、載せる（via は以降読まれない）
+        verdict = { metrics: verdict.metrics };
       }
       if (verdict?.reason) {
-        lastMember = index;
+        lastInGroup = index;
         decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
         const text = vision?.text?.(index);
         const anchorText = vision?.text?.(last.index);
@@ -471,15 +482,15 @@ export function pickShownSlides(
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
       // サムネイルが読めなかった画像を基準にすると、以後すべての比較ができなくなる。前の基準を残す
       if (verdict) {
-        previousGroup = { first: last.index, last: lastMember };
+        previousGroup = { first: last.index, last: lastInGroup };
         lastShown = { slide, index };
-        lastMember = index;
+        lastInGroup = index;
         anchorTextStable = true;
       }
     } else {
       decisions.push({ filename: slide.filename, shown: true });
       lastShown = { slide, index };
-      lastMember = index;
+      lastInGroup = index;
     }
   });
   return keep === 'last' ? preferLast(decisions) : decisions;
