@@ -2,7 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
@@ -535,6 +535,8 @@ async function checkOutputs(sessions: readonly StoredSession[]) {
 
 function sessionItem(session: StoredSession): HTMLLIElement {
   const li = document.createElement('li');
+  // どの行がどのセッションかを DOM からも分かるようにする（スモークテストが行を指して調べる）
+  li.dataset['sessionId'] = session.sessionId;
   // 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数
   const title = session.meta?.title?.trim() || formatSessionId(session.sessionId);
   const main = document.createElement('div');
@@ -583,15 +585,22 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   };
   // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
   if (inFlight) {
-    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）
+    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）。
+    // ただし初回でも、ノート作成中（文字起こしは済んでいる）なら消さない。ノート作成だけを止めて、文字起こしのままのノートで
+    // 完了にする（§11.3、2026-09-20。Codex が利用上限で進まないのを見て「中止」を押し、録音ごと失うのを防ぐ）
+    const polishing = !done && current.processing?.sessionId === session.sessionId && current.processing.stage === 'polishing';
     const stopBtn = button('中止');
     stopBtn.disabled = !!current.exporting;
     stopBtn.addEventListener('click', () => {
       const text = done
         ? `「${title}」のやり直しを中止します。前回の結果（~/LecScribe のフォルダ）と録音は残ります。`
-        : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
+        : polishing
+          ? `「${title}」のノート作成を中止します。文字起こしは済んでいるので、文字起こしのままのノートで完了にします（録音も残ります）。あとから「やり直す」で整えられます。`
+          : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
       void askConfirm(text, '中止する').then((ok) => {
-        if (ok) void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
+        if (!ok) return;
+        if (polishing) void act(() => sendToBackground.finishNotes(session.sessionId));
+        else void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
       });
     });
     btns.append(stopBtn, tag(current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち'));
@@ -634,6 +643,15 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     else if (session.status?.stage === 'error') btns.append(tag('エラー', session.status.error ?? ''));
   }
   li.append(main, meta, btns);
+  // 文字起こしはできたがノートを整えられなかった（Codex の利用上限など）。段階は「完了」のままなので、ここで知らせる。
+  // 処理中は前回の結果の話になるので出さない。理由（サーバーの文）はツールチップに
+  if (done && !inFlight && !missing && session.status?.notesProblem) {
+    const note = document.createElement('div');
+    note.className = 'sessionNote';
+    note.textContent = notesProblemText(session.status.notesProblem);
+    note.title = session.status.notesError ?? '';
+    li.append(note);
+  }
   return li;
 }
 

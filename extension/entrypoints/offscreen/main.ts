@@ -1,5 +1,6 @@
 import { authHeaders, type Config } from '../../src/config';
 import { LecError, toErrorInfo } from '../../src/errors';
+import { notesProblemOf } from '../../src/format';
 import { isLecScribeReply, portInUseMessage } from '../../src/health';
 import {
   hasTarget,
@@ -313,7 +314,15 @@ function startPolling(
     }
     if (status.stage === 'done') {
       stop();
-      await patchStatus(dir, { stage: 'done', transcribedAt: new Date().toISOString(), outputDir: status.outputDir ?? outputDir });
+      // ノートを整えられなかったことも残す（段階は done のままなので、ここで拾わないと一覧から分からない）。整えられたら消す
+      const notesProblem = notesProblemOf(status.result);
+      await patchStatus(dir, {
+        stage: 'done',
+        transcribedAt: new Date().toISOString(),
+        outputDir: status.outputDir ?? outputDir,
+        notesProblem,
+        notesError: notesProblem ? status.result?.notesError : undefined,
+      });
       report({ stage: 'done', outputDir: status.outputDir ?? outputDir });
     } else if (status.stage === 'error' || status.stage === 'cancelled') {
       stop();

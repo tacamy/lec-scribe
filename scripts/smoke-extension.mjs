@@ -764,6 +764,117 @@ try {
   }
   console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
 
+  // §13.5: ノートを整えられなかったとき（Codex の利用上限など）。サーバーの段階は done のままなので、一覧の行に注意書きを出す。
+  // codex が必ず失敗するサーバーに替えて 1 本やり直し、注意書きが出ること、整えられる（ここではノート作成なし）サーバーでやり直すと消えることを見る
+  const restartServer = async (extraArgs) => {
+    // パネルは一覧を描き直すたびにサーバーへ問い合わせる（フォルダの有無、版）。その最中にサーバーを止めると
+    // 接続拒否がコンソールのエラーになり、最後の「ページのエラーなし」に引っかかる。問い合わせが終わるのを待ってから止める
+    await popup.waitForLoadState('networkidle');
+    localServer.kill();
+    await new Promise((r) => setTimeout(r, 500));
+    localServer = spawn(process.execPath, [...localServerArgs, ...extraArgs], { stdio: 'ignore' });
+    for (let i = 0; i < 50; i++) {
+      if (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false)) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail('local server did not come back');
+  };
+  const redo = async (sessionId) => {
+    const sent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
+    assert.equal(sent.ok, true, JSON.stringify(sent));
+    for (let i = 0; i < 100; i++) {
+      const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+      if (!s.processing && !s.pendingUploads) return s;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail(`redo of ${sessionId} did not finish`);
+  };
+  // その講義の行に出ている注意書きと、ほかの行に出ている数（この講義の行に出ていることを確かめるため）
+  const noteOf = async (sessionId) => {
+    await popup.reload();
+    await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
+    return popup.evaluate((id) => {
+      const row = document.querySelector(`#sessionList li[data-session-id="${id}"]`);
+      const all = [...document.querySelectorAll('#sessionList li .sessionNote')];
+      const own = [...(row?.querySelectorAll('.sessionNote') ?? [])].map((n) => ({ text: n.textContent, title: n.title }));
+      return { id, found: !!row, own, others: all.length - own.length };
+    }, sessionId);
+  };
+  const codexLimitStub = stub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+  await restartServer(['--llm', 'codex', '--codex', codexLimitStub]);
+  const afterLimit = await redo(retryA);
+  assert.equal(afterLimit.error, undefined, `a notes failure must not be a processing error: ${JSON.stringify(afterLimit.error)}`);
+  const limited = await noteOf(retryA);
+  assert.equal(limited.found, true, `no row for ${retryA}: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own.length, 1, `expected the warning on this session's row: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+  assert.ok(limited.own[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.own[0])}`);
+  assert.equal(limited.others, 0, `only this session should warn: ${JSON.stringify(limited)}`);
+  await restartServer([]);
+  await redo(retryA);
+  const cleared = await noteOf(retryA);
+  assert.equal(cleared.found, true, `no row for ${retryA}: ${JSON.stringify(cleared)}`);
+  assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
+  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
+
+  // §11.3: 初回の処理でノート作成中に「中止」を押したら、録音ごと消さずに、ノート作成だけを止めて文字起こしのままのノートで完了にする。
+  // 行のボタンが段階を見て動きを変えるので、メッセージを直接送らず、パネルのボタンと確認ダイアログを実際に押す
+  const finishId = '20990101-000006-smok';
+  const off5 = await context.newPage();
+  off5.on('pageerror', (e) => errors.push(String(e)));
+  await off5.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off5.waitForFunction(() => !!globalThis.__lecscribe);
+  await off5.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    await api.startFromStream(dest.stream, { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } }, { sessionId, title: 'smoke finish', startedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 900));
+    await api.stop();
+    osc.stop();
+    await ctx.close();
+  }, finishId);
+  await off5.close();
+  const codexSlowStub = stub('codex-slow', 'sleep 30');
+  await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
+  const sentFinish = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
+  assert.equal(sentFinish.ok, true, JSON.stringify(sentFinish));
+  let atPolishing = null;
+  for (let i = 0; i < 100; i++) {
+    atPolishing = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (atPolishing.processing?.stage === 'polishing') break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(atPolishing.processing?.stage, 'polishing', `did not reach polishing: ${JSON.stringify(atPolishing.processing)}`);
+  const finishRow = `#sessionList li[data-session-id="${finishId}"]`;
+  await popup.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
+  const stopStarted = Date.now();
+  await popup.locator(`${finishRow} button`, { hasText: '中止' }).click();
+  await popup.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
+  const confirmText = await popup.evaluate(() => document.getElementById('confirmText').textContent);
+  assert.ok(confirmText.includes('ノート作成を中止します') && confirmText.includes('録音も残ります'), `unexpected confirm text: ${confirmText}`);
+  await popup.click('#confirmOk');
+  let afterFinish = null;
+  for (let i = 0; i < 100; i++) {
+    afterFinish = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (!afterFinish.processing) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(afterFinish.processing, undefined, `still processing: ${JSON.stringify(afterFinish.processing)}`);
+  assert.equal(afterFinish.error, undefined, `stopping the notes must not be an error: ${JSON.stringify(afterFinish.error)}`);
+  assert.ok(Date.now() - stopStarted < 15_000, 'finish waited for the slow codex');
+  const finished = await noteOf(finishId);
+  assert.equal(finished.found, true, `the recording must survive: ${JSON.stringify(finished)}`);
+  assert.equal(finished.own[0]?.text, 'ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます', JSON.stringify(finished));
+  const finishDir = readdirSync(serverOut).find((d) => d.endsWith(`_${finishId}`));
+  assert.ok(finishDir && readdirSync(path.join(serverOut, finishDir)).includes('notes.md'), `no notes.md for ${finishId}: ${finishDir}`);
+  await restartServer([]);
+  console.log('finish: stopping a first run during polishing keeps the recording and completes with transcript-only notes');
+
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
   // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる
   const unpairPage = await context.newPage();

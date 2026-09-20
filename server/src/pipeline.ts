@@ -32,6 +32,8 @@ export type PipelineStatus = {
     notesError?: string;
     /** 前回の LLM の結果を使い回したか（§13.5b） */
     notesReused?: boolean;
+    /** ノート作成の途中で利用者が止めた（初回の処理の「中止」。文字起こしのままのノートで完了にした。§11.3） */
+    notesCancelled?: boolean;
   };
   /** 各段階にかかった秒 */
   timings?: Partial<Record<'converting' | 'transcribing' | 'merging' | 'polishing', number>>;
@@ -72,6 +74,24 @@ export async function recoverInterrupted(outDir: string, log: (message: string) 
 }
 
 export const PIPELINE_FILE = 'pipeline.json';
+/**
+ * 「やり直す」を受け付けた時点の pipeline.json（完了していたもの）の控え（§11.3、2026-09-20）。
+ * やり直しを中止したら、これを pipeline.json に書き戻す（＝やり直す前の状態に戻す）。
+ * 完了・失敗で終わったら捨てる。初回の処理には無い
+ */
+export const PREVIOUS_FILE = 'pipeline.previous.json';
+
+/**
+ * 「やり直す」の前に、完了していた状態の控えを取る。POST /finalize が pipeline.json を queued で上書きする前に呼ぶ。
+ * 完了していなかった（失敗・中止のまま）なら控えは作らず、古い控えが残っていれば捨てる
+ * （もっと前の完了状態に戻してしまわないように）
+ */
+export async function snapshotDone(dir: string): Promise<void> {
+  const previous = await readPipelineStatus(dir);
+  const file = workPath(dir, PREVIOUS_FILE);
+  if (previous?.stage === 'done') await writeFile(file, JSON.stringify(previous, null, 2)).catch(() => undefined);
+  else await rm(file, { force: true }).catch(() => undefined);
+}
 
 export async function readPipelineStatus(dir: string): Promise<PipelineStatus | null> {
   for (const file of [workPath(dir, PIPELINE_FILE), path.join(dir, PIPELINE_FILE)]) {
@@ -91,6 +111,23 @@ export async function writeStatus(dir: string, status: PipelineStatus): Promise<
   return status;
 }
 
+type Job = {
+  controller: AbortController;
+  /** ノート作成（LLM）だけを止める。処理全体の中止（controller）でも止まる */
+  llm: AbortController;
+  task: Promise<PipelineStatus>;
+  started: boolean;
+  /** いまの段階。ノート作成中だけ「文字起こしのままで完了にする」を受け付ける */
+  stage?: PipelineStatus['stage'];
+  /**
+   * この回の whisperkit の状況。中止のときに、文字起こしの記録（transcript）をどうするかを決める。
+   *   untouched: 動かしていない（前の report を使い回した、まだ順番待ち）。前の記録をそのまま残す
+   *   running:   動かしている途中。report を書き換えている最中なので記録を落とす（壊れた report を再利用して失敗し続けないように）
+   *   finished:  この回で作り直した。ディスクにあるのは新しい report なので、記録も新しいものにする
+   */
+  whisper: { state: 'untouched' | 'running' } | { state: 'finished'; record: NonNullable<PipelineStatus['transcript']> };
+};
+
 /**
  * audio.webm → audio.wav → whisperkit-cli → transcript.json / .txt / .srt / .vtt（SPEC §12.4）。
  * 同時に 1 件だけ動かす。
@@ -98,7 +135,7 @@ export async function writeStatus(dir: string, status: PipelineStatus): Promise<
 export class Pipeline {
   private queue: Promise<unknown> = Promise.resolve();
   /** 待機中・実行中のセッション。cancel() で中断できる */
-  private readonly jobs = new Map<string, { controller: AbortController; task: Promise<PipelineStatus>; started: boolean }>();
+  private readonly jobs = new Map<string, Job>();
   private readonly config: ServerConfig;
   private readonly log: (message: string) => void;
 
@@ -119,16 +156,21 @@ export class Pipeline {
   /** キューに積んで即座に戻る。結果は pipeline.json に書かれる */
   enqueue(dir: string): Promise<PipelineStatus> {
     const controller = new AbortController();
-    const job: { controller: AbortController; task: Promise<PipelineStatus>; started: boolean } = {
+    const llm = new AbortController();
+    // 処理全体を止めたら LLM も止まる（AbortSignal.any は使わない。Node 22 の前半に、束ねた signal が GC で外れる不具合がある）
+    controller.signal.addEventListener('abort', () => llm.abort(), { once: true });
+    const job: Job = {
       controller,
+      llm,
       task: Promise.resolve({ stage: 'queued', outputDir: dir, updatedAt: '' }),
       started: false,
+      whisper: { state: 'untouched' },
     };
     job.task = this.queue
       .then(() => {
-        if (controller.signal.aborted) return this.writeCancelled(dir);
+        if (controller.signal.aborted) return this.writeCancelled(dir, job);
         job.started = true;
-        return this.process(dir, controller.signal);
+        return this.process(dir, job);
       })
       .finally(() => this.jobs.delete(dir));
     this.jobs.set(dir, job);
@@ -145,6 +187,18 @@ export class Pipeline {
     if (!job) return false;
     job.controller.abort();
     if (job.started) await job.task.catch(() => undefined);
+    return true;
+  }
+
+  /**
+   * ノート作成中なら LLM だけを止め、文字起こしのままのノートで完了にする（初回の処理の「中止」。§11.3）。
+   * 文字起こしまで済んでいるのに、録音ごと消してしまわないため。ノート作成中でなければ何もしないで false
+   */
+  async finishWithoutNotes(dir: string): Promise<boolean> {
+    const job = this.jobs.get(dir);
+    if (!job || !job.started || job.stage !== 'polishing') return false;
+    job.llm.abort();
+    await job.task.catch(() => undefined);
     return true;
   }
 
@@ -242,16 +296,36 @@ export class Pipeline {
       });
   }
 
-  private async writeCancelled(dir: string): Promise<PipelineStatus> {
+  /**
+   * 中止を書く。「やり直す」の中止なら、やり直す前の状態（控え）に丸ごと戻す。notes.md は前回のまま残っているので、
+   * 状態も「完了」のままが実態に合う。ただしこの回で whisperkit を動かしていたら、文字起こしの記録だけは落とす。
+   * 控えが無い（初回の処理、前回が失敗・中止だった）ときは cancelled と書き、同じ条件で記録を引き継ぐ
+   */
+  private async writeCancelled(dir: string, job: Job): Promise<PipelineStatus> {
     this.log(`cancelled: ${dir}`);
-    const status: PipelineStatus = { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() };
+    const snapshotFile = workPath(dir, PREVIOUS_FILE);
+    let snapshot: PipelineStatus | null = null;
+    try {
+      snapshot = JSON.parse(await readFile(snapshotFile, 'utf8')) as PipelineStatus;
+    } catch {
+      // 控えなし
+    }
+    const restored = snapshot?.stage === 'done' ? snapshot : null;
+    // 文字起こしの記録は、ディスクにある report と合うものにする（Job.whisper）
+    const transcript =
+      job.whisper.state === 'finished' ? job.whisper.record : job.whisper.state === 'running' ? undefined : (restored ?? (await readPipelineStatus(dir)))?.transcript;
+    const { transcript: _stale, ...base } = restored ?? ({ stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() } satisfies PipelineStatus);
+    const status: PipelineStatus = { ...base, ...(transcript ? { transcript } : {}) };
     // 中止と同時に削除されたフォルダを作り直さない
     const exists = await stat(dir).then(() => true).catch(() => false);
     if (!exists) return status;
+    if (restored) this.log(`やり直しを中止したので、やり直す前の状態に戻しました: ${dir}`);
+    await rm(snapshotFile, { force: true }).catch(() => undefined);
     return writeStatus(dir, status).catch(() => status);
   }
 
-  private async process(dir: string, signal: AbortSignal): Promise<PipelineStatus> {
+  private async process(dir: string, job: Job): Promise<PipelineStatus> {
+    const signal = job.controller.signal;
     const now = () => new Date().toISOString();
     // 前回の文字起こしの条件は、最初の書き込みで消す前に読んでおく
     const previous = await readPipelineStatus(dir);
@@ -259,6 +333,7 @@ export class Pipeline {
     await writeStatus(dir, status);
     const step = async <T>(stage: PipelineStatus['stage'], work: () => Promise<T>): Promise<T> => {
       if (signal.aborted) throw new Error('cancelled');
+      job.stage = stage;
       status = await writeStatus(dir, { ...status, stage, updatedAt: now() });
       const started = Date.now();
       const result = await work();
@@ -288,7 +363,10 @@ export class Pipeline {
         this.log(`transcript を再利用: ${previousReport}`);
         segments = await this.readSegments(previousReport);
       } else {
+        // ここから先は report を書き換える。途中で中止されたら、前の文字起こしの記録はもう使えない
+        job.whisper = { state: 'running' };
         segments = await this.transcribe(dir, audioWebm, audioWav, reportDir, step, signal);
+        job.whisper = { state: 'finished', record: { model: this.config.model, audioBytes } };
       }
       status.transcript = { model: this.config.model, audioBytes, ...(previousReport ? { reused: true } : {}) };
 
@@ -362,7 +440,7 @@ export class Pipeline {
       });
 
       // ノート作成（任意）。失敗しても文字起こしまでは done にする
-      let notes: { notes?: boolean; notesError?: string; notesReused?: boolean } = {};
+      let notes: { notes?: boolean; notesError?: string; notesReused?: boolean; notesCancelled?: boolean } = {};
       /** ノート作成に失敗したら、文字起こしそのままの本文を置く（前回の内容が残ったままにならないように） */
       const fallbackNotes = async (notesError: string) => {
         await writeFile(path.join(dir, NOTES_FILE), result.rawNotes).catch(() => undefined);
@@ -376,8 +454,11 @@ export class Pipeline {
         openaiApiKey: this.config.openaiApiKey,
         ollamaUrl: this.config.ollamaUrl,
         charsPerCall: this.config.llmCharsPerCall,
-        signal,
+        // LLM だけを止める signal。処理全体の中止でも止まる（enqueue でつないである）
+        signal: job.llm.signal,
       };
+      /** 利用者がノート作成だけを止めた（処理全体の中止ではない） */
+      const notesStopped = () => job.llm.signal.aborted && !signal.aborted;
       const backend = createBackend(llmSettings);
       if (backend) {
         notes = await step('polishing', async () => {
@@ -415,6 +496,7 @@ export class Pipeline {
               for (const [id, out] of result.results) polished.set(id, out);
               errors = result.errors;
               if (signal.aborted) throw new Error('cancelled');
+              if (notesStopped()) throw new Error('notes stopped');
             }
             // 発話のある節が 1 つも整わなかったら失敗とする（空の節はキャッシュの組み替えでも埋まるため数に入れない）
             const hasText = inputs.some((i) => i.text !== '');
@@ -430,6 +512,7 @@ export class Pipeline {
               const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
               const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
               if (signal.aborted) throw new Error('cancelled');
+              if (notesStopped()) throw new Error('notes stopped');
               topics = made;
               if (outlineError) errors.push(outlineError);
             }
@@ -462,18 +545,26 @@ export class Pipeline {
             ...(reused ? { notesReused: true } : {}),
           };
         }).catch(async (e: unknown) => {
-          const message = e instanceof Error ? e.message : String(e);
-          // 「中止」のときは前回の結果を残す。それ以外の失敗では文字起こしそのままの本文に戻す
-          if (signal.aborted) return { notes: false, notesError: message };
-          return await fallbackNotes(message);
+          // 「中止」のときは前回の結果を残し、外側で cancelled として書く。ここで notes: false のまま返すと
+          // 段階が done になり、利用者が自分で止めたのに一覧へ「ノートを整えられませんでした」が出る（§13.5）
+          if (signal.aborted) throw e;
+          // 利用者がノート作成だけを止めた（初回の処理の「中止」。§11.3）。文字起こしは済んでいるので、
+          // 文字起こしのままのノートで完了にする。失敗ではないので、拡張は別の文言で知らせる
+          if (notesStopped()) return { ...(await fallbackNotes('ノート作成を中止しました')), notesCancelled: true };
+          // それ以外の失敗では文字起こしそのままの本文に戻す
+          return await fallbackNotes(e instanceof Error ? e.message : String(e));
         });
       }
 
+      // 最後まで進んだので、やり直す前の状態の控えはもう要らない
+      await rm(workPath(dir, PREVIOUS_FILE), { force: true }).catch(() => undefined);
       return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });
     } catch (e) {
-      if (signal.aborted) return this.writeCancelled(dir);
+      if (signal.aborted) return this.writeCancelled(dir, job);
       const message = e instanceof Error ? e.message : String(e);
       this.log(`pipeline error: ${message}`);
+      // 失敗で終わったら控えは捨てる（次の「やり直す」の中止で、失敗より前の状態に戻してしまわないように）
+      await rm(workPath(dir, PREVIOUS_FILE), { force: true }).catch(() => undefined);
       return writeStatus(dir, { ...status, stage: 'error', updatedAt: now(), error: message });
     }
   }
