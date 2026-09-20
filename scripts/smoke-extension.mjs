@@ -774,26 +774,32 @@ try {
     }
     assert.fail(`redo of ${sessionId} did not finish`);
   };
+  // その講義の行に出ている注意書きと、ほかの行に出ている数（この講義の行に出ていることを確かめるため）
   const noteOf = async (sessionId) => {
     await popup.reload();
     await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
-    return popup.evaluate(
-      (id) => ({ id, notes: [...document.querySelectorAll('#sessionList li .sessionNote')].map((n) => ({ text: n.textContent, title: n.title })) }),
-      sessionId,
-    );
+    return popup.evaluate((id) => {
+      const row = document.querySelector(`#sessionList li[data-session-id="${id}"]`);
+      const all = [...document.querySelectorAll('#sessionList li .sessionNote')];
+      const own = [...(row?.querySelectorAll('.sessionNote') ?? [])].map((n) => ({ text: n.textContent, title: n.title }));
+      return { id, found: !!row, own, others: all.length - own.length };
+    }, sessionId);
   };
   const codexLimitStub = stub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
   await restartServer(['--llm', 'codex', '--codex', codexLimitStub]);
   const afterLimit = await redo(retryA);
   assert.equal(afterLimit.error, undefined, `a notes failure must not be a processing error: ${JSON.stringify(afterLimit.error)}`);
   const limited = await noteOf(retryA);
-  assert.equal(limited.notes.length, 1, `expected one notes warning in the list: ${JSON.stringify(limited)}`);
-  assert.equal(limited.notes[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
-  assert.ok(limited.notes[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.notes[0])}`);
+  assert.equal(limited.found, true, `no row for ${retryA}: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own.length, 1, `expected the warning on this session's row: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+  assert.ok(limited.own[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.own[0])}`);
+  assert.equal(limited.others, 0, `only this session should warn: ${JSON.stringify(limited)}`);
   await restartServer([]);
   await redo(retryA);
   const cleared = await noteOf(retryA);
-  assert.equal(cleared.notes.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
+  assert.equal(cleared.found, true, `no row for ${retryA}: ${JSON.stringify(cleared)}`);
+  assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
   console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
 
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。

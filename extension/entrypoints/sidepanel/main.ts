@@ -535,6 +535,8 @@ async function checkOutputs(sessions: readonly StoredSession[]) {
 
 function sessionItem(session: StoredSession): HTMLLIElement {
   const li = document.createElement('li');
+  // どの行がどのセッションかを DOM からも分かるようにする（スモークテストが行を指して調べる）
+  li.dataset['sessionId'] = session.sessionId;
   // 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数
   const title = session.meta?.title?.trim() || formatSessionId(session.sessionId);
   const main = document.createElement('div');
