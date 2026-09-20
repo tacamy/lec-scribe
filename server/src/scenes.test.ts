@@ -518,3 +518,116 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
     expect(d.map((x) => x.shown)).toEqual([true, false, false, true, false]);
   });
 });
+
+describe('前の画面に短く戻っただけの画像（2026-09-20）', () => {
+  /** 画面ごとに濃さの違う無地に近い画像。同じ番号なら中身が同じ、違う番号なら全画素が違う */
+  const screen = (n: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let p = 0; p < PIXELS; p++) f.set([40 * n, 40 * n, 40 * n], p * 4);
+    return f;
+  };
+  /** times の時刻（秒）に screens の画面が撮れた講義 */
+  const lecture = (screens: number[], times: number[]) => {
+    const slides = screens.map((_, i) => ({ ...slide(i + 1, 1), videoTime: times[i]! }));
+    const thumbs = new Map(screens.map((n, i) => [slides[i]!.filename, screen(n)] as [string, Uint8Array]));
+    return { slides, thumbs };
+  };
+  const pick = (screens: number[], times: number[], keep: 'first' | 'last' = 'first') => {
+    const { slides, thumbs } = lecture(screens, times);
+    return pickShownSlides(slides, thumbs, 0.65, undefined, keep);
+  };
+
+  it('A → B → A → B と行き来して、戻っていたのが 10 秒未満なら A と B の 2 枚だけ載せる', () => {
+    const d = pick([1, 2, 1, 2, 3], [0, 36, 58, 65, 77]);
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [true, undefined], [false, 'revisit'], [false, 'identical'], [true, undefined]]);
+    expect(d[2]).toMatchObject({ sameSceneAs: 'slide_002.png', via: 'slide_001.png' });
+  });
+
+  it('戻って 10 秒以上話しているなら、その画像も載せる', () => {
+    expect(pick([1, 2, 1, 2, 3], [0, 36, 58, 70, 90]).map((x) => x.shown)).toEqual([true, true, true, true, true]);
+  });
+
+  it('最後まで戻ったまま、または時刻が巻き戻っている（シークした）ときは、長さが分からないので載せる', () => {
+    expect(pick([1, 2, 1], [0, 36, 58]).map((x) => x.shown)).toEqual([true, true, true]);
+    expect(pick([1, 2, 1, 3], [0, 36, 58, 20]).map((x) => x.shown)).toEqual([true, true, true, true]);
+  });
+
+  it('戻っている間に同じ画面がもう 1 枚撮れたら、合わせた長さで決め、どちらも載せない', () => {
+    expect(pick([1, 2, 1, 1, 2], [0, 36, 58, 61, 66]).map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [true, undefined], [false, 'revisit'], [false, 'revisit'], [false, 'identical'],
+    ]);
+    // 合わせて 10 秒以上なら、戻った画面として載せる（2 枚目は 1 枚目と同じなので外れる）
+    expect(pick([1, 2, 1, 1, 2], [0, 36, 58, 61, 70]).map((x) => x.shown)).toEqual([true, true, true, false, true]);
+  });
+
+  it('短い戻りのあとでもう一度、今度は長く戻ったら、その画像は載せる（前の短い戻りに引きずられない）', () => {
+    const d = pick([1, 2, 1, 2, 1, 3], [0, 36, 58, 63, 100, 160]);
+    expect(d.map((x) => x.shown)).toEqual([true, true, false, false, true, true]);
+  });
+
+  it('戻った先から少しずつ離れていったら、離れた時点で載せる（戻りの扱いを引きずらない）', () => {
+    // 画素の 4% ずつ変わっていく画面。直前の 1 枚とだけ比べて連ねると、戻った先とは似ていない画像まで
+    // ずっと「戻っただけ」として外れ続け、その区間に載る画像が 1 枚も無くなっていた
+    const step = Math.floor(PIXELS * 0.04);
+    const drift = (flipped: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
+      return f;
+    };
+    const flat = (v: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      return f;
+    };
+    const frames: [Uint8Array, number][] = [[drift(0), 0], [flat(0), 30], [drift(0), 60], [drift(step), 62], [drift(step * 2), 64], [flat(120), 200]];
+    const slides = frames.map(([, videoTime], i) => ({ ...slide(i + 1, 1), videoTime }));
+    const thumbs = new Map(frames.map(([img], i) => [slides[i]!.filename, img] as [string, Uint8Array]));
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
+    // 60 秒に戻った 2 枚は外れるが、そこから離れた 64 秒の画面は載る（60〜200 秒が画像なしにならない）
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [true, undefined], [false, 'revisit'], [false, 'revisit'], [true, undefined], [true, undefined],
+    ]);
+  });
+
+  it('戻っている間に画面が少しずつ変わっても、合計 10 秒を超えたらそこから載せる', () => {
+    // 1 枚ずつの「この画面が続いた時間」だけで決めると、6 秒ごとに少し変わる長い戻りが丸ごと外れて、
+    // その区間に載る画像が 1 枚も無くなっていた
+    const step = Math.floor(PIXELS * 0.04);
+    const drift = (flipped: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
+      return f;
+    };
+    const flat = (v: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      return f;
+    };
+    // A（0 秒）→ B（60 秒）→ A に戻って 6 秒ごとに 8% ずつ揺れる（120〜150 秒）→ C（240 秒）
+    const frames: Array<[Uint8Array, number]> = [
+      [drift(0), 0], [drift(step), 5], [flat(200), 60],
+      [drift(0), 120], [drift(step * 2), 126], [drift(0), 132], [drift(step * 2), 138],
+      [flat(120), 240],
+    ];
+    const slides = frames.map(([, videoTime], i) => ({ ...slide(i + 1, 1), videoTime }));
+    const thumbs = new Map(frames.map(([img], i) => [slides[i]!.filename, img] as [string, Uint8Array]));
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
+    // 120・126 秒は短い戻りとして外れるが、10 秒を超えた 132 秒からは載る（120〜240 秒が画像なしにならない）
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [false, 'identical'], [true, undefined],
+      [false, 'revisit'], [false, 'revisit'], [true, undefined], [true, undefined],
+      [true, undefined],
+    ]);
+  });
+
+  it('最後の 1 枚を載せる設定でも、戻っただけの画像は今の画面の代わりに選ばない', () => {
+    // B のまとまりは [B, 戻っただけの A]。載せるのは B のまま
+    const d = pick([1, 2, 1, 3], [0, 36, 58, 63], 'last');
+    expect(d.map((x) => [x.filename, x.shown])).toEqual([['slide_001.png', true], ['slide_002.png', true], ['slide_003.png', false], ['slide_004.png', true]]);
+    // [B, 戻っただけの A, B] なら最後の B を載せ、戻っただけの A もその画像を指す
+    const e = pick([1, 2, 1, 2, 3], [0, 36, 58, 65, 77], 'last');
+    expect(e.map((x) => x.shown)).toEqual([true, false, false, true, true]);
+    expect(e[3]).toMatchObject({ standsFor: 'slide_002.png' });
+    expect(e[2]).toMatchObject({ reason: 'revisit', sameSceneAs: 'slide_004.png' });
+  });
+});
