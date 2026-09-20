@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
-import { recoverInterrupted } from './pipeline.ts';
+import { readPipelineStatus, recoverInterrupted } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
 /**
@@ -293,6 +293,38 @@ describe('local server', () => {
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('最初の区間');
     } finally {
       await new Promise<void>((resolve) => limited.close(() => resolve()));
+    }
+  });
+
+  it('ノート作成の途中で中止しても、文字起こし済みの記録は残る（次のやり直しで whisperkit を飛ばせる）', async () => {
+    // codex が返らないサーバーを立て、polishing に入ったところで中止する
+    const slowCodex = await writeStub('codex-slow', 'sleep 30');
+    const outDir = path.join(tmp, 'out-cancel-polish');
+    const { server: s2 } = createApp({ ...config, codexBin: slowCodex, outDir }, TOKEN);
+    await new Promise<void>((resolve) => s2.listen(0, '127.0.0.1', resolve));
+    const b2 = `http://127.0.0.1:${(s2.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-140000-canp';
+      await fetch(`${b2}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'cancel polish' }) });
+      await fetch(`${b2}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${b2}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let dir = '';
+      for (let i = 0; i < 100; i++) {
+        const s = (await (await fetch(`${b2}/sessions/${sessionId}/status`, { headers })).json()) as { stage: string; outputDir?: string };
+        if (s.stage === 'polishing') {
+          dir = s.outputDir!;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(dir).not.toBe('');
+      await fetch(`${b2}/sessions/${sessionId}/cancel`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' });
+      const after = await readPipelineStatus(dir);
+      expect(after?.stage).toBe('cancelled');
+      // ここが落ちると、次の「やり直す」で 90 分の音声を丸ごと文字起こしし直すことになる
+      expect(after?.transcript).toMatchObject({ model: 'stub' });
+    } finally {
+      await new Promise<void>((resolve) => s2.close(() => resolve()));
     }
   });
 

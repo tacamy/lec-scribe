@@ -244,7 +244,16 @@ export class Pipeline {
 
   private async writeCancelled(dir: string): Promise<PipelineStatus> {
     this.log(`cancelled: ${dir}`);
-    const status: PipelineStatus = { stage: 'cancelled', outputDir: dir, updatedAt: new Date().toISOString() };
+    // pipeline.json は丸ごと置き換わるので、文字起こし済みの記録（transcript）だけは引き継ぐ。
+    // 落とすと、次の「やり直す」で同じ音声・同じモデルなのに whisperkit を最初からやり直すことになる
+    // （ノート作成の途中で「中止」したときがこの経路）
+    const previous = await readPipelineStatus(dir);
+    const status: PipelineStatus = {
+      stage: 'cancelled',
+      outputDir: dir,
+      updatedAt: new Date().toISOString(),
+      ...(previous?.transcript ? { transcript: previous.transcript } : {}),
+    };
     // 中止と同時に削除されたフォルダを作り直さない
     const exists = await stat(dir).then(() => true).catch(() => false);
     if (!exists) return status;
