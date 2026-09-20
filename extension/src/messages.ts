@@ -18,7 +18,7 @@ export type ServerStatus = {
    * notes はノートを整えられたか（ノート作成が無効なら付かない）。notesError は整えられなかった理由。
    * notes が true でも notesError があれば、一部の節だけ文字起こしのまま（§13.5）
    */
-  result?: { segments: number; durationSec: number; hasTimeline: boolean; notes?: boolean; notesError?: string };
+  result?: { segments: number; durationSec: number; hasTimeline: boolean; notes?: boolean; notesError?: string; notesCancelled?: boolean };
 };
 
 /** Written to session.json when a capture starts. */
@@ -49,6 +49,11 @@ export type ToBackground =
   | { target: 'sw'; type: 'PAIR' }
   /** 接続を解除する（サーバーにこの拡張の承認を取り消させ、保存したトークンを消す） */
   | { target: 'sw'; type: 'UNPAIR' }
+  /**
+   * 初回の処理でノート作成中に「中止」したとき: ノート作成だけを止めて、文字起こしのままのノートで完了にする（§11.3）。
+   * 文字起こしまで済んでいるのに、録音ごと消さないため。進み具合の監視は止めない（完了は監視が受け取る）
+   */
+  | { target: 'sw'; type: 'FINISH_NOTES'; sessionId: string }
   | { target: 'sw'; type: 'EXPORT'; sessionId: string }
   /**
    * 一覧の行を消す。output: 'delete' で ~/LecScribe のフォルダも消す（notes.md があっても）、'keep' で残す、
@@ -199,6 +204,7 @@ export const sendToBackground = {
   getState: () => send<StateReply>({ target: 'sw', type: 'GET_STATE' }),
   pair: () => send<StateReply & { paired: boolean }>({ target: 'sw', type: 'PAIR' }),
   unpair: () => send<StateReply>({ target: 'sw', type: 'UNPAIR' }),
+  finishNotes: (sessionId: string) => send<StateReply & { finished: boolean }>({ target: 'sw', type: 'FINISH_NOTES', sessionId }),
   export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
   discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
     send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),

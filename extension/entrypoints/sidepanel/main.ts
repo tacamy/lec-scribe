@@ -585,15 +585,22 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   };
   // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
   if (inFlight) {
-    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）
+    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）。
+    // ただし初回でも、ノート作成中（文字起こしは済んでいる）なら消さない。ノート作成だけを止めて、文字起こしのままのノートで
+    // 完了にする（§11.3、2026-09-20。Codex が利用上限で進まないのを見て「中止」を押し、録音ごと失うのを防ぐ）
+    const polishing = !done && current.processing?.sessionId === session.sessionId && current.processing.stage === 'polishing';
     const stopBtn = button('中止');
     stopBtn.disabled = !!current.exporting;
     stopBtn.addEventListener('click', () => {
       const text = done
         ? `「${title}」のやり直しを中止します。前回の結果（~/LecScribe のフォルダ）と録音は残ります。`
-        : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
+        : polishing
+          ? `「${title}」のノート作成を中止します。文字起こしは済んでいるので、文字起こしのままのノートで完了にします（録音も残ります）。あとから「やり直す」で整えられます。`
+          : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
       void askConfirm(text, '中止する').then((ok) => {
-        if (ok) void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
+        if (!ok) return;
+        if (polishing) void act(() => sendToBackground.finishNotes(session.sessionId));
+        else void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
       });
     });
     btns.append(stopBtn, tag(current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち'));

@@ -82,6 +82,8 @@ describe('ノートを整えられなかったとき（§13.5）', () => {
   it('サーバーの結果から、全体か一部かを読む。整えられた・ノート作成が無効なら何も出さない', () => {
     expect(notesProblemOf({ notes: false, notesError: 'codex exec failed (1): usage limit' })).toBe('failed');
     expect(notesProblemOf({ notes: true, notesError: 'section 3: timeout' })).toBe('partial');
+    // 利用者がノート作成を止めたときは、失敗とは別に扱う
+    expect(notesProblemOf({ notes: false, notesError: 'ノート作成を中止しました', notesCancelled: true })).toBe('stopped');
     expect(notesProblemOf({ notes: true })).toBeUndefined();
     expect(notesProblemOf({})).toBeUndefined(); // ノート作成が無効
     expect(notesProblemOf(undefined)).toBeUndefined(); // 古いサーバー
@@ -90,5 +92,6 @@ describe('ノートを整えられなかったとき（§13.5）', () => {
   it('注意書きは「やり直す」を案内する', () => {
     expect(notesProblemText('failed')).toBe('ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
     expect(notesProblemText('partial')).toContain('一部');
+    expect(notesProblemText('stopped')).toBe('ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます');
   });
 });

@@ -802,6 +802,64 @@ try {
   assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
   console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
 
+  // §11.3: 初回の処理でノート作成中に「中止」を押したら、録音ごと消さずに、ノート作成だけを止めて文字起こしのままのノートで完了にする。
+  // 行のボタンが段階を見て動きを変えるので、メッセージを直接送らず、パネルのボタンと確認ダイアログを実際に押す
+  const finishId = '20990101-000006-smok';
+  const off5 = await context.newPage();
+  off5.on('pageerror', (e) => errors.push(String(e)));
+  await off5.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off5.waitForFunction(() => !!globalThis.__lecscribe);
+  await off5.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    await api.startFromStream(dest.stream, { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } }, { sessionId, title: 'smoke finish', startedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 900));
+    await api.stop();
+    osc.stop();
+    await ctx.close();
+  }, finishId);
+  await off5.close();
+  const codexSlowStub = stub('codex-slow', 'sleep 30');
+  await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
+  const sentFinish = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
+  assert.equal(sentFinish.ok, true, JSON.stringify(sentFinish));
+  let atPolishing = null;
+  for (let i = 0; i < 100; i++) {
+    atPolishing = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (atPolishing.processing?.stage === 'polishing') break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(atPolishing.processing?.stage, 'polishing', `did not reach polishing: ${JSON.stringify(atPolishing.processing)}`);
+  const finishRow = `#sessionList li[data-session-id="${finishId}"]`;
+  await popup.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
+  const stopStarted = Date.now();
+  await popup.locator(`${finishRow} button`, { hasText: '中止' }).click();
+  await popup.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
+  const confirmText = await popup.evaluate(() => document.getElementById('confirmText').textContent);
+  assert.ok(confirmText.includes('ノート作成を中止します') && confirmText.includes('録音も残ります'), `unexpected confirm text: ${confirmText}`);
+  await popup.click('#confirmOk');
+  let afterFinish = null;
+  for (let i = 0; i < 100; i++) {
+    afterFinish = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (!afterFinish.processing) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(afterFinish.processing, undefined, `still processing: ${JSON.stringify(afterFinish.processing)}`);
+  assert.equal(afterFinish.error, undefined, `stopping the notes must not be an error: ${JSON.stringify(afterFinish.error)}`);
+  assert.ok(Date.now() - stopStarted < 15_000, 'finish waited for the slow codex');
+  const finished = await noteOf(finishId);
+  assert.equal(finished.found, true, `the recording must survive: ${JSON.stringify(finished)}`);
+  assert.equal(finished.own[0]?.text, 'ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます', JSON.stringify(finished));
+  const finishDir = readdirSync(serverOut).find((d) => d.endsWith(`_${finishId}`));
+  assert.ok(finishDir && readdirSync(path.join(serverOut, finishDir)).includes('notes.md'), `no notes.md for ${finishId}: ${finishDir}`);
+  await restartServer([]);
+  console.log('finish: stopping a first run during polishing keeps the recording and completes with transcript-only notes');
+
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
   // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる
   const unpairPage = await context.newPage();

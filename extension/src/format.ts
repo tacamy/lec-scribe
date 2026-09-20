@@ -71,14 +71,19 @@ export function videoTimeNow(
  * 失敗してもサーバーの段階は done（文字起こしは済んでいて、notes.md には文字起こしがそのまま入る）なので、
  * ここで拾わないと利用者は notes.md を開くまで気づけない（Codex の利用上限に当たったときなど）
  */
-export function notesProblemOf(result: { notes?: boolean; notesError?: string } | undefined): 'failed' | 'partial' | undefined {
+export function notesProblemOf(
+  result: { notes?: boolean; notesError?: string; notesCancelled?: boolean } | undefined,
+): 'failed' | 'partial' | 'stopped' | undefined {
   if (!result) return undefined;
+  // 利用者がノート作成を止めた（初回の処理の「中止」）。失敗ではないので文言を分ける
+  if (result.notes === false && result.notesCancelled === true) return 'stopped';
   if (result.notes === false) return 'failed';
   return result.notes === true && result.notesError ? 'partial' : undefined;
 }
 
 /** 一覧に出す注意書き */
-export function notesProblemText(problem: 'failed' | 'partial'): string {
+export function notesProblemText(problem: 'failed' | 'partial' | 'stopped'): string {
+  if (problem === 'stopped') return 'ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます';
   return problem === 'failed'
     ? 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください'
     : 'ノートの一部を整えられませんでした。時間をおいて「やり直す」を押してください';
