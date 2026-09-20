@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
-import { recoverInterrupted } from './pipeline.ts';
+import { readPipelineStatus, recoverInterrupted, type PipelineStatus } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
 /**
@@ -268,6 +268,171 @@ describe('local server', () => {
     const top = (await readdir(dir)).sort();
     expect(top).toEqual(['.lecscribe', 'slides']);
     expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'timeline.json']);
+  });
+
+  it('ノートを整えられなくても段階は done で、status の result に notes: false と理由が載る（拡張が一覧に注意書きを出す）', async () => {
+    // Codex の利用上限に当たったときの形: codex が失敗して終わる
+    const failing = await writeStub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+    const { server: limited } = createApp({ ...config, codexBin: failing, outDir: path.join(tmp, 'out-limit') }, TOKEN);
+    await new Promise<void>((resolve) => limited.listen(0, '127.0.0.1', resolve));
+    const limitedBase = `http://127.0.0.1:${(limited.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-120000-lim1';
+      await fetch(`${limitedBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'limit' }) });
+      await fetch(`${limitedBase}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${limitedBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string } } = { stage: 'queued' };
+      for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${limitedBase}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      expect(status.result?.notes).toBe(false);
+      expect(status.result?.notesError).toContain('usage limit');
+      // notes.md には文字起こしがそのまま入る
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('最初の区間');
+    } finally {
+      await new Promise<void>((resolve) => limited.close(() => resolve()));
+    }
+  });
+
+  describe('中止（§11.3）', () => {
+    /** 設定を変えた別サーバーを立てる。同じ outDir を渡せば「やり直す」を再現できる */
+    const startApp = async (overrides: Partial<ServerConfig>) => {
+      const { server: s } = createApp({ ...config, ...overrides }, TOKEN);
+      await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+      return { base: `http://127.0.0.1:${(s.address() as AddressInfo).port}`, close: () => new Promise<void>((resolve) => s.close(() => resolve())) };
+    };
+    const json = { ...headers, 'content-type': 'application/json' };
+    /** セッションを作って（あれば同じフォルダに）音声を置き、処理を始める */
+    const begin = async (base: string, sessionId: string) => {
+      await fetch(`${base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: 'cancel' }) });
+      await fetch(`${base}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+    };
+    const waitStage = async (base: string, sessionId: string, stage: string) => {
+      for (let i = 0; i < 200; i++) {
+        const s = (await (await fetch(`${base}/sessions/${sessionId}/status`, { headers })).json()) as PipelineStatus;
+        if (s.stage === stage) return s;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error(`stage ${stage} に入らなかった`);
+    };
+    const cancel = async (base: string, sessionId: string, body: object = {}) =>
+      (await (await fetch(`${base}/sessions/${sessionId}/cancel`, { method: 'POST', headers: json, body: JSON.stringify(body) })).json()) as Record<string, unknown>;
+    const exists = (file: string) => stat(file).then(() => true, () => false);
+
+    it('初回の処理をノート作成の途中で中止したら cancelled。この回で作った文字起こしの記録は残る', async () => {
+      const slowCodex = await writeStub('codex-slow', 'sleep 30');
+      const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-cancel-first') });
+      try {
+        const sessionId = '20260920-140000-canp';
+        await begin(app.base, sessionId);
+        const { outputDir } = await waitStage(app.base, sessionId, 'polishing');
+        await cancel(app.base, sessionId);
+        const after = await readPipelineStatus(outputDir);
+        expect(after?.stage).toBe('cancelled');
+        // ここが落ちると、次に送り直したとき 90 分の音声を丸ごと文字起こしし直すことになる
+        expect(after?.transcript).toMatchObject({ model: 'stub' });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('「やり直す」をノート作成の途中で中止したら、やり直す前の状態（完了・結果・ノート）に丸ごと戻る', async () => {
+      const outDir = path.join(tmp, 'out-cancel-redo');
+      const sessionId = '20260920-141000-redo';
+      const first = await startApp({ outDir });
+      let dir = '';
+      let before: PipelineStatus | null = null;
+      try {
+        await begin(first.base, sessionId);
+        dir = (await waitStage(first.base, sessionId, 'done')).outputDir;
+        before = await readPipelineStatus(dir);
+        expect(before?.result).toMatchObject({ notes: true });
+      } finally {
+        await first.close();
+      }
+      const notesBefore = await readFile(path.join(dir, 'notes.md'), 'utf8');
+      // モデルを変えて、前回のノートを使い回せないようにする（使い回せると codex を呼ばずに終わる）
+      const slowCodex = await writeStub('codex-slow-redo', 'sleep 30');
+      const redo = await startApp({ outDir, codexBin: slowCodex, llmModel: 'another-model' });
+      try {
+        await begin(redo.base, sessionId);
+        await waitStage(redo.base, sessionId, 'polishing');
+        expect(await exists(path.join(dir, '.lecscribe', 'pipeline.previous.json'))).toBe(true);
+        await cancel(redo.base, sessionId);
+        const after = await readPipelineStatus(dir);
+        expect(after).toEqual(before); // 段階は done のまま、結果も文字起こしの記録もそのまま
+        expect(await readFile(path.join(dir, 'notes.md'), 'utf8')).toBe(notesBefore);
+        expect(await exists(path.join(dir, '.lecscribe', 'pipeline.previous.json'))).toBe(false);
+      } finally {
+        await redo.close();
+      }
+    });
+
+    it('「やり直す」を whisperkit の途中で中止したら、状態は戻すが文字起こしの記録は落とす（report を書き換えている途中のため）', async () => {
+      const outDir = path.join(tmp, 'out-cancel-whisper');
+      const sessionId = '20260920-142000-whsp';
+      const first = await startApp({ outDir });
+      let dir = '';
+      try {
+        await begin(first.base, sessionId);
+        dir = (await waitStage(first.base, sessionId, 'done')).outputDir;
+        expect((await readPipelineStatus(dir))?.transcript).toMatchObject({ model: 'stub' });
+      } finally {
+        await first.close();
+      }
+      // モデルを変えると whisperkit からやり直しになる
+      const slowWhisper = await writeStub('whisperkit-slow-redo', 'sleep 30');
+      const redo = await startApp({ outDir, whisperkitBin: slowWhisper, model: 'another-whisper' });
+      try {
+        await begin(redo.base, sessionId);
+        await waitStage(redo.base, sessionId, 'transcribing');
+        await cancel(redo.base, sessionId);
+        const after = await readPipelineStatus(dir);
+        expect(after?.stage).toBe('done');
+        expect(after?.result).toMatchObject({ notes: true });
+        expect(after?.transcript).toBeUndefined();
+      } finally {
+        await redo.close();
+      }
+    });
+
+    it('初回の処理でノート作成中に finish を送ると、LLM だけ止めて、文字起こしのままのノートで完了にする', async () => {
+      const slowCodex = await writeStub('codex-slow-finish', 'sleep 30');
+      const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-finish') });
+      try {
+        const sessionId = '20260920-143000-fini';
+        await begin(app.base, sessionId);
+        const { outputDir } = await waitStage(app.base, sessionId, 'polishing');
+        const started = Date.now();
+        expect(await cancel(app.base, sessionId, { finish: true })).toMatchObject({ ok: true, finished: true, cancelled: false, deleted: false });
+        expect(Date.now() - started).toBeLessThan(5000); // sleep 30 を待たずに終わる
+        const after = await readPipelineStatus(outputDir);
+        expect(after?.stage).toBe('done');
+        expect(after?.result).toMatchObject({ notes: false, notesCancelled: true, notesError: 'ノート作成を中止しました' });
+        expect(after?.transcript).toMatchObject({ model: 'stub' });
+        expect(await readFile(path.join(outputDir, 'notes.md'), 'utf8')).toContain('最初の区間');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('ノート作成中でなければ finish は何もしない（処理は続く）', async () => {
+      const slowWhisper = await writeStub('whisperkit-slow-finish', 'sleep 30');
+      const app = await startApp({ whisperkitBin: slowWhisper, outDir: path.join(tmp, 'out-finish-early') });
+      try {
+        const sessionId = '20260920-144000-erly';
+        await begin(app.base, sessionId);
+        await waitStage(app.base, sessionId, 'transcribing');
+        expect(await cancel(app.base, sessionId, { finish: true })).toMatchObject({ ok: true, finished: false });
+        expect(((await (await fetch(`${app.base}/sessions/${sessionId}/status`, { headers })).json()) as PipelineStatus).stage).toBe('transcribing');
+        await cancel(app.base, sessionId, { delete: true }); // 片付け（sleep 30 を待たない）
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   it('cancels a running pipeline and deletes the session on request', async () => {

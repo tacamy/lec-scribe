@@ -9,17 +9,21 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { fixtureStamp } from '../fixtures/version.mjs';
 
 const ext = path.resolve('extension/dist/chrome-mv3');
 
 // Phase 3 以降は fixture ページ（video.js 風 DOM + 合成スライド動画）を使う。
 // 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
 const FIXTURE_PORT = 8791;
-const FIXTURE_VERSION = 3; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
+// 時刻の確認はこの引数に合わせてあるので、世代だけでなく引数まで含めて突き合わせる（`pnpm fixtures:make` の既定は 10 枚 × 5 秒）
+const FIXTURE_ARGS = { slides: 3, seconds: 3, width: 640, height: 360 };
+const FIXTURE_STAMP = fixtureStamp(FIXTURE_ARGS);
 const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
-if (!existsSync('fixtures/slides.webm') || fixtureVersion !== String(FIXTURE_VERSION)) {
+if (!existsSync('fixtures/slides.webm') || fixtureVersion !== FIXTURE_STAMP) {
   console.log('generating fixtures/slides.webm…');
-  const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', '--slides', '3', '--seconds', '2', '--width', '640', '--height', '360'], { stdio: 'inherit' });
+  const args = Object.entries(FIXTURE_ARGS).flatMap(([k, v]) => [`--${k}`, String(v)]);
+  const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', ...args], { stdio: 'inherit' });
   assert.equal(made.status, 0, 'fixture generation failed');
 }
 const fixtureServer = spawn(process.execPath, ['fixtures/serve.mjs', String(FIXTURE_PORT)], { stdio: 'ignore' });
@@ -310,6 +314,10 @@ try {
     return !!v && v.readyState >= 3 && !v.paused && v.currentTime < 1.5;
   });
 
+  // 診断用: 検知を始めるのを遅らせて、0.5 秒ごとのサンプルが動画のどこに当たるか（位相）をずらす。
+  // 位相に左右される確認（最終状態の上書きなど）を直したときは、0〜400 で振って確かめる
+  await lecture.waitForTimeout(Number(process.env.SMOKE_DETECT_DELAY_MS) || 0);
+
   // 検知スクリプトを注入し、frame 宛のメッセージで直接動かす
   const detectConfig = {
     sampleIntervalMs: 500,
@@ -341,7 +349,7 @@ try {
   assert.equal(detect.status.playbackRate, 1);
   assert.equal(detect.status.taintFree, true);
 
-  // 最初の 1 枚が自動で保存され、以降はスライドの切り替わり（2 秒ごと）を検知して保存される。
+  // 最初の 1 枚が自動で保存され、以降はスライドの切り替わり（3 秒ごと）を検知して保存される。
   // ワイプ（動く円）だけでは保存されないこと = 3 枚ちょうど
   await off2.waitForFunction(() => globalThis.__lecscribe.stats().slideCount >= 1, null, { timeout: 10_000 });
   await lecture.waitForFunction(() => document.querySelector('video').ended, null, { timeout: 30_000 });
@@ -435,13 +443,20 @@ try {
   assert.deepEqual([be32(frames.head, 16), be32(frames.head, 20)], expectedSize, 'PNG IHDR size = video size');
   assert.equal(frames.slides.length, 4);
   assert.deepEqual(frames.slides.map((s) => s.reason), ['initial', 'change', 'change', 'manual']);
-  // スライド 2 は表示から 1.8 秒後に 1 行増える → 切り替わる直前の状態で画像が上書きされている
+  // スライド 2 は表示から 1.95 秒後に 1 行増える → 切り替わる直前の状態で画像が上書きされている。
+  // 保存（切り替わりの 1.0〜1.5 秒後）より後に増え、次の切り替わりまで 1.05 秒あるので、0.5 秒ごとの検知がどの位相でも 1 回は見る
   assert.equal(frames.slides[1].updated, true, `slide 2 was not updated with its final state: ${JSON.stringify(frames.slides[1])}\nverdicts: ${JSON.stringify(firstStop.verdicts)}`);
   assert.ok(frames.slides[1].finalVideoTime > frames.slides[1].videoTime, JSON.stringify(frames.slides[1]));
-  assert.notEqual(frames.slides[0].updated, true, `slide 1 should not be updated: ${JSON.stringify(frames.slides[0])}`);
-  // 切り替わりの時刻: スライド 2 は 2 秒、3 は 4 秒に出るので、その少し後に保存されている
-  assert.ok(frames.slides[1].videoTime > 2 && frames.slides[1].videoTime < 4, `slide 2 at ${frames.slides[1].videoTime}`);
-  assert.ok(frames.slides[2].videoTime > 4, `slide 3 at ${frames.slides[2].videoTime}`);
+  // ワイプが動いただけでは上書きしない。これはスライド 3 で確かめる（動き続ける画素のマスクが育っている）。
+  // スライド 1 では確かめない: 最初の切り替わり（3 秒）の時点ではマスクの材料が 4〜5 回分しかなく、
+  // 検知を始めた瞬間の 1 枚目とワイプの位置がずれていると 0.4% をわずかに超える（位相しだいで 0.44%）。
+  // 実際の講義でも開始直後の数秒だけ起こりうるが、同じスライドの少し後の画面で上書きするだけで害はない
+  assert.notEqual(frames.slides[2].updated, true, `slide 3 should not be updated: ${JSON.stringify(frames.slides[2])}\nverdicts: ${JSON.stringify(firstStop.verdicts)}`);
+  // 切り替わりの時刻: スライド 2 は 3 秒、3 は 6 秒に出るので、その少し後に保存されている。
+  // スライド 2 を保存したのは行が増える（4.95 秒）より前で、上書きした最終状態はそれより後
+  assert.ok(frames.slides[1].videoTime > 3 && frames.slides[1].videoTime < 4.95, `slide 2 at ${frames.slides[1].videoTime}`);
+  assert.ok(frames.slides[1].finalVideoTime >= 4.9 && frames.slides[1].finalVideoTime < 6.05, `slide 2 final at ${frames.slides[1].finalVideoTime}`);
+  assert.ok(frames.slides[2].videoTime > 6, `slide 3 at ${frames.slides[2].videoTime}`);
 
   // Phase 6: タイムライン。start → 再生イベント/tick → ended → stop の順で、
   // 録音時刻 t から動画時刻を復元するとスライドの videoTime と一致する
@@ -797,6 +812,117 @@ try {
     assert.ok(readdirSync(serverOut).some((d) => d === id || d.endsWith(`_${id}`)), `no server output for ${id}: ${readdirSync(serverOut)}`);
   }
   console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
+
+  // §13.5: ノートを整えられなかったとき（Codex の利用上限など）。サーバーの段階は done のままなので、一覧の行に注意書きを出す。
+  // codex が必ず失敗するサーバーに替えて 1 本やり直し、注意書きが出ること、整えられる（ここではノート作成なし）サーバーでやり直すと消えることを見る
+  const restartServer = async (extraArgs) => {
+    // パネルは一覧を描き直すたびにサーバーへ問い合わせる（フォルダの有無、版）。その最中にサーバーを止めると
+    // 接続拒否がコンソールのエラーになり、最後の「ページのエラーなし」に引っかかる。問い合わせが終わるのを待ってから止める
+    await popup.waitForLoadState('networkidle');
+    localServer.kill();
+    await new Promise((r) => setTimeout(r, 500));
+    localServer = spawn(process.execPath, [...localServerArgs, ...extraArgs], { stdio: 'ignore' });
+    for (let i = 0; i < 50; i++) {
+      if (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false)) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail('local server did not come back');
+  };
+  const redo = async (sessionId) => {
+    const sent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
+    assert.equal(sent.ok, true, JSON.stringify(sent));
+    for (let i = 0; i < 100; i++) {
+      const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+      if (!s.processing && !s.pendingUploads) return s;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail(`redo of ${sessionId} did not finish`);
+  };
+  // その講義の行に出ている注意書きと、ほかの行に出ている数（この講義の行に出ていることを確かめるため）
+  const noteOf = async (sessionId) => {
+    await popup.reload();
+    await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
+    return popup.evaluate((id) => {
+      const row = document.querySelector(`#sessionList li[data-session-id="${id}"]`);
+      const all = [...document.querySelectorAll('#sessionList li .sessionNote')];
+      const own = [...(row?.querySelectorAll('.sessionNote') ?? [])].map((n) => ({ text: n.textContent, title: n.title }));
+      return { id, found: !!row, own, others: all.length - own.length };
+    }, sessionId);
+  };
+  const codexLimitStub = stub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+  await restartServer(['--llm', 'codex', '--codex', codexLimitStub]);
+  const afterLimit = await redo(retryA);
+  assert.equal(afterLimit.error, undefined, `a notes failure must not be a processing error: ${JSON.stringify(afterLimit.error)}`);
+  const limited = await noteOf(retryA);
+  assert.equal(limited.found, true, `no row for ${retryA}: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own.length, 1, `expected the warning on this session's row: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+  assert.ok(limited.own[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.own[0])}`);
+  assert.equal(limited.others, 0, `only this session should warn: ${JSON.stringify(limited)}`);
+  await restartServer([]);
+  await redo(retryA);
+  const cleared = await noteOf(retryA);
+  assert.equal(cleared.found, true, `no row for ${retryA}: ${JSON.stringify(cleared)}`);
+  assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
+  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
+
+  // §11.3: 初回の処理でノート作成中に「中止」を押したら、録音ごと消さずに、ノート作成だけを止めて文字起こしのままのノートで完了にする。
+  // 行のボタンが段階を見て動きを変えるので、メッセージを直接送らず、パネルのボタンと確認ダイアログを実際に押す
+  const finishId = '20990101-000006-smok';
+  const off5 = await context.newPage();
+  off5.on('pageerror', (e) => errors.push(String(e)));
+  await off5.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off5.waitForFunction(() => !!globalThis.__lecscribe);
+  await off5.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    await api.startFromStream(dest.stream, { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } }, { sessionId, title: 'smoke finish', startedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 900));
+    await api.stop();
+    osc.stop();
+    await ctx.close();
+  }, finishId);
+  await off5.close();
+  const codexSlowStub = stub('codex-slow', 'sleep 30');
+  await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
+  const sentFinish = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
+  assert.equal(sentFinish.ok, true, JSON.stringify(sentFinish));
+  let atPolishing = null;
+  for (let i = 0; i < 100; i++) {
+    atPolishing = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (atPolishing.processing?.stage === 'polishing') break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(atPolishing.processing?.stage, 'polishing', `did not reach polishing: ${JSON.stringify(atPolishing.processing)}`);
+  const finishRow = `#sessionList li[data-session-id="${finishId}"]`;
+  await popup.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
+  const stopStarted = Date.now();
+  await popup.locator(`${finishRow} button`, { hasText: '中止' }).click();
+  await popup.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
+  const confirmText = await popup.evaluate(() => document.getElementById('confirmText').textContent);
+  assert.ok(confirmText.includes('ノート作成を中止します') && confirmText.includes('録音も残ります'), `unexpected confirm text: ${confirmText}`);
+  await popup.click('#confirmOk');
+  let afterFinish = null;
+  for (let i = 0; i < 100; i++) {
+    afterFinish = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (!afterFinish.processing) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(afterFinish.processing, undefined, `still processing: ${JSON.stringify(afterFinish.processing)}`);
+  assert.equal(afterFinish.error, undefined, `stopping the notes must not be an error: ${JSON.stringify(afterFinish.error)}`);
+  assert.ok(Date.now() - stopStarted < 15_000, 'finish waited for the slow codex');
+  const finished = await noteOf(finishId);
+  assert.equal(finished.found, true, `the recording must survive: ${JSON.stringify(finished)}`);
+  assert.equal(finished.own[0]?.text, 'ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます', JSON.stringify(finished));
+  const finishDir = readdirSync(serverOut).find((d) => d.endsWith(`_${finishId}`));
+  assert.ok(finishDir && readdirSync(path.join(serverOut, finishDir)).includes('notes.md'), `no notes.md for ${finishId}: ${finishDir}`);
+  await restartServer([]);
+  console.log('finish: stopping a first run during polishing keeps the recording and completes with transcript-only notes');
 
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
   // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる

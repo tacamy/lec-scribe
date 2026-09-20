@@ -8,7 +8,7 @@ import { resolveBin, run } from './exec.ts';
 import { visionStatus } from './vision.ts';
 import { slugify } from './format.ts';
 import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
-import { Pipeline, readPipelineStatus, writeStatus, type PipelineStatus } from './pipeline.ts';
+import { Pipeline, readPipelineStatus, snapshotDone, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { isAuthorized } from './token.ts';
 import { addTrusted, askPermission, extensionIdFromOrigin, pairMessage, removeTrusted, sanitizeName, trustedByToken, type Trusted } from './pairing.ts';
 
@@ -23,8 +23,10 @@ export const VERSION = '0.1.0';
  *      見せるだけの項目なので、拡張が必要とする最低の版は 1 のまま
  *   3: 2026-09-18。/pair は承認済みのトークンを持つ押し直しにだけダイアログなしで答え、それ以外は毎回ダイアログを出す。
  *      POST /unpair（接続を解除）。古いサーバーでも拡張は自分の保存分を消せば済むので、最低の版は 1 のまま
+ *   4: 2026-09-20。cancel の finish（ノート作成だけを止めて完了にする）と、status の result.notesCancelled。
+ *      古いサーバーは finish を知らず、ただの中止として扱う（録音は拡張に残るので、送り直せる）。最低の版は 1 のまま
  */
-export const API_VERSION = 3;
+export const API_VERSION = 4;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
@@ -276,6 +278,8 @@ export function createApp(
         sendJson(res, 202, { ok: true, stage: 'queued', outputDir: dir });
         return;
       }
+      // 「やり直す」なら、上書きする前に完了していた状態の控えを取る。中止されたらこれに戻す（§11.3）
+      await snapshotDone(dir);
       // 前回の文字起こしの条件（transcript）は引き継ぐ。同じ音声なら whisperkit を飛ばせる
       const previous = await readPipelineStatus(dir);
       const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString(), transcript: previous?.transcript };
@@ -285,9 +289,17 @@ export function createApp(
       return;
     }
 
-    // POST /sessions/:id/cancel { delete?: boolean; force?: boolean } — 処理を中止する。delete でフォルダごと消す
+    // POST /sessions/:id/cancel { delete?: boolean; force?: boolean; finish?: boolean } — 処理を中止する。delete でフォルダごと消す。
+    // finish はノート作成だけを止めて、文字起こしのままのノートで完了にする（初回の処理でノート作成中に「中止」したとき。§11.3）。
+    // ノート作成中でなければ何もしない（finished: false）。処理は続くので、拡張はそのまま進み具合を見続ける
     if (req.method === 'POST' && parts[2] === 'cancel' && parts.length === 3) {
-      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean; force?: boolean };
+      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean; force?: boolean; finish?: boolean };
+      if (body.finish === true) {
+        const finished = await pipeline.finishWithoutNotes(dir);
+        if (finished) log(`finished without notes ${sessionId}`);
+        sendJson(res, 200, { ok: true, cancelled: false, deleted: false, finished });
+        return;
+      }
       const cancelled = await pipeline.cancel(dir);
       let deleted = false;
       if (body.delete === true) {
