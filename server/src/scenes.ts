@@ -53,8 +53,13 @@ const GROWN_MAX_DIFF = 0.1;
 /** 平行移動を探す範囲（160×90 のサムネイルで。横 15%、縦 13%）。これより大きく動いたら別の画面として残す */
 const PAN_MAX_DX = 24;
 const PAN_MAX_DY = 12;
-/** 見た目の距離がこれ以下の組だけ調べる（11 章・10 章・GD I-2 の 5 組は 0.21〜0.31） */
+/**
+ * 見た目の距離がこれ以下の組だけ調べる（11 章・10 章・GD I-2 の 5 組は 0.21〜0.31）。
+ * ただし利用者が `--scene-vision-photo` を下げていたら、そちらを上限にする（この規則だけ勝手に広く見ないため）
+ */
 const PAN_MAX_VISION = 0.35;
+/** 画素がこれ以上違う組だけ調べる。これ未満の違いは「中身が同じ」「途中の状態」の規則で先に決まる */
+const PAN_MIN_DIFF = 0.1;
 /** 平行移動で説明できずに残る画素が、違っている画素のこの割合以下なら同じ画面（5 組は 0.07〜0.36。本文が違うスライドは 0.43 以上） */
 const PAN_MAX_LEFT_RATIO = 0.4;
 /**
@@ -73,8 +78,9 @@ const PAN_MIN_EXPLAINED = 0.1;
  */
 export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left: number; dx: number; dy: number } {
   const W = THUMB_WIDTH;
-  const H = THUMB_HEIGHT;
-  const pixels = Math.min(W * H, Math.floor(Math.min(a.length, b.length) / 4));
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
+  // 短い配列が来ても移動先を読み外さないよう、実際にある行数までにする（読み外すと差が NaN になり「合った」ことになる）
+  const H = Math.floor(pixels / W);
   const differs = (src: Uint8Array, i: number, dst: Uint8Array, j: number) => {
     const dr = src[i]! - dst[j]!;
     const dg = src[i + 1]! - dst[j + 1]!;
@@ -362,10 +368,12 @@ export function pickShownSlides(
     // 5b. 画面を少しスクロール・パンしただけ（違っている画素の大半が、同じ向きの平行移動で説明できる）。
     //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
     //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
-    if (vision && d !== undefined && d <= PAN_MAX_VISION && diff >= PAN_MIN_EXPLAINED) {
+    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
+    if (vision && d !== undefined && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
       const pan = panResidual(thumb, otherThumb);
       metrics.panLeft = round(pan.left);
-      metrics.panShift = [pan.dx, pan.dy];
+      // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない
+      if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
       if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
     }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面
