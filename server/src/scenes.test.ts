@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveBin, run } from './exec.ts';
 import type { SlideEntry } from './merge.ts';
-import { colorEntropy, colorMatch, pickShownSlides, readThumbnail, shownSlides, textContained, textSimilarity, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+import { colorEntropy, colorMatch, panResidual, pickShownSlides, readThumbnail, shownSlides, textContained, textSimilarity, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
 
@@ -375,5 +375,88 @@ describe('まとまりの前の方の画像との比較と、文字の読み取�
     const texts = ['PLOT BAsceT KEN', 'PLOT EAsckET KEN', 'レンズ本体', 'レンズ台座'];
     const d = pickShownSlides(four, photoThumbs, 0.65, withVision({ '0-1': 0.15, '0-2': 0.6, '1-2': 0.6, '0-3': 0.6, '2-3': 0.4, '1-3': 0.6 }, texts), 'first');
     expect(d.map((x) => x.shown)).toEqual([true, false, true, true]);
+  });
+});
+
+describe('画面を少しスクロール・パンしただけの組（2026-09-20）', () => {
+  /** アプリの操作画面: 動かない枠（上と左のツールバー）の中で、図形の並んだキャンバスだけが shift 画素ずれる */
+  // 図形の位置と幅はそろえない（等間隔だと、間隔の分だけずらしても合ってしまう）
+  const SHAPES = [
+    { x: 0, w: 10, y0: 25, y1: 75, color: [230, 40, 40] },
+    { x: 31, w: 16, y0: 20, y1: 60, color: [250, 220, 0] },
+    { x: 58, w: 8, y0: 35, y1: 80, color: [30, 90, 200] },
+    { x: 97, w: 14, y0: 15, y1: 70, color: [20, 150, 80] },
+  ];
+  /** 描き直した別の状態: 位置も大きさも違う */
+  const EDITED = [
+    { x: 12, w: 22, y0: 40, y1: 55, color: [230, 40, 40] },
+    { x: 45, w: 6, y0: 12, y1: 85, color: [250, 220, 0] },
+    { x: 76, w: 30, y0: 60, y1: 72, color: [30, 90, 200] },
+  ];
+  const appScreen = (shift: number, edited = false) => {
+    const f = new Uint8Array(PIXELS * 4);
+    for (let y = 0; y < THUMB_HEIGHT; y++) {
+      for (let x = 0; x < THUMB_WIDTH; x++) {
+        const canvas = x >= 12 && y >= 10;
+        const cx = x - 12 - shift;
+        const shape = canvas ? (edited ? EDITED : SHAPES).find((s) => cx >= s.x && cx < s.x + s.w && y >= s.y0 && y < s.y1) : undefined;
+        const color = !canvas ? [60, 60, 60] : (shape?.color ?? [255, 255, 255]);
+        f.set([...color, 255], (y * THUMB_WIDTH + x) * 4);
+      }
+    }
+    return f;
+  };
+  /** 白地に本文だけが違うスライド: 行の位置は同じで、字の並び（seed）が違う */
+  const textSlide = (seed: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    let r = seed;
+    for (let y = 20; y < 80; y += 8) {
+      for (let x = 20; x < 140; x++) {
+        r = (r * 1103515245 + 12345) & 0x7fffffff;
+        if ((r >> 16) % 3 === 0) for (let dy = 0; dy < 3; dy++) f.set([30, 30, 30], ((y + dy) * THUMB_WIDTH + x) * 4);
+      }
+    }
+    return f;
+  };
+  const vision = (d: number) => ({ distance: () => d, tight: 0.2, photo: 0.55 });
+
+  it('キャンバスがずれただけなら、違っている画素のほとんどが平行移動で説明できる', () => {
+    const r = panResidual(appScreen(9), appScreen(0));
+    expect(r.diff).toBeGreaterThan(0.1);
+    expect(r.left / r.diff).toBeLessThan(0.2);
+    // 周り 1 画素のずれを許しているので、見つかる移動量も 1 画素の幅を持つ
+    expect(Math.abs(Math.abs(r.dx) - 9)).toBeLessThanOrEqual(1);
+    expect(Math.abs(r.dy)).toBeLessThanOrEqual(1);
+  });
+
+  it('図形を描き直した画面は、どう動かしても説明できない', () => {
+    const r = panResidual(appScreen(0, true), appScreen(0));
+    expect(r.diff).toBeGreaterThan(0.1);
+    expect(r.left / r.diff).toBeGreaterThan(0.6);
+  });
+
+  it('見た目の距離が「ごく近い」をわずかに超えていても、パンしただけなら外す', () => {
+    const thumbs = new Map([['slide_001.png', appScreen(0)], ['slide_002.png', appScreen(9)]]);
+    const d = pickShownSlides([slide(1, 1), slide(2, 1)], thumbs, 0.65, vision(0.23), 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'panned']]);
+    expect(Math.abs(Math.abs(d[1]!.panShift![0]) - 9)).toBeLessThanOrEqual(1);
+    // 見た目が離れている組（0.35 超）には使わない
+    expect(pickShownSlides([slide(1, 1), slide(2, 1)], thumbs, 0.65, vision(0.4), 'first').map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('本文だけが違うスライドや、図形を描き直した画面は、見た目の距離が同じくらいでも残す', () => {
+    // 白地が大半のスライドは、説明できた画素が全体の 1 割に届かない
+    const text = new Map([['slide_001.png', textSlide(1)], ['slide_002.png', textSlide(2)]]);
+    expect(pickShownSlides([slide(1, 1), slide(2, 1)], text, 0.65, vision(0.23), 'first').map((x) => x.shown)).toEqual([true, true]);
+    const edited = new Map([['slide_001.png', appScreen(0)], ['slide_002.png', appScreen(0, true)]]);
+    expect(pickShownSlides([slide(1, 1), slide(2, 1)], edited, 0.65, vision(0.23), 'first').map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('基準の画像とだけ比べる。少しずつスクロールし続けても、探す範囲を超えたところで次の 1 枚が残る', () => {
+    const thumbs = new Map([9, 18, 27, 36].map((shift, i) => [`slide_00${i + 2}.png`, appScreen(shift)] as [string, Uint8Array]));
+    thumbs.set('slide_001.png', appScreen(0));
+    const d = pickShownSlides([1, 2, 3, 4, 5].map((n) => slide(n, 1)), thumbs, 0.65, vision(0.23), 'first');
+    // 002（9 画素）と 003（18 画素）は 001 のまとまり。004（27 画素）は範囲（24 画素）の外なので残り、005 は 004 のまとまり
+    expect(d.map((x) => x.shown)).toEqual([true, false, false, true, false]);
   });
 });
