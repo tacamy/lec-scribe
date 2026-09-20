@@ -2,9 +2,9 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId, notesProblemText, videoTimeNow } from '../../src/format';
-import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
-import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
+import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
+import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
+import { listSessions, setNotesProblem, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
 import {
   INITIAL_STATE,
@@ -515,22 +515,39 @@ hiddenToggle.addEventListener('click', () => {
   void renderSessions();
 });
 
-/** 処理済みの行について、サーバーにフォルダが残っているかを一度だけ聞く。なければ描き直して「データなし」を出す */
+/**
+ * 処理済みの行について、サーバーの今の状態を一度だけ聞く。
+ *   - フォルダが無ければ（404）、描き直して「データなし」を出す
+ *   - ノートを整えられなかった印が、サーバーの結果と食い違っていたら直す（§11.3）。印は完了を見届けた offscreen が書くので、
+ *     見届けられなかったとき（途中でブラウザを閉じた、など）は、やり直して整ったあとも注意書きが残り続けていた。
+ *     サーバーが done のときだけ信じる。やり直しの途中（queued〜polishing）や、失敗・中止のままの状態には結果が無いので、
+ *     そこで印を消すと、まだ整っていないのに注意書きが消える。処理中・送信待ちの行は offscreen が書くので触らない
+ */
 async function checkOutputs(sessions: readonly StoredSession[]) {
   if (!serverTarget.token) return;
   const targets = sessions.filter((s) => s.status?.stage === 'done' && !outputMissing.has(s.sessionId));
   if (targets.length === 0) return;
+  let corrected = false;
   await Promise.all(
     targets.map(async (s) => {
       try {
         const res = await fetch(`http://127.0.0.1:${serverTarget.port}/sessions/${s.sessionId}/status`, { headers: authHeaders(serverTarget), signal: AbortSignal.timeout(3000) });
         if (res.status === 404 || res.ok) outputMissing.set(s.sessionId, res.status === 404);
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => undefined)) as ServerStatus | undefined;
+        const inFlight = current.processing?.sessionId === s.sessionId || (current.pendingUploads?.includes(s.sessionId) ?? false);
+        if (body?.stage !== 'done' || inFlight) return;
+        const problem = notesProblemOf(body.result);
+        const error = problem ? body.result?.notesError : undefined;
+        if (problem === s.status?.notesProblem && error === s.status?.notesError) return;
+        await setNotesProblem(s.sessionId, problem, error);
+        corrected = true;
       } catch {
-        // サーバーが落ちていれば分からない（次に描くときにまた聞く）
+        // サーバーが落ちていれば分からない（次に描くときにまた聞く）。そのあいだは保存してある印で出す
       }
     }),
   );
-  if (targets.some((s) => outputMissing.get(s.sessionId))) await renderSessions();
+  if (corrected || targets.some((s) => outputMissing.get(s.sessionId))) await renderSessions();
 }
 
 function sessionItem(session: StoredSession): HTMLLIElement {

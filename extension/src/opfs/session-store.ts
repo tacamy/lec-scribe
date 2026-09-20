@@ -124,6 +124,18 @@ export async function setSessionHidden(sessionId: string, hidden: boolean): Prom
   await writeJson(dir, STATUS_FILE, { ...status, hidden });
 }
 
+/**
+ * ノートを整えられなかった印（status.json の notesProblem / notesError）を、サーバーの今の状態に合わせて直す。
+ * 印は処理の完了を見届けた offscreen が書くが、見届けられなかったとき（途中でブラウザを閉じた、など）は古いまま残る。
+ * 一覧がサーバーに聞いた結果と食い違っていたら、ここで書き直す（§11.3）。problem が undefined なら印を消す
+ */
+export async function setNotesProblem(sessionId: string, problem: SessionStatus['notesProblem'], error?: string): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
+  const { notesProblem: _oldProblem, notesError: _oldError, ...rest } = status;
+  await writeJson(dir, STATUS_FILE, { ...rest, ...(problem ? { notesProblem: problem, ...(error ? { notesError: error } : {}) } : {}) });
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   const sessions = await sessionsRoot(false);
   await sessions.removeEntry(sessionId, { recursive: true });

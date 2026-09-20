@@ -795,12 +795,57 @@ try {
   assert.equal(limited.own[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
   assert.ok(limited.own[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.own[0])}`);
   assert.equal(limited.others, 0, `only this session should warn: ${JSON.stringify(limited)}`);
+  // 印（status.json の notesProblem）は完了を見届けた offscreen が書く。見届けられなかったとき（途中でブラウザを閉じた、など）を
+  // 再現するために OPFS の印を直接書き換え、一覧がサーバーの今の状態に合わせて直すことを見る（§11.3）
+  const editStatus = (sessionId, patch) =>
+    popup.evaluate(
+      async ({ id, patch }) => {
+        const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
+        const handle = await dir.getFileHandle('status.json');
+        const status = JSON.parse(await (await handle.getFile()).text());
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null) delete status[k];
+          else status[k] = v;
+        }
+        const writable = await handle.createWritable();
+        await writable.write(JSON.stringify(status));
+        await writable.close();
+      },
+      { id: sessionId, patch },
+    );
+  const storedFlag = (sessionId) =>
+    popup.evaluate(async (id) => {
+      const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
+      const status = JSON.parse(await (await (await dir.getFileHandle('status.json')).getFile()).text());
+      return { notesProblem: status.notesProblem, notesError: status.notesError };
+    }, sessionId);
+  /** 一覧は描いたあとでサーバーに聞き、食い違っていれば直して描き直す。その描き直しまで待つ */
+  const noteAfterSync = async (sessionId, expectNotes) => {
+    await popup.reload();
+    await popup.waitForSelector(`#sessionList li[data-session-id="${sessionId}"]`, { state: 'attached', timeout: 5_000 });
+    await popup.waitForFunction(
+      ({ id, n }) => document.querySelectorAll(`#sessionList li[data-session-id="${id}"] .sessionNote`).length === n,
+      { id: sessionId, n: expectNotes },
+      { timeout: 5_000 },
+    );
+  };
+  // サーバーは「整えられなかった」と言っているのに、印が無い → 注意書きが戻り、印も書き直される
+  await editStatus(retryA, { notesProblem: null, notesError: null });
+  await noteAfterSync(retryA, 1);
+  const restoredFlag = await storedFlag(retryA);
+  assert.equal(restoredFlag.notesProblem, 'failed', JSON.stringify(restoredFlag));
+  assert.ok(String(restoredFlag.notesError).includes('usage limit'), JSON.stringify(restoredFlag));
   await restartServer([]);
   await redo(retryA);
   const cleared = await noteOf(retryA);
   assert.equal(cleared.found, true, `no row for ${retryA}: ${JSON.stringify(cleared)}`);
   assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
-  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
+  // サーバーでは整っているのに、古い印が残っている → 注意書きが消え、印も消える
+  await editStatus(retryA, { notesProblem: 'failed', notesError: 'stale' });
+  await noteAfterSync(retryA, 0);
+  const staleFlag = await storedFlag(retryA);
+  assert.ok(staleFlag.notesProblem === undefined && staleFlag.notesError === undefined, `the stale flag should be removed from status.json: ${JSON.stringify(staleFlag)}`);
+  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, clears after a good redo, and a stale flag is corrected from the server');
 
   // §11.3: 初回の処理でノート作成中に「中止」を押したら、録音ごと消さずに、ノート作成だけを止めて文字起こしのままのノートで完了にする。
   // 行のボタンが段階を見て動きを変えるので、メッセージを直接送らず、パネルのボタンと確認ダイアログを実際に押す
