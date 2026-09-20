@@ -460,3 +460,61 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
     expect(d.map((x) => x.shown)).toEqual([true, false, false, true, false]);
   });
 });
+
+describe('前の画面に短く戻っただけの画像（2026-09-20）', () => {
+  /** 画面ごとに濃さの違う無地に近い画像。同じ番号なら中身が同じ、違う番号なら全画素が違う */
+  const screen = (n: number) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let p = 0; p < PIXELS; p++) f.set([40 * n, 40 * n, 40 * n], p * 4);
+    return f;
+  };
+  /** times の時刻（秒）に screens の画面が撮れた講義 */
+  const lecture = (screens: number[], times: number[]) => {
+    const slides = screens.map((_, i) => ({ ...slide(i + 1, 1), videoTime: times[i]! }));
+    const thumbs = new Map(screens.map((n, i) => [slides[i]!.filename, screen(n)] as [string, Uint8Array]));
+    return { slides, thumbs };
+  };
+  const pick = (screens: number[], times: number[], keep: 'first' | 'last' = 'first') => {
+    const { slides, thumbs } = lecture(screens, times);
+    return pickShownSlides(slides, thumbs, 0.65, undefined, keep);
+  };
+
+  it('A → B → A → B と行き来して、戻っていたのが 10 秒未満なら A と B の 2 枚だけ載せる', () => {
+    const d = pick([1, 2, 1, 2, 3], [0, 36, 58, 65, 77]);
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [true, undefined], [false, 'revisit'], [false, 'identical'], [true, undefined]]);
+    expect(d[2]).toMatchObject({ sameSceneAs: 'slide_002.png', via: 'slide_001.png' });
+  });
+
+  it('戻って 10 秒以上話しているなら、その画像も載せる', () => {
+    expect(pick([1, 2, 1, 2, 3], [0, 36, 58, 70, 90]).map((x) => x.shown)).toEqual([true, true, true, true, true]);
+  });
+
+  it('最後まで戻ったまま、または時刻が巻き戻っている（シークした）ときは、長さが分からないので載せる', () => {
+    expect(pick([1, 2, 1], [0, 36, 58]).map((x) => x.shown)).toEqual([true, true, true]);
+    expect(pick([1, 2, 1, 3], [0, 36, 58, 20]).map((x) => x.shown)).toEqual([true, true, true, true]);
+  });
+
+  it('戻っている間に同じ画面がもう 1 枚撮れたら、合わせた長さで決め、どちらも載せない', () => {
+    expect(pick([1, 2, 1, 1, 2], [0, 36, 58, 61, 66]).map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [true, undefined], [false, 'revisit'], [false, 'revisit'], [false, 'identical'],
+    ]);
+    // 合わせて 10 秒以上なら、戻った画面として載せる（2 枚目は 1 枚目と同じなので外れる）
+    expect(pick([1, 2, 1, 1, 2], [0, 36, 58, 61, 70]).map((x) => x.shown)).toEqual([true, true, true, false, true]);
+  });
+
+  it('短い戻りのあとでもう一度、今度は長く戻ったら、その画像は載せる（前の短い戻りに引きずられない）', () => {
+    const d = pick([1, 2, 1, 2, 1, 3], [0, 36, 58, 63, 100, 160]);
+    expect(d.map((x) => x.shown)).toEqual([true, true, false, false, true, true]);
+  });
+
+  it('最後の 1 枚を載せる設定でも、戻っただけの画像は今の画面の代わりに選ばない', () => {
+    // B のまとまりは [B, 戻っただけの A]。載せるのは B のまま
+    const d = pick([1, 2, 1, 3], [0, 36, 58, 63], 'last');
+    expect(d.map((x) => [x.filename, x.shown])).toEqual([['slide_001.png', true], ['slide_002.png', true], ['slide_003.png', false], ['slide_004.png', true]]);
+    // [B, 戻っただけの A, B] なら最後の B を載せ、戻っただけの A もその画像を指す
+    const e = pick([1, 2, 1, 2, 3], [0, 36, 58, 65, 77], 'last');
+    expect(e.map((x) => x.shown)).toEqual([true, false, false, true, true]);
+    expect(e[3]).toMatchObject({ standsFor: 'slide_002.png' });
+    expect(e[2]).toMatchObject({ reason: 'revisit', sameSceneAs: 'slide_004.png' });
+  });
+});
