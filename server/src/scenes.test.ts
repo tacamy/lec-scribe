@@ -452,6 +452,61 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
     expect(pickShownSlides([slide(1, 1), slide(2, 1)], edited, 0.65, vision(0.23), 'first').map((x) => x.shown)).toEqual([true, true]);
   });
 
+  /** Web ページ: 上の帯（ヘッダー）は動かず、その下のページだけが (sx, sy) 画素動く。図形の大きさと位置はそろえない */
+  const PAGE_SHAPES = [
+    { x: 5, y: 10, w: 40, h: 14, color: [230, 40, 40] },
+    { x: 60, y: 24, w: 70, h: 8, color: [30, 90, 200] },
+    { x: 10, y: 40, w: 25, h: 22, color: [250, 220, 0] },
+    { x: 80, y: 52, w: 50, h: 12, color: [20, 150, 80] },
+    { x: 30, y: 72, w: 90, h: 6, color: [90, 90, 90] },
+  ];
+  /** 横長で背の低い図形だけのページ。横に 9 画素ずらしても、変わるのは両端の 2 × 9 × 12 画素 × 4 個 = 全体の 6% */
+  const FLAT_SHAPES = [
+    { x: 5, y: 10, w: 60, h: 12, color: [230, 40, 40] },
+    { x: 70, y: 28, w: 70, h: 12, color: [30, 90, 200] },
+    { x: 20, y: 48, w: 100, h: 12, color: [90, 90, 90] },
+    { x: 40, y: 68, w: 80, h: 12, color: [20, 150, 80] },
+  ];
+  const webPage = (sx: number, sy: number, shapes = PAGE_SHAPES) => {
+    const f = new Uint8Array(PIXELS * 4);
+    for (let y = 0; y < THUMB_HEIGHT; y++) {
+      for (let x = 0; x < THUMB_WIDTH; x++) {
+        const body = y >= 8;
+        const shape = body ? shapes.find((q) => x - sx >= q.x && x - sx < q.x + q.w && y - sy >= q.y && y - sy < q.y + q.h) : undefined;
+        f.set([...(body ? (shape?.color ?? [255, 255, 255]) : [40, 40, 40]), 255], (y * THUMB_WIDTH + x) * 4);
+      }
+    }
+    return f;
+  };
+  const pickPair = (a: Uint8Array, b: Uint8Array) =>
+    pickShownSlides([slide(1, 1), slide(2, 1)], new Map([['slide_001.png', a], ['slide_002.png', b]]), 0.65, vision(0.23), 'first');
+
+  it('縦のスクロールでも斜めの移動でも、向きによらず見つけてまとめる', () => {
+    for (const [sx, sy] of [[0, 6], [0, -10], [0, 12], [7, 5], [-9, -4]] as const) {
+      // a(p) = b(p + d) となる d を返すので、(sx, sy) 動かした画面と元の画面なら d = (-sx, -sy)
+      const r = panResidual(webPage(sx, sy), webPage(0, 0));
+      expect(Math.abs(r.dx + sx), `dx for (${sx}, ${sy})`).toBeLessThanOrEqual(1);
+      expect(Math.abs(r.dy + sy), `dy for (${sx}, ${sy})`).toBeLessThanOrEqual(1);
+      expect(pickPair(webPage(0, 0), webPage(sx, sy)).map((x) => [x.shown, x.reason]), `(${sx}, ${sy})`).toEqual([[true, undefined], [false, 'panned']]);
+    }
+  });
+
+  it('探す範囲（横 24・縦 12 画素）を超えて動いた画面は、別の画面として残す', () => {
+    for (const [sx, sy] of [[0, 18], [32, 0]] as const) {
+      expect(pickPair(webPage(0, 0), webPage(sx, sy)).map((x) => x.shown), `(${sx}, ${sy})`).toEqual([true, true]);
+    }
+  });
+
+  it('移動は見つかっても、変わった画素が全体の 1 割に届かない小さなパンは、この規則では外さない', () => {
+    // 本文だけが違うスライドを誤ってまとめないための条件（PAN_MIN_EXPLAINED）。変化が 5% 以下なら「中身が同じ」の規則が先にまとめる
+    const r = panResidual(webPage(9, 0, FLAT_SHAPES), webPage(0, 0, FLAT_SHAPES));
+    expect(Math.abs(r.dx + 9)).toBeLessThanOrEqual(1);
+    expect(r.left / r.diff).toBeLessThan(0.4);
+    expect(r.diff).toBeGreaterThan(0.05);
+    expect(r.diff).toBeLessThan(0.1);
+    expect(pickPair(webPage(0, 0, FLAT_SHAPES), webPage(9, 0, FLAT_SHAPES)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
   it('基準の画像とだけ比べる。少しずつスクロールし続けても、探す範囲を超えたところで次の 1 枚が残る', () => {
     const thumbs = new Map([9, 18, 27, 36].map((shift, i) => [`slide_00${i + 2}.png`, appScreen(shift)] as [string, Uint8Array]));
     thumbs.set('slide_001.png', appScreen(0));
