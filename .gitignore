@@ -8,6 +8,9 @@ coverage/
 fixtures/slides.webm
 fixtures/slides.webm.version
 fixtures/slides.raw.webm
+fixtures/slides.smoke.webm
+fixtures/slides.smoke.webm.version
+fixtures/slides.smoke.raw.webm
 test-results/
 playwright-report/
 # ffmpeg の出力先 "-" を取り違えて作られることがある（smoke のスタブ）

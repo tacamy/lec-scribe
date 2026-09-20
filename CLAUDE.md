@@ -34,4 +34,4 @@ pnpm fixtures:make && pnpm fixtures:serve  # http://127.0.0.1:8787/player.html
 - 録音中のデータは OPFS に逐次書き込み、Stop 後に外へ出す。一覧の操作は「削除」（OPFS と `~/LecScribe` の両方を消す）「中止」（処理中・送信待ち。初回の処理なら途中のフォルダも消し、やり直しの中止なら残す）「非表示」（`status.json` の `hidden` で一覧から隠すだけ）の 3 つ（SPEC §11.3）
 - コミットは英語、ドキュメントと UI 文言は日本語。コードコメントも日本語（Phase 2 以前の英語コメントは触ったときに直す）
 - コード変更後は `pnpm lint`（oxlint）と `pnpm typecheck` を通す
-- `scripts/smoke-extension.mjs` は fixture サーバーを自前で立てる（`fixtures/slides.webm` がなければ生成する）
+- `scripts/smoke-extension.mjs` は fixture サーバーを自前で立てる（自分用の `fixtures/slides.smoke.webm` がなければ生成する。手作業の確認に使う `fixtures/slides.webm` は上書きしない）

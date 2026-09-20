@@ -19,10 +19,13 @@ const FIXTURE_PORT = 8791;
 // 時刻の確認はこの引数に合わせてあるので、世代だけでなく引数まで含めて突き合わせる（`pnpm fixtures:make` の既定は 10 枚 × 5 秒）
 const FIXTURE_ARGS = { slides: 3, seconds: 3, width: 640, height: 360 };
 const FIXTURE_STAMP = fixtureStamp(FIXTURE_ARGS);
-const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
-if (!existsSync('fixtures/slides.webm') || fixtureVersion !== FIXTURE_STAMP) {
-  console.log('generating fixtures/slides.webm…');
-  const args = Object.entries(FIXTURE_ARGS).flatMap(([k, v]) => [`--${k}`, String(v)]);
+// スモークテスト専用の動画。手作業の確認に使う fixtures/slides.webm（`pnpm fixtures:make`、既定は 10 枚 × 5 秒）とは別のファイルにして、
+// 互いに上書きし合わないようにする（同じファイルだと、片方を動かすたびにもう片方が作り直しになる）
+const FIXTURE_FILE = 'slides.smoke.webm';
+const fixtureVersion = existsSync(`fixtures/${FIXTURE_FILE}.version`) ? readFileSync(`fixtures/${FIXTURE_FILE}.version`, 'utf8').trim() : '';
+if (!existsSync(`fixtures/${FIXTURE_FILE}`) || fixtureVersion !== FIXTURE_STAMP) {
+  console.log(`generating fixtures/${FIXTURE_FILE}…`);
+  const args = [...Object.entries(FIXTURE_ARGS).flatMap(([k, v]) => [`--${k}`, String(v)]), '--out', FIXTURE_FILE];
   const made = spawnSync(process.execPath, ['fixtures/make-slides.mjs', ...args], { stdio: 'inherit' });
   assert.equal(made.status, 0, 'fixture generation failed');
 }
@@ -219,7 +222,7 @@ try {
   // host permission を持つので、activeTab なしでも scripting API が使える。
   const lecture = await context.newPage();
   lecture.on('pageerror', (e) => errors.push(String(e)));
-  await lecture.goto(`http://127.0.0.1:${FIXTURE_PORT}/player.html`);
+  await lecture.goto(`http://127.0.0.1:${FIXTURE_PORT}/player.html?video=${FIXTURE_FILE}`);
   await lecture.click('#play');
   await lecture.waitForFunction(() => {
     const v = document.querySelector('video');
