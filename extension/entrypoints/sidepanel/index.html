@@ -18,6 +18,8 @@
           録音した音声を Mac の中で文字起こしして、スライドと並べたノートを作ります（音声も画像も Mac の外には出ません）。
           最初に 1 回だけ、Mac との接続を許可してください。
         </p>
+        <!-- 位置づけ（SPEC §3.0）。使い始める前に必ず通る画面なので、ここに出す -->
+        <p id="termsNote">個人の学習用です。利用するサイトの規約に従ってください。</p>
         <p class="note" id="setupStatus">Mac 側を確認しています…</p>
         <div class="install" id="installHint" hidden>
           <p>Mac 側の準備がまだです。「ターミナル」を開いて次の 1 行を貼り付け、Enter を押してください。終わったら、もう一度このアイコンを押してください。</p>
@@ -77,6 +79,8 @@
       <section class="sessions" id="sessions" hidden>
         <h2>保存済みセッション</h2>
         <ul id="sessionList"></ul>
+        <!-- 一覧は全件を描いておき、11 件目からは見た目だけ畳む（§15.1） -->
+        <button type="button" class="link" id="moreToggle" aria-controls="sessionList" hidden>すべて表示</button>
         <button type="button" class="link" id="hiddenToggle" hidden>非表示のセッションを表示</button>
       </section>
 

@@ -111,6 +111,8 @@ try {
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
   // サーバー未接続のうちは「このMacと接続」がポップアップに出る
   assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
+  // 使い始める前の画面に、位置づけの 1 行が出ている（SPEC §3.0）
+  assert.equal(await popup.evaluate(() => document.getElementById('termsNote')?.textContent), '個人の学習用です。利用するサイトの規約に従ってください。');
   // hidden 属性が CSS の display 指定に負けていないこと（計算後のスタイルで見る）
   const setupDisplay = await popup.evaluate(() =>
     Object.fromEntries(['status', 'rows', 'actions', 'footer', 'setup'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),
@@ -675,6 +677,55 @@ try {
   assert.equal(typeof serverApi, 'number', `server did not report an api version: ${serverApi}`);
   assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
+
+  // §15.1: 一覧は全件を描いておき、11 件目からは見た目だけ畳む。録音は時間がかかるので、OPFS に空のセッションを直接置いて件数を増やす
+  // （録音済み・未送信の形。処理済みにするとパネルがサーバーにフォルダの有無を聞きに行く）。ID を古くして一覧の末尾に並べる
+  const FAKE_SESSIONS = 12;
+  await popup.evaluate(async (count) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions', { create: true });
+    for (let i = 0; i < count; i++) {
+      const sessionId = `20000101-0000${String(i).padStart(2, '0')}-fake`;
+      const dir = await root.getDirectoryHandle(sessionId, { create: true });
+      for (const [name, value] of [['session.json', { sessionId, title: `fake ${i}`, startedAt: '2000-01-01T00:00:00.000Z' }], ['status.json', { stage: 'captured', audioBytes: 1, durationMs: 1000 }]]) {
+        const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+        await writable.write(JSON.stringify(value));
+        await writable.close();
+      }
+    }
+  }, FAKE_SESSIONS);
+  await popup.reload();
+  await popup.waitForSelector('#moreToggle:not([hidden])', { timeout: 5_000 });
+  const listView = () =>
+    popup.evaluate(() => {
+      const rows = [...document.querySelectorAll('#sessionList li')];
+      return { total: rows.length, visible: rows.filter((li) => getComputedStyle(li).display !== 'none').length, label: document.getElementById('moreToggle').textContent };
+    });
+  const folded = await listView();
+  assert.ok(folded.total >= FAKE_SESSIONS, `all sessions should be in the DOM: ${JSON.stringify(folded)}`);
+  assert.equal(folded.visible, 10, JSON.stringify(folded));
+  assert.equal(folded.label, `すべて表示（残り ${folded.total - 10} 件）`);
+  await popup.click('#moreToggle');
+  const opened = await listView();
+  assert.equal(opened.visible, opened.total, JSON.stringify(opened));
+  assert.equal(opened.label, '10 件だけ表示');
+  await popup.click('#moreToggle');
+  assert.equal((await listView()).visible, 10);
+  // 片付け（後の手順の一覧を元の件数に戻す）。10 件以下なら「すべて表示」は出ない
+  await popup.evaluate(async (count) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions');
+    for (let i = 0; i < count; i++) await root.removeEntry(`20000101-0000${String(i).padStart(2, '0')}-fake`, { recursive: true });
+  }, FAKE_SESSIONS);
+  // この時点で本物のセッションは残っていないことがある（前の手順で破棄している）ので、行ではなくパネルの準備を待つ。
+  // #moreToggle は HTML の時点で hidden なので、一覧を描き終えるのを待たずに見ると必ず通ってしまう。
+  // renderSessions() は毎回 #hiddenToggle に件数（「（N）」）を入れるので、それを一覧を描いた印にする
+  await popup.reload();
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
+  await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent !== '');
+  await popup.waitForFunction(() => document.getElementById('hiddenToggle')?.textContent.includes('（'), null, { timeout: 5_000 });
+  const left = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  assert.ok(left.length < 10 && !left.some((t) => t.includes('fake ')), `the fake sessions should be gone: ${JSON.stringify(left)}`);
+  assert.equal(await popup.evaluate(() => document.getElementById('moreToggle').hidden), true, 'toggle shown for a short list');
+  console.log(`sessions: ${folded.total} rows rendered, 10 shown until "すべて表示" is pressed`);
   // api 2 の約束（#17）: vision は ready / building / idle / failed か null。抜けていたら約束違反。
   // 版の確認を先にしておく（古いサーバーでは vision が無いのが正しく、そのときは版の不一致の方を知らせる）
   const VISION_STATES = ['ready', 'building', 'idle', 'failed'];
@@ -764,6 +815,117 @@ try {
     assert.ok(readdirSync(serverOut).some((d) => d === id || d.endsWith(`_${id}`)), `no server output for ${id}: ${readdirSync(serverOut)}`);
   }
   console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
+
+  // §13.5: ノートを整えられなかったとき（Codex の利用上限など）。サーバーの段階は done のままなので、一覧の行に注意書きを出す。
+  // codex が必ず失敗するサーバーに替えて 1 本やり直し、注意書きが出ること、整えられる（ここではノート作成なし）サーバーでやり直すと消えることを見る
+  const restartServer = async (extraArgs) => {
+    // パネルは一覧を描き直すたびにサーバーへ問い合わせる（フォルダの有無、版）。その最中にサーバーを止めると
+    // 接続拒否がコンソールのエラーになり、最後の「ページのエラーなし」に引っかかる。問い合わせが終わるのを待ってから止める
+    await popup.waitForLoadState('networkidle');
+    localServer.kill();
+    await new Promise((r) => setTimeout(r, 500));
+    localServer = spawn(process.execPath, [...localServerArgs, ...extraArgs], { stdio: 'ignore' });
+    for (let i = 0; i < 50; i++) {
+      if (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false)) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail('local server did not come back');
+  };
+  const redo = async (sessionId) => {
+    const sent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
+    assert.equal(sent.ok, true, JSON.stringify(sent));
+    for (let i = 0; i < 100; i++) {
+      const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+      if (!s.processing && !s.pendingUploads) return s;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail(`redo of ${sessionId} did not finish`);
+  };
+  // その講義の行に出ている注意書きと、ほかの行に出ている数（この講義の行に出ていることを確かめるため）
+  const noteOf = async (sessionId) => {
+    await popup.reload();
+    await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
+    return popup.evaluate((id) => {
+      const row = document.querySelector(`#sessionList li[data-session-id="${id}"]`);
+      const all = [...document.querySelectorAll('#sessionList li .sessionNote')];
+      const own = [...(row?.querySelectorAll('.sessionNote') ?? [])].map((n) => ({ text: n.textContent, title: n.title }));
+      return { id, found: !!row, own, others: all.length - own.length };
+    }, sessionId);
+  };
+  const codexLimitStub = stub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+  await restartServer(['--llm', 'codex', '--codex', codexLimitStub]);
+  const afterLimit = await redo(retryA);
+  assert.equal(afterLimit.error, undefined, `a notes failure must not be a processing error: ${JSON.stringify(afterLimit.error)}`);
+  const limited = await noteOf(retryA);
+  assert.equal(limited.found, true, `no row for ${retryA}: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own.length, 1, `expected the warning on this session's row: ${JSON.stringify(limited)}`);
+  assert.equal(limited.own[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+  assert.ok(limited.own[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.own[0])}`);
+  assert.equal(limited.others, 0, `only this session should warn: ${JSON.stringify(limited)}`);
+  await restartServer([]);
+  await redo(retryA);
+  const cleared = await noteOf(retryA);
+  assert.equal(cleared.found, true, `no row for ${retryA}: ${JSON.stringify(cleared)}`);
+  assert.equal(cleared.own.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
+  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
+
+  // §11.3: 初回の処理でノート作成中に「中止」を押したら、録音ごと消さずに、ノート作成だけを止めて文字起こしのままのノートで完了にする。
+  // 行のボタンが段階を見て動きを変えるので、メッセージを直接送らず、パネルのボタンと確認ダイアログを実際に押す
+  const finishId = '20990101-000006-smok';
+  const off5 = await context.newPage();
+  off5.on('pageerror', (e) => errors.push(String(e)));
+  await off5.goto(`chrome-extension://${extensionId}/offscreen.html`);
+  await off5.waitForFunction(() => !!globalThis.__lecscribe);
+  await off5.evaluate(async (sessionId) => {
+    const api = globalThis.__lecscribe;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    await ctx.resume();
+    await api.startFromStream(dest.stream, { audio: { passthrough: false, bitsPerSecond: 32_000, timesliceMs: 400 } }, { sessionId, title: 'smoke finish', startedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 900));
+    await api.stop();
+    osc.stop();
+    await ctx.close();
+  }, finishId);
+  await off5.close();
+  const codexSlowStub = stub('codex-slow', 'sleep 30');
+  await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
+  const sentFinish = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
+  assert.equal(sentFinish.ok, true, JSON.stringify(sentFinish));
+  let atPolishing = null;
+  for (let i = 0; i < 100; i++) {
+    atPolishing = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (atPolishing.processing?.stage === 'polishing') break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(atPolishing.processing?.stage, 'polishing', `did not reach polishing: ${JSON.stringify(atPolishing.processing)}`);
+  const finishRow = `#sessionList li[data-session-id="${finishId}"]`;
+  await popup.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
+  const stopStarted = Date.now();
+  await popup.locator(`${finishRow} button`, { hasText: '中止' }).click();
+  await popup.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
+  const confirmText = await popup.evaluate(() => document.getElementById('confirmText').textContent);
+  assert.ok(confirmText.includes('ノート作成を中止します') && confirmText.includes('録音も残ります'), `unexpected confirm text: ${confirmText}`);
+  await popup.click('#confirmOk');
+  let afterFinish = null;
+  for (let i = 0; i < 100; i++) {
+    afterFinish = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    if (!afterFinish.processing) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(afterFinish.processing, undefined, `still processing: ${JSON.stringify(afterFinish.processing)}`);
+  assert.equal(afterFinish.error, undefined, `stopping the notes must not be an error: ${JSON.stringify(afterFinish.error)}`);
+  assert.ok(Date.now() - stopStarted < 15_000, 'finish waited for the slow codex');
+  const finished = await noteOf(finishId);
+  assert.equal(finished.found, true, `the recording must survive: ${JSON.stringify(finished)}`);
+  assert.equal(finished.own[0]?.text, 'ノート作成を中止しました（文字起こしのままです）。「やり直す」で整えられます', JSON.stringify(finished));
+  const finishDir = readdirSync(serverOut).find((d) => d.endsWith(`_${finishId}`));
+  assert.ok(finishDir && readdirSync(path.join(serverOut, finishDir)).includes('notes.md'), `no notes.md for ${finishId}: ${finishDir}`);
+  await restartServer([]);
+  console.log('finish: stopping a first run during polishing keeps the recording and completes with transcript-only notes');
 
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
   // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる

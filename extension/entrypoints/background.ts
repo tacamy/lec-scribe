@@ -25,6 +25,9 @@ import {
 } from '../src/state';
 
 /**
+ * LecScribe は動画を見ながらノートを取るための汎用の道具（SPEC §3.0）。個人の学習用で、利用するサイトの
+ * 規約に従うのは使う人の責任。特定のサイト向けの処理や、サイト側の検知を回避する処理はここにも入れない。
+ *
  * Service worker: owns the state machine and wires popup ⇄ offscreen ⇄ content.
  * It may be terminated at any time, so nothing here is kept in memory
  * across events; the live state is in chrome.storage.session and the
@@ -142,6 +145,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return pair();
     case 'UNPAIR':
       return { state: await unpair() };
+    case 'FINISH_NOTES':
+      return finishNotes(msg.sessionId);
     case 'EXPORT':
       return { state: await exportSession(msg.sessionId) };
     case 'DISCARD':
@@ -685,6 +690,29 @@ async function unpair(): Promise<SessionState> {
   }
   await saveConfig({ ...config, server: { ...config.server, paired: false, token: '' } });
   return readState();
+}
+
+/**
+ * ノート作成だけを止めて、文字起こしのままのノートで完了にする（初回の処理でノート作成中に「中止」したとき。§11.3）。
+ * サーバーが LLM を止めて done にするので、完了は offscreen の監視がいつもどおり受け取る。ここでは状態を変えない。
+ * サーバーがもうノート作成中でなければ何も起きない（finished: false。ちょうど終わったところなど）
+ */
+async function finishNotes(sessionId: string): Promise<{ state: SessionState; finished: boolean }> {
+  const config = await loadConfig();
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${config.server.port}/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { ...authHeaders(config.server), 'content-type': 'application/json' },
+      body: JSON.stringify({ finish: true }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    throw new LecError('SERVER_UNREACHABLE', `ローカルサーバーに接続できません（127.0.0.1:${config.server.port}）。${toErrorInfo(e).message}`);
+  }
+  const body = (await res.json().catch(() => undefined)) as { finished?: boolean; error?: { message?: string } } | undefined;
+  if (!res.ok) throw new LecError('SERVER_REJECTED', body?.error?.message ?? `中止できませんでした（HTTP ${res.status}）`);
+  return { state: await readState(), finished: body?.finished === true };
 }
 
 /** サーバーの処理を止める。remove でフォルダも消す（force なら notes.md があっても）。繋がらなくても破棄は続ける */

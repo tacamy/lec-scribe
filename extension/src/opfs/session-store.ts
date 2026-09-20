@@ -54,6 +54,14 @@ export type SessionStatus = {
   transcribedAt?: string;
   /** 一覧で隠している（録音のデータは残す） */
   hidden?: boolean;
+  /**
+   * 文字起こしはできたが、ノートを整えられなかった（failed: 全体が文字起こしのまま / partial: 一部の節だけ /
+   * stopped: ノート作成中に利用者が「中止」した。§11.3）。
+   * Codex の利用上限に当たったときなど。「やり直す」で整えられたら消える（§13.5、2026-09-20）
+   */
+  notesProblem?: 'failed' | 'partial' | 'stopped';
+  /** 整えられなかった理由（サーバーが返した文）。一覧の注意書きのツールチップに出す */
+  notesError?: string;
 };
 
 export type StoredSession = {

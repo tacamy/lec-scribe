@@ -26,6 +26,13 @@ const FOOTAGE_MAX_STILL = 0.5;
 const IDENTICAL_MAX_DIFF = 0.05;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
+/** RGBA の並びの中の 2 画素（a の i 番目、b の j 番目）が「違う」か。pixelDiff と panResidual で同じ判定を使う */
+function pixelDiffers(a: Uint8Array, i: number, b: Uint8Array, j: number): boolean {
+  const dr = a[i]! - b[j]!;
+  const dg = a[i + 1]! - b[j + 1]!;
+  const db = a[i + 2]! - b[j + 2]!;
+  return dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF;
+}
 /** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
 const PHOTO_ENTROPY_BITS = 3.0;
 /** 文字のそろい具合がこれ以上なら同じ文字とみなす（文字認識の読み違いを許す） */
@@ -42,6 +49,88 @@ const VETO_MIN_CHARS = 4;
  * （箇条書きが 1 行増えた、字幕が出かけている）。7 章で字幕の出かけの画像が Vision では 0.70 も離れていたため
  */
 const GROWN_MAX_DIFF = 0.1;
+
+/**
+ * 画面を少しスクロール・パンしただけの組をまとめるための値（2026-09-20）。
+ * アプリの操作画面（Illustrator のキャンバスをずらした）や Web ページ（少しスクロールした）は、中身が同じでも
+ * 画素の 2〜3 割が変わり、Vision の距離も 0.21〜0.31 で「ごく近い」（0.2）をわずかに超える。細かい UI の文字は
+ * 読み取りが安定しないので文字の規則にも掛からない。Vision の閾値を上げると、同じ型で本文が違うスライド
+ * （0.23〜0.27）がまとまってしまうので、「違っている画素の大半が、同じ向きの平行移動で説明できる」ことを見る
+ */
+/** 平行移動を探す範囲（160×90 のサムネイルで。横 15%、縦 13%）。これより大きく動いたら別の画面として残す */
+const PAN_MAX_DX = 24;
+const PAN_MAX_DY = 12;
+/**
+ * 見た目の距離がこれ以下の組だけ調べる（11 章・10 章・GD I-2 の 5 組は 0.21〜0.31）。
+ * ただし利用者が `--scene-vision-photo` を下げていたら、そちらを上限にする（この規則だけ勝手に広く見ないため）
+ */
+const PAN_MAX_VISION = 0.35;
+/** 画素がこれ以上違う組だけ調べる。これ未満の違いは「中身が同じ」「途中の状態」の規則で先に決まる */
+const PAN_MIN_DIFF = 0.1;
+/** 平行移動で説明できずに残る画素が、違っている画素のこの割合以下なら同じ画面（5 組は 0.07〜0.36。本文が違うスライドは 0.43 以上） */
+const PAN_MAX_LEFT_RATIO = 0.4;
+/**
+ * 平行移動で説明できた画素が、全体のこの割合以上あること（5 組は 0.13〜0.24）。
+ * 少ししか動いていないのに中身が変わった組（10 章で腕の向きを変えた 039→040 は 0.04）と、
+ * 白地が大半で本文だけ違うスライド（0.07 前後）を除くため
+ */
+const PAN_MIN_EXPLAINED = 0.1;
+
+/**
+ * 2 枚の違いが、画面の一部を平行移動しただけで説明できるかを調べる。
+ * 違っている画素 p について a(p) = b(p+d) かつ b(p) = a(p-d) なら「説明できた」とする（片方だけだと、文字が
+ * 白地に重なるだけで説明できたことになる）。縮小で 1 画素未満のずれが出るので、移動先の周り 1 画素のどれかに合えばよい。
+ * ツールバーなど動かない部分は、もともと違っていないので数えない。
+ * diff は違っている画素の割合、left は最もよく説明できた移動でも残った画素の割合
+ */
+export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left: number; dx: number; dy: number } {
+  const W = THUMB_WIDTH;
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
+  // 短い配列が来ても移動先を読み外さないよう、実際にある行数までにする（読み外すと差が NaN になり「合った」ことになる）
+  const H = Math.floor(pixels / W);
+  const changed: number[] = [];
+  for (let p = 0; p < pixels; p++) if (pixelDiffers(a, p * 4, b, p * 4)) changed.push(p);
+  if (pixels === 0 || changed.length === 0) return { diff: 0, left: 0, dx: 0, dy: 0 };
+  /** src の画素 p が、dst の (cx, cy) の周り 1 画素のどれかと合うか */
+  const near = (src: Uint8Array, dst: Uint8Array, p: number, cx: number, cy: number) => {
+    for (let oy = -1; oy <= 1; oy++) {
+      const y = cy + oy;
+      if (y < 0 || y >= H) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const x = cx + ox;
+        if (x >= 0 && x < W && !pixelDiffers(src, p * 4, dst, (y * W + x) * 4)) return true;
+      }
+    }
+    return false;
+  };
+  let best = { dx: 0, dy: 0, left: changed.length };
+  for (let dy = -PAN_MAX_DY; dy <= PAN_MAX_DY; dy++) {
+    for (let dx = -PAN_MAX_DX; dx <= PAN_MAX_DX; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      let left = 0;
+      for (const p of changed) {
+        const x = p % W;
+        const y = (p - x) / W;
+        if (!near(a, b, p, x + dx, y + dy) || !near(b, a, p, x - dx, y - dy)) {
+          left++;
+          if (left >= best.left) break; // これ以上よくならない移動は途中でやめる
+        }
+      }
+      if (left < best.left) best = { dx, dy, left };
+    }
+  }
+  return { diff: changed.length / pixels, left: best.left / pixels, dx: best.dx, dy: best.dy };
+}
+
+/**
+ * 前の画面に戻っていた時間（動画の時刻で）がこれ未満なら、戻った画像は載せない（2026-09-20）。
+ * 講師が A → B → A → B と行き来すると、切り替わりは全部本物なので 4 枚とも保存され、同じ 2 枚が 2 回並ぶ。
+ * 比べる相手は最後に載せた画像だけなので、2 つ前と同じ画面でもまとまらなかった。
+ * 27 講義で「2 つ前と同じ画面に戻った」64 件を見ると、戻っていた時間は 9.5 秒以下が 31 件、その次は 11 秒以上。
+ * 9.5 秒以下の間に話しているのは長くて 90 字（1〜2 文）で、前の画像の下に入っても読むのに困らない。
+ * 11 秒を超えるとその画面の説明が始まっている（「この矢印のデザインですね…」）ので、画像ごと残す
+ */
+const REVISIT_MAX_SECONDS = 10;
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
@@ -85,10 +174,7 @@ export function pixelDiff(a: Uint8Array, b: Uint8Array): number {
   let pixels = 0;
   for (let i = 0; i + 3 < n; i += 4) {
     pixels++;
-    const dr = a[i]! - b[i]!;
-    const dg = a[i + 1]! - b[i + 1]!;
-    const db = a[i + 2]! - b[i + 2]!;
-    if (dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF) changed++;
+    if (pixelDiffers(a, i, b, i)) changed++;
   }
   return pixels === 0 ? 0 : changed / pixels;
 }
@@ -171,7 +257,7 @@ export type VisionOptions = {
   text?: (index: number) => string | undefined;
 };
 
-export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'same-scene' | 'superseded';
+export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'panned' | 'same-scene' | 'revisit' | 'superseded';
 
 export type SceneDecision = {
   filename: string;
@@ -181,7 +267,7 @@ export type SceneDecision = {
   sameSceneAs?: string;
   /**
    * 外した理由: 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い / 同じスライドの途中の状態 /
-   * 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った
+   * 少しスクロール・パンしただけ / 同じ場面（色の分布） / 前の画面に短く戻っただけ / 同じ場面の最後の 1 枚に譲った
    */
   reason?: SceneReason;
   /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
@@ -196,9 +282,12 @@ export type SceneDecision = {
   pixelDiff?: number;
   /** 比べた画像との文字のそろい具合（0〜1）。両方に文字がなければ付かない */
   textSim?: number;
+  /** 平行移動を調べたとき: 説明できずに残った画素の割合と、最もよく説明できた移動（160×90 の画素で） */
+  panLeft?: number;
+  panShift?: [number, number];
 };
 
-type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim'>;
+type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift'>;
 type Verdict = { reason?: SceneReason; metrics: Metrics };
 
 /**
@@ -233,6 +322,25 @@ export function pickShownSlides(
    * 誤って残していた。まとまりに加えた画像の文字が基準と食い違ったら、その場面では文字を拒否の根拠にしない
    */
   let anchorTextStable = true;
+  /** 1 つ前のまとまり（基準の画像と、最後に加えた画像）。前の画面に短く戻っただけの画像を見分けるのに使う */
+  let previousGroup: { first: number; last: number } | null = null;
+  /** 今のまとまりに最後に加えた画像 */
+  let lastInGroup = 0;
+  /** 「前の画面に短く戻っただけ」として外した画像。まとまりの最後の 1 枚には選ばない */
+  const revisits = new Set<number>();
+  /**
+   * 今つながっている「戻り」の、最初の画像の動画時刻。戻りが途切れたら null。
+   * 1 枚ずつの「この画面が続いた時間」だけで決めると、戻っている間に画面が少しずつ変わる（注釈を書く、
+   * 少しスクロールする）ときに、どの 1 枚も 10 秒未満で外れ続け、長い戻りなのに画像が 1 枚も残らない
+   */
+  let revisitStart: number | null = null;
+  /** つながった戻りがまだ REVISIT_MAX_SECONDS 未満か（伸びたら、そこからは新しい画面として載せる） */
+  const revisitRunShort = (index: number): boolean => {
+    if (revisitStart === null) return true;
+    const elapsed = slides[index]!.videoTime - revisitStart;
+    // 巻き戻っている（シークした）ときは長さが分からないので、戻りを打ち切って載せる
+    return elapsed >= 0 && elapsed < REVISIT_MAX_SECONDS;
+  };
   /**
    * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
    * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する。
@@ -284,6 +392,17 @@ export function pickShownSlides(
       return { reason: 'grown', metrics };
     }
     if (strongOnly) return { metrics };
+    // 5b. 画面を少しスクロール・パンしただけ（違っている画素の大半が、同じ向きの平行移動で説明できる）。
+    //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
+    //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
+    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
+      const pan = panResidual(thumb, otherThumb);
+      metrics.panLeft = round(pan.left);
+      // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない
+      if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
+      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
+    }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面
     const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
     if (threshold > 0 && footage) {
@@ -293,23 +412,91 @@ export function pickShownSlides(
     }
     return { metrics };
   };
+  /**
+   * index の画面がそのまま続いた時間（動画の時刻で、秒）。次に少しでも違う画面が撮られるまで。
+   * 「同じ」は文字を使わない間違えにくい規則（中身が同じ・見た目がごく近い）だけで決める。戻った先で何か操作して
+   * 画面が変わったなら、そこからは新しい画面として扱いたいため。
+   * 最後まで続いた、または時刻が巻き戻っている（シークした）ときは分からないので undefined
+   */
+  const sceneSeconds = (index: number): number | undefined => {
+    for (let j = index + 1; j < slides.length; j++) {
+      const v = compare(j, index, true, true);
+      // サムネイルが読めない画像は「同じ」とも「違う」とも言えない。そこで測るのをやめる（載せる側に倒す）
+      if (v === null) return undefined;
+      if (v.reason) continue;
+      const seconds = slides[j]!.videoTime - slides[index]!.videoTime;
+      return seconds >= 0 ? seconds : undefined;
+    }
+    return undefined;
+  };
+  /**
+   * index の画像が、1 つ前のまとまりの画面（基準か、最後に加えた画像）と今も同じか。
+   * 同じ画面かどうかは、文字を使わない間違えにくい規則（中身が同じ・見た目がごく近い）だけで決める
+   */
+  const matchPreviousGroup = (index: number): { verdict: Verdict; to: number } | null => {
+    if (!previousGroup) return null;
+    for (const to of new Set([previousGroup.last, previousGroup.first])) {
+      const verdict = compare(index, to, true, true);
+      if (verdict?.reason) return { verdict, to };
+    }
+    return null;
+  };
+  /** 1 つ前のまとまりの画面に戻っただけで、すぐ（REVISIT_MAX_SECONDS 未満で）また離れるか */
+  const briefRevisit = (index: number): { verdict: Verdict; to: number } | null => {
+    const match = matchPreviousGroup(index);
+    if (!match) return null;
+    const seconds = sceneSeconds(index);
+    return seconds !== undefined && seconds < REVISIT_MAX_SECONDS ? match : null;
+  };
   slides.forEach((slide, index) => {
     if (lastShown) {
       const last = lastShown;
       let verdict = compare(index, last.index, false);
       let via: string | undefined;
+      let viaRevisit = false;
       if (verdict && !verdict.reason) {
         // 基準と同じでなければ、まとまりに入れた画像（直前から順に前へ）とも比べる
         for (let j = index - 1; j > last.index; j--) {
-          const member = compare(index, j, true, j !== index - 1);
+          // 短く戻っただけの画像（revisits）は今のまとまりの画面ではない。直前の 1 枚のときだけ、戻っている間の続きかを
+          // 文字を使わない規則で見る（戻った先で操作して変わった画面は、新しい画面として残す）。それより前の戻りは飛ばす
+          // （あとでもう一度、今度は長く戻ったときに、前の短い戻りに引きずられて外れないように）
+          if (revisits.has(j) && j !== index - 1) continue;
+          const member = compare(index, j, true, j !== index - 1 || revisits.has(j));
           if (member?.reason) {
             verdict = member;
             via = slides[j]!.filename;
+            viaRevisit = revisits.has(j);
             break;
           }
         }
       }
+      if (verdict && !verdict.reason) {
+        // 前の画面に短く戻っただけなら載せない。間の発話は、今載っている画像の下に入る
+        const revisit = revisitRunShort(index) ? briefRevisit(index) : null;
+        if (revisit) {
+          revisits.add(index);
+          revisitStart ??= slide.videoTime;
+          // via には戻った先の画像を残す
+          decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', via: slides[revisit.to]!.filename, ...revisit.verdict.metrics });
+          return;
+        }
+      }
+      if (verdict?.reason && viaRevisit) {
+        // 短く戻っていた間に撮れた続きの画像。戻った先の画面と今も同じなら、戻った画像と同じ扱いにする
+        // （今のまとまりの 1 枚として載せない）。直前の 1 枚とだけ比べて連ねると、画面が少しずつ変わっていく間
+        // ずっと外れ続けて、その区間の画像が 1 枚も残らない（戻った先とは似ても似つかない画像まで外れる）
+        if (revisitRunShort(index) && matchPreviousGroup(index)) {
+          revisits.add(index);
+          revisitStart ??= slide.videoTime;
+          decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', ...(via ? { via } : {}), ...verdict.metrics });
+          return;
+        }
+        // 戻った先から離れた＝新しい画面。今のまとまりに入れず、載せる（via は以降読まれない）
+        verdict = { metrics: verdict.metrics };
+      }
       if (verdict?.reason) {
+        lastInGroup = index;
+        revisitStart = null;
         decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
         const text = vision?.text?.(index);
         const anchorText = vision?.text?.(last.index);
@@ -317,14 +504,18 @@ export function pickShownSlides(
         return;
       }
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
+      revisitStart = null;
       // サムネイルが読めなかった画像を基準にすると、以後すべての比較ができなくなる。前の基準を残す
       if (verdict) {
+        previousGroup = { first: last.index, last: lastInGroup };
         lastShown = { slide, index };
+        lastInGroup = index;
         anchorTextStable = true;
       }
     } else {
       decisions.push({ filename: slide.filename, shown: true });
       lastShown = { slide, index };
+      lastInGroup = index;
     }
   });
   return keep === 'last' ? preferLast(decisions) : decisions;
@@ -338,7 +529,8 @@ function preferLast(decisions: SceneDecision[]): SceneDecision[] {
   const byName = new Map(decisions.map((d) => [d.filename, d]));
   const lastMember = new Map<string, SceneDecision>();
   for (const d of decisions) {
-    if (!d.shown && d.sameSceneAs && byName.get(d.sameSceneAs)?.shown) lastMember.set(d.sameSceneAs, d);
+    // 前の画面に短く戻っただけの画像は別の画面なので、まとまりの最後の 1 枚には選ばない
+    if (!d.shown && d.reason !== 'revisit' && d.sameSceneAs && byName.get(d.sameSceneAs)?.shown) lastMember.set(d.sameSceneAs, d);
   }
   for (const [anchorName, last] of lastMember) {
     const anchor = byName.get(anchorName)!;

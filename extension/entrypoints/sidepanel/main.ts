@@ -2,7 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
@@ -51,6 +51,7 @@ installCmd.textContent = INSTALL_COMMAND;
 const sessionsSection = $('sessions');
 const sessionList = $<HTMLUListElement>('sessionList');
 const hiddenToggle = $<HTMLButtonElement>('hiddenToggle');
+const moreToggle = $<HTMLButtonElement>('moreToggle');
 const footer = $('footer');
 // 未接続のときに隠す通常 UI
 const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSection];
@@ -466,6 +467,10 @@ function stopStatsLoop() {
 
 /** 「非表示」にした行も一覧に出すか（パネルを開いている間だけ覚える） */
 let showHidden = false;
+/** 一覧で最初から見せる件数。全件を描いたうえで、これを超える行は見た目だけ畳む（§15.1、2026-09-20） */
+const SESSIONS_SHOWN = 10;
+/** 「すべて表示」を押して開いているか。パネルを開き直すと畳んだ状態に戻る */
+let showAllSessions = false;
 /**
  * 削除・中止の確認ダイアログ（HTML の <dialog>）。
  * ブラウザの confirm() はポップアップ・サイドパネルでは表示されずに閉じられることがあるので使わない
@@ -504,11 +509,39 @@ async function renderSessions() {
   const sessions = showHidden ? all : all.filter((s) => !s.status?.hidden);
   sessionsSection.hidden = all.length === 0 || !setupSection.hidden;
   hideSessionTip(false);
-  sessionList.replaceChildren(...sessions.map(sessionItem));
+  const items = sessions.map(sessionItem);
+  // SESSIONS_SHOWN 件目より後ろの行に印を付ける。畳むのは CSS（ul.collapsed li.extra）。
+  // 処理中・送信待ちの行（pinned）は、古い講義を「やり直す」したときに進み具合と「中止」が見えなくならないよう畳まない
+  items.forEach((li, i) => li.classList.toggle('extra', i >= SESSIONS_SHOWN));
+  // 描き直しで入れ替わった行まで「開いた瞬間」の動きをしないように、印を外してから入れ替える
+  sessionList.classList.remove('reveal');
+  sessionList.replaceChildren(...items);
+  renderMoreToggle();
   hiddenToggle.hidden = hiddenCount === 0;
   hiddenToggle.textContent = showHidden ? `非表示のセッションを隠す（${hiddenCount}）` : `非表示のセッションを表示（${hiddenCount}）`;
   void checkOutputs(sessions);
 }
+
+/** 「すべて表示」の表示と文言を、今の一覧に合わせる。行は描き直さない（スクロール位置とサーバーへの問い合わせを保つ） */
+function renderMoreToggle() {
+  const folded = sessionList.querySelectorAll('li.extra:not(.pinned)').length;
+  // 畳む行が無くなったら「すべて表示」の記憶も戻す。残したままだと、削除で 10 件以下になったあとに
+  // また増えたとき、押していないのに畳まれないままになる
+  if (folded === 0) showAllSessions = false;
+  moreToggle.hidden = folded === 0;
+  sessionList.classList.toggle('collapsed', folded > 0 && !showAllSessions);
+  moreToggle.textContent = showAllSessions ? `${SESSIONS_SHOWN} 件だけ表示` : `すべて表示（残り ${folded} 件）`;
+  moreToggle.setAttribute('aria-expanded', String(showAllSessions));
+}
+
+moreToggle.addEventListener('click', () => {
+  showAllSessions = !showAllSessions;
+  // 開くときだけ、出てくる行をふわっと出す（reveal は @starting-style の対象を開いた瞬間だけに絞るための印）
+  sessionList.classList.toggle('reveal', showAllSessions);
+  renderMoreToggle();
+  // 畳むと一覧が短くなって、押したボタンが画面の外へ飛ぶことがある
+  if (!showAllSessions) moreToggle.scrollIntoView({ block: 'nearest' });
+});
 
 hiddenToggle.addEventListener('click', () => {
   showHidden = !showHidden;
@@ -535,6 +568,8 @@ async function checkOutputs(sessions: readonly StoredSession[]) {
 
 function sessionItem(session: StoredSession): HTMLLIElement {
   const li = document.createElement('li');
+  // どの行がどのセッションかを DOM からも分かるようにする（スモークテストが行を指して調べる）
+  li.dataset['sessionId'] = session.sessionId;
   // 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数
   const title = session.meta?.title?.trim() || formatSessionId(session.sessionId);
   const main = document.createElement('div');
@@ -567,6 +602,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   const hidden = session.status?.hidden === true;
   const missing = done && outputMissing.get(session.sessionId) === true;
   const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
+  li.classList.toggle('pinned', inFlight);
   const button = (label: string, className = '') => {
     const b = document.createElement('button');
     b.type = 'button';
@@ -583,15 +619,22 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   };
   // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
   if (inFlight) {
-    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）
+    // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）。
+    // ただし初回でも、ノート作成中（文字起こしは済んでいる）なら消さない。ノート作成だけを止めて、文字起こしのままのノートで
+    // 完了にする（§11.3、2026-09-20。Codex が利用上限で進まないのを見て「中止」を押し、録音ごと失うのを防ぐ）
+    const polishing = !done && current.processing?.sessionId === session.sessionId && current.processing.stage === 'polishing';
     const stopBtn = button('中止');
     stopBtn.disabled = !!current.exporting;
     stopBtn.addEventListener('click', () => {
       const text = done
         ? `「${title}」のやり直しを中止します。前回の結果（~/LecScribe のフォルダ）と録音は残ります。`
-        : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
+        : polishing
+          ? `「${title}」のノート作成を中止します。文字起こしは済んでいるので、文字起こしのままのノートで完了にします（録音も残ります）。あとから「やり直す」で整えられます。`
+          : `「${title}」の文字起こしを中止して、途中までのデータ（~/LecScribe のフォルダと録音）を削除します。`;
       void askConfirm(text, '中止する').then((ok) => {
-        if (ok) void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
+        if (!ok) return;
+        if (polishing) void act(() => sendToBackground.finishNotes(session.sessionId));
+        else void act(() => sendToBackground.discard(session.sessionId, done ? { output: 'keep', keepRecording: true } : { output: 'delete' }));
       });
     });
     btns.append(stopBtn, tag(current.processing?.sessionId === session.sessionId ? '処理中' : '送信待ち'));
@@ -634,6 +677,15 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     else if (session.status?.stage === 'error') btns.append(tag('エラー', session.status.error ?? ''));
   }
   li.append(main, meta, btns);
+  // 文字起こしはできたがノートを整えられなかった（Codex の利用上限など）。段階は「完了」のままなので、ここで知らせる。
+  // 処理中は前回の結果の話になるので出さない。理由（サーバーの文）はツールチップに
+  if (done && !inFlight && !missing && session.status?.notesProblem) {
+    const note = document.createElement('div');
+    note.className = 'sessionNote';
+    note.textContent = notesProblemText(session.status.notesProblem);
+    note.title = session.status.notesError ?? '';
+    li.append(note);
+  }
   return li;
 }
 
