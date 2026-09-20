@@ -11,14 +11,12 @@ import { rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { fixtureStamp } from './version.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
 const out = path.join(here, 'slides.webm');
 const raw = path.join(here, 'slides.raw.webm');
-
-/** 描画内容を変えたら上げる。スモークテストは古い世代の動画を作り直す */
-export const FIXTURE_VERSION = 4;
 
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
@@ -135,9 +133,7 @@ if (ffmpeg.status === 0) {
   await rename(raw, out);
   console.log(`wrote ${path.relative(process.cwd(), out)} (ffmpeg not found: file has no duration/cues, seeking may be limited)`);
 }
-// 世代だけでなく生成時の引数も残す。スモークテストの時刻の確認は枚数・秒数・大きさに合わせてあるので、
-// `pnpm fixtures:make`（既定の 10 枚 × 5 秒）で作った動画が世代だけ合って使い回されると、確認が落ちる
-await writeFile(`${out}.version`, `${FIXTURE_VERSION} ${opts.slides}x${opts.seconds}s ${opts.width}x${opts.height}\n`);
+await writeFile(`${out}.version`, `${fixtureStamp(opts)}\n`);
 
 function parseArgs(argv) {
   const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false };

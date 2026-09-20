@@ -9,16 +9,16 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { fixtureStamp } from '../fixtures/version.mjs';
 
 const ext = path.resolve('extension/dist/chrome-mv3');
 
 // Phase 3 以降は fixture ページ（video.js 風 DOM + 合成スライド動画）を使う。
 // 動画がなければ短いものを生成し、Range 対応の静的サーバーを立てる。
 const FIXTURE_PORT = 8791;
-const FIXTURE_VERSION = 4; // fixtures/make-slides.mjs の FIXTURE_VERSION と合わせる
-// 時刻の確認はこの引数に合わせてあるので、引数まで含めて突き合わせる（`pnpm fixtures:make` の既定は 10 枚 × 5 秒）
+// 時刻の確認はこの引数に合わせてあるので、世代だけでなく引数まで含めて突き合わせる（`pnpm fixtures:make` の既定は 10 枚 × 5 秒）
 const FIXTURE_ARGS = { slides: 3, seconds: 3, width: 640, height: 360 };
-const FIXTURE_STAMP = `${FIXTURE_VERSION} ${FIXTURE_ARGS.slides}x${FIXTURE_ARGS.seconds}s ${FIXTURE_ARGS.width}x${FIXTURE_ARGS.height}`;
+const FIXTURE_STAMP = fixtureStamp(FIXTURE_ARGS);
 const fixtureVersion = existsSync('fixtures/slides.webm.version') ? readFileSync('fixtures/slides.webm.version', 'utf8').trim() : '';
 if (!existsSync('fixtures/slides.webm') || fixtureVersion !== FIXTURE_STAMP) {
   console.log('generating fixtures/slides.webm…');
