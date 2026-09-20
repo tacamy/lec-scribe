@@ -747,6 +747,53 @@ try {
   }
   console.log('retry: uploads failed against a stopped server, the queue survived and drained after a manual resend');
 
+  // §13.5: ノートを整えられなかったとき（Codex の利用上限など）。サーバーの段階は done のままなので、一覧の行に注意書きを出す。
+  // codex が必ず失敗するサーバーに替えて 1 本やり直し、注意書きが出ること、整えられる（ここではノート作成なし）サーバーでやり直すと消えることを見る
+  const restartServer = async (extraArgs) => {
+    // パネルは一覧を描き直すたびにサーバーへ問い合わせる（フォルダの有無、版）。その最中にサーバーを止めると
+    // 接続拒否がコンソールのエラーになり、最後の「ページのエラーなし」に引っかかる。問い合わせが終わるのを待ってから止める
+    await popup.waitForLoadState('networkidle');
+    localServer.kill();
+    await new Promise((r) => setTimeout(r, 500));
+    localServer = spawn(process.execPath, [...localServerArgs, ...extraArgs], { stdio: 'ignore' });
+    for (let i = 0; i < 50; i++) {
+      if (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`).then((r) => r.ok, () => false)) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail('local server did not come back');
+  };
+  const redo = async (sessionId) => {
+    const sent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
+    assert.equal(sent.ok, true, JSON.stringify(sent));
+    for (let i = 0; i < 100; i++) {
+      const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+      if (!s.processing && !s.pendingUploads) return s;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.fail(`redo of ${sessionId} did not finish`);
+  };
+  const noteOf = async (sessionId) => {
+    await popup.reload();
+    await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
+    return popup.evaluate(
+      (id) => ({ id, notes: [...document.querySelectorAll('#sessionList li .sessionNote')].map((n) => ({ text: n.textContent, title: n.title })) }),
+      sessionId,
+    );
+  };
+  const codexLimitStub = stub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+  await restartServer(['--llm', 'codex', '--codex', codexLimitStub]);
+  const afterLimit = await redo(retryA);
+  assert.equal(afterLimit.error, undefined, `a notes failure must not be a processing error: ${JSON.stringify(afterLimit.error)}`);
+  const limited = await noteOf(retryA);
+  assert.equal(limited.notes.length, 1, `expected one notes warning in the list: ${JSON.stringify(limited)}`);
+  assert.equal(limited.notes[0].text, 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+  assert.ok(limited.notes[0].title.includes('usage limit'), `tooltip should carry the server's reason: ${JSON.stringify(limited.notes[0])}`);
+  await restartServer([]);
+  await redo(retryA);
+  const cleared = await noteOf(retryA);
+  assert.equal(cleared.notes.length, 0, `the warning should clear after a successful redo: ${JSON.stringify(cleared)}`);
+  console.log('notes: a failed polish keeps the session done, warns on its row with the reason, and clears after a good redo');
+
   // 接続を解除（設定画面）: 確認ダイアログで OK → サーバーはこの拡張の承認を取り消し、拡張はトークンを消す。
   // サーバーは上で起動し直しているので、承認済みのトークンが trusted.json から読み直されて通っていたことも、ここまでで分かる
   const unpairPage = await context.newPage();

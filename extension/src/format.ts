@@ -65,3 +65,21 @@ export function videoTimeNow(
   if (video.duration === null) return extrapolated;
   return Math.min(extrapolated, Math.max(video.currentTime, video.duration));
 }
+
+/**
+ * サーバーの処理結果から、ノートを整えられなかったかを読む（§13.5）。整えられた・ノート作成が無効なら undefined。
+ * 失敗してもサーバーの段階は done（文字起こしは済んでいて、notes.md には文字起こしがそのまま入る）なので、
+ * ここで拾わないと利用者は notes.md を開くまで気づけない（Codex の利用上限に当たったときなど）
+ */
+export function notesProblemOf(result: { notes?: boolean; notesError?: string } | undefined): 'failed' | 'partial' | undefined {
+  if (!result) return undefined;
+  if (result.notes === false) return 'failed';
+  return result.notes === true && result.notesError ? 'partial' : undefined;
+}
+
+/** 一覧に出す注意書き */
+export function notesProblemText(problem: 'failed' | 'partial'): string {
+  return problem === 'failed'
+    ? 'ノートを整えられませんでした。時間をおいて「やり直す」を押してください'
+    : 'ノートの一部を整えられませんでした。時間をおいて「やり直す」を押してください';
+}

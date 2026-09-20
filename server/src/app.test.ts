@@ -270,6 +270,32 @@ describe('local server', () => {
     expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'timeline.json']);
   });
 
+  it('ノートを整えられなくても段階は done で、status の result に notes: false と理由が載る（拡張が一覧に注意書きを出す）', async () => {
+    // Codex の利用上限に当たったときの形: codex が失敗して終わる
+    const failing = await writeStub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');
+    const { server: limited } = createApp({ ...config, codexBin: failing, outDir: path.join(tmp, 'out-limit') }, TOKEN);
+    await new Promise<void>((resolve) => limited.listen(0, '127.0.0.1', resolve));
+    const limitedBase = `http://127.0.0.1:${(limited.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-120000-lim1';
+      await fetch(`${limitedBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'limit' }) });
+      await fetch(`${limitedBase}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${limitedBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string } } = { stage: 'queued' };
+      for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${limitedBase}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      expect(status.result?.notes).toBe(false);
+      expect(status.result?.notesError).toContain('usage limit');
+      // notes.md には文字起こしがそのまま入る
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('最初の区間');
+    } finally {
+      await new Promise<void>((resolve) => limited.close(() => resolve()));
+    }
+  });
+
   it('cancels a running pipeline and deletes the session on request', async () => {
     // 遅い whisperkit スタブで別サーバーを立て、実行中に中止する
     const slow = await writeStub('whisperkit-slow', 'sleep 30');

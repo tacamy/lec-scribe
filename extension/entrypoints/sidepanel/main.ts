@@ -2,7 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { formatBytes, formatElapsed, formatSessionId, videoTimeNow } from '../../src/format';
+import { formatBytes, formatElapsed, formatSessionId, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary } from '../../src/messages';
 import { listSessions, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
@@ -634,6 +634,15 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     else if (session.status?.stage === 'error') btns.append(tag('エラー', session.status.error ?? ''));
   }
   li.append(main, meta, btns);
+  // 文字起こしはできたがノートを整えられなかった（Codex の利用上限など）。段階は「完了」のままなので、ここで知らせる。
+  // 処理中は前回の結果の話になるので出さない。理由（サーバーの文）はツールチップに
+  if (done && !inFlight && !missing && session.status?.notesProblem) {
+    const note = document.createElement('div');
+    note.className = 'sessionNote';
+    note.textContent = notesProblemText(session.status.notesProblem);
+    note.title = session.status.notesError ?? '';
+    li.append(note);
+  }
   return li;
 }
 

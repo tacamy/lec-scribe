@@ -14,7 +14,11 @@ export type ServerStatus = {
   stage: ProcessingProgress['stage'] | 'uploaded' | 'cancelled';
   outputDir?: string;
   error?: string;
-  result?: { segments: number; durationSec: number; hasTimeline: boolean };
+  /**
+   * notes はノートを整えられたか（ノート作成が無効なら付かない）。notesError は整えられなかった理由。
+   * notes が true でも notesError があれば、一部の節だけ文字起こしのまま（§13.5）
+   */
+  result?: { segments: number; durationSec: number; hasTimeline: boolean; notes?: boolean; notesError?: string };
 };
 
 /** Written to session.json when a capture starts. */

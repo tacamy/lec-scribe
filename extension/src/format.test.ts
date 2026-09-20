@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatElapsed, formatSessionId, makeSessionId, videoTimeNow } from './format';
+import { formatBytes, formatElapsed, formatSessionId, makeSessionId, notesProblemOf, notesProblemText, videoTimeNow } from './format';
 import { DETECT_STATUS_HEARTBEAT_MS } from './probe';
 
 describe('formatElapsed', () => {
@@ -75,5 +75,20 @@ describe('videoTimeNow（報告の間を補った再生位置）', () => {
   });
   it('時計が戻っていたら足さない', () => {
     expect(videoTimeNow(playing, at - 5_000)).toBe(100);
+  });
+});
+
+describe('ノートを整えられなかったとき（§13.5）', () => {
+  it('サーバーの結果から、全体か一部かを読む。整えられた・ノート作成が無効なら何も出さない', () => {
+    expect(notesProblemOf({ notes: false, notesError: 'codex exec failed (1): usage limit' })).toBe('failed');
+    expect(notesProblemOf({ notes: true, notesError: 'section 3: timeout' })).toBe('partial');
+    expect(notesProblemOf({ notes: true })).toBeUndefined();
+    expect(notesProblemOf({})).toBeUndefined(); // ノート作成が無効
+    expect(notesProblemOf(undefined)).toBeUndefined(); // 古いサーバー
+  });
+
+  it('注意書きは「やり直す」を案内する', () => {
+    expect(notesProblemText('failed')).toBe('ノートを整えられませんでした。時間をおいて「やり直す」を押してください');
+    expect(notesProblemText('partial')).toContain('一部');
   });
 });
