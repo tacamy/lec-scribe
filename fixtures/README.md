@@ -11,7 +11,10 @@
 ```sh
 pnpm fixtures:make            # 10 枚 × 5 秒、1280×720、ワイプ付き
 pnpm fixtures:make -- --slides 6 --seconds 4 --clock
+pnpm fixtures:make -- --out other.webm   # 別の名前で作る（player.html?video=other.webm で再生）
 pnpm fixtures:serve           # http://127.0.0.1:8787/player.html
 ```
 
 `slides.webm` は生成物なので git 管理外。
+
+スモークテスト（`scripts/smoke-extension.mjs`）は自分用の `slides.smoke.webm`（3 枚 × 3 秒、640×360）を `--out` で作り、`player.html?video=slides.smoke.webm` で再生する。手作業の確認に使う `slides.webm` とは別のファイルなので、互いに上書きしない。

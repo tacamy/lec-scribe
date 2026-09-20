@@ -1,11 +1,11 @@
-// Generates fixtures/slides.webm: a synthetic lecture video made of N slides
+// Generates fixtures/slides.webm (or --out <name>.webm): a synthetic lecture video made of N slides
 // that switch every S seconds, with a small moving box in a corner (a stand-in
 // for the lecturer's camera wipe) and a short beep at each slide change.
 // Rendered with a canvas + MediaRecorder inside headless Chromium (Playwright),
 // so it works wherever the E2E tests run. If `ffmpeg` is on PATH the result is
 // remuxed so the file gets duration/cues and seeks properly in <video>.
 //
-// Usage: node fixtures/make-slides.mjs [--slides 10] [--seconds 5] [--width 1280] [--height 720] [--clock]
+// Usage: node fixtures/make-slides.mjs [--slides 10] [--seconds 5] [--width 1280] [--height 720] [--clock] [--out slides.webm]
 import { spawnSync } from 'node:child_process';
 import { rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -15,8 +15,10 @@ import { fixtureStamp } from './version.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
-const out = path.join(here, 'slides.webm');
-const raw = path.join(here, 'slides.raw.webm');
+// 出力先は fixtures/ の中のファイル名で選べる（--out）。スモークテストは自分用の slides.smoke.webm を作るので、
+// 手作業の確認に使う slides.webm（既定の 10 枚 × 5 秒）と上書きし合わない
+const out = path.join(here, opts.out);
+const raw = path.join(here, opts.out.replace(/\.webm$/, '.raw.webm'));
 
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
@@ -136,12 +138,15 @@ if (ffmpeg.status === 0) {
 await writeFile(`${out}.version`, `${fixtureStamp(opts)}\n`);
 
 function parseArgs(argv) {
-  const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false };
+  const o = { slides: 10, seconds: 5, width: 1280, height: 720, clock: false, out: 'slides.webm' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--clock') o.clock = true;
+    else if (a === '--out') o.out = String(argv[++i] ?? '');
     else if (a.startsWith('--') && a.slice(2) in o) o[a.slice(2)] = Number(argv[++i]);
     else throw new Error(`unknown argument: ${a}`);
   }
+  // fixtures/ の外へ書かせない（パスではなくファイル名だけを受け付ける）
+  if (!/^[\w.-]+\.webm$/.test(o.out)) throw new Error(`--out は fixtures/ の中の .webm のファイル名にしてください: ${o.out}`);
   return o;
 }

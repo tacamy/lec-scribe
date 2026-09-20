@@ -19,7 +19,7 @@
     </style>
   </head>
   <body>
-    <header>LecScribe fixture — 合成スライド動画（<code>slides.webm</code>）を video.js 風の DOM で再生します</header>
+    <header>LecScribe fixture — 合成スライド動画（<code id="videoName">slides.webm</code>）を video.js 風の DOM で再生します</header>
     <main>
       <div class="video-js" id="fixturePlayer">
         <video id="fixturePlayer_html5_api" class="vjs-tech" preload="auto" playsinline src="slides.webm"></video>
@@ -47,6 +47,13 @@
     <script>
       const v = document.getElementById('fixturePlayer_html5_api');
       const $ = (id) => document.getElementById(id);
+      // ?video=<ファイル名> で再生する動画を選べる（スモークテストは自分用の slides.smoke.webm を使う）。
+      // fixtures/ の中の .webm のファイル名だけを受け付け、よその URL は指させない
+      const chosen = new URLSearchParams(location.search).get('video');
+      if (chosen && /^[\w.-]+\.webm$/.test(chosen)) {
+        v.src = chosen;
+        document.getElementById('videoName').textContent = chosen;
+      }
       document.getElementById('play').onclick = () => v.play();
       document.getElementById('pause').onclick = () => v.pause();
       for (const b of document.querySelectorAll('[data-seek]')) b.onclick = () => { v.currentTime = Math.max(0, v.currentTime + Number(b.dataset.seek)); };
