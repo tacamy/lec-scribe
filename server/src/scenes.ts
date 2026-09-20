@@ -26,6 +26,13 @@ const FOOTAGE_MAX_STILL = 0.5;
 const IDENTICAL_MAX_DIFF = 0.05;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
+/** RGBA の並びの中の 2 画素（a の i 番目、b の j 番目）が「違う」か。pixelDiff と panResidual で同じ判定を使う */
+function pixelDiffers(a: Uint8Array, i: number, b: Uint8Array, j: number): boolean {
+  const dr = a[i]! - b[j]!;
+  const dg = a[i + 1]! - b[j + 1]!;
+  const db = a[i + 2]! - b[j + 2]!;
+  return dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF;
+}
 /** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
 const PHOTO_ENTROPY_BITS = 3.0;
 /** 文字のそろい具合がこれ以上なら同じ文字とみなす（文字認識の読み違いを許す） */
@@ -42,6 +49,78 @@ const VETO_MIN_CHARS = 4;
  * （箇条書きが 1 行増えた、字幕が出かけている）。7 章で字幕の出かけの画像が Vision では 0.70 も離れていたため
  */
 const GROWN_MAX_DIFF = 0.1;
+
+/**
+ * 画面を少しスクロール・パンしただけの組をまとめるための値（2026-09-20）。
+ * アプリの操作画面（Illustrator のキャンバスをずらした）や Web ページ（少しスクロールした）は、中身が同じでも
+ * 画素の 2〜3 割が変わり、Vision の距離も 0.21〜0.31 で「ごく近い」（0.2）をわずかに超える。細かい UI の文字は
+ * 読み取りが安定しないので文字の規則にも掛からない。Vision の閾値を上げると、同じ型で本文が違うスライド
+ * （0.23〜0.27）がまとまってしまうので、「違っている画素の大半が、同じ向きの平行移動で説明できる」ことを見る
+ */
+/** 平行移動を探す範囲（160×90 のサムネイルで。横 15%、縦 13%）。これより大きく動いたら別の画面として残す */
+const PAN_MAX_DX = 24;
+const PAN_MAX_DY = 12;
+/**
+ * 見た目の距離がこれ以下の組だけ調べる（11 章・10 章・GD I-2 の 5 組は 0.21〜0.31）。
+ * ただし利用者が `--scene-vision-photo` を下げていたら、そちらを上限にする（この規則だけ勝手に広く見ないため）
+ */
+const PAN_MAX_VISION = 0.35;
+/** 画素がこれ以上違う組だけ調べる。これ未満の違いは「中身が同じ」「途中の状態」の規則で先に決まる */
+const PAN_MIN_DIFF = 0.1;
+/** 平行移動で説明できずに残る画素が、違っている画素のこの割合以下なら同じ画面（5 組は 0.07〜0.36。本文が違うスライドは 0.43 以上） */
+const PAN_MAX_LEFT_RATIO = 0.4;
+/**
+ * 平行移動で説明できた画素が、全体のこの割合以上あること（5 組は 0.13〜0.24）。
+ * 少ししか動いていないのに中身が変わった組（10 章で腕の向きを変えた 039→040 は 0.04）と、
+ * 白地が大半で本文だけ違うスライド（0.07 前後）を除くため
+ */
+const PAN_MIN_EXPLAINED = 0.1;
+
+/**
+ * 2 枚の違いが、画面の一部を平行移動しただけで説明できるかを調べる。
+ * 違っている画素 p について a(p) = b(p+d) かつ b(p) = a(p-d) なら「説明できた」とする（片方だけだと、文字が
+ * 白地に重なるだけで説明できたことになる）。縮小で 1 画素未満のずれが出るので、移動先の周り 1 画素のどれかに合えばよい。
+ * ツールバーなど動かない部分は、もともと違っていないので数えない。
+ * diff は違っている画素の割合、left は最もよく説明できた移動でも残った画素の割合
+ */
+export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left: number; dx: number; dy: number } {
+  const W = THUMB_WIDTH;
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
+  // 短い配列が来ても移動先を読み外さないよう、実際にある行数までにする（読み外すと差が NaN になり「合った」ことになる）
+  const H = Math.floor(pixels / W);
+  const changed: number[] = [];
+  for (let p = 0; p < pixels; p++) if (pixelDiffers(a, p * 4, b, p * 4)) changed.push(p);
+  if (pixels === 0 || changed.length === 0) return { diff: 0, left: 0, dx: 0, dy: 0 };
+  /** src の画素 p が、dst の (cx, cy) の周り 1 画素のどれかと合うか */
+  const near = (src: Uint8Array, dst: Uint8Array, p: number, cx: number, cy: number) => {
+    for (let oy = -1; oy <= 1; oy++) {
+      const y = cy + oy;
+      if (y < 0 || y >= H) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const x = cx + ox;
+        if (x >= 0 && x < W && !pixelDiffers(src, p * 4, dst, (y * W + x) * 4)) return true;
+      }
+    }
+    return false;
+  };
+  let best = { dx: 0, dy: 0, left: changed.length };
+  for (let dy = -PAN_MAX_DY; dy <= PAN_MAX_DY; dy++) {
+    for (let dx = -PAN_MAX_DX; dx <= PAN_MAX_DX; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      let left = 0;
+      for (const p of changed) {
+        const x = p % W;
+        const y = (p - x) / W;
+        if (!near(a, b, p, x + dx, y + dy) || !near(b, a, p, x - dx, y - dy)) {
+          left++;
+          if (left >= best.left) break; // これ以上よくならない移動は途中でやめる
+        }
+      }
+      if (left < best.left) best = { dx, dy, left };
+    }
+  }
+  return { diff: changed.length / pixels, left: best.left / pixels, dx: best.dx, dy: best.dy };
+}
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
@@ -85,10 +164,7 @@ export function pixelDiff(a: Uint8Array, b: Uint8Array): number {
   let pixels = 0;
   for (let i = 0; i + 3 < n; i += 4) {
     pixels++;
-    const dr = a[i]! - b[i]!;
-    const dg = a[i + 1]! - b[i + 1]!;
-    const db = a[i + 2]! - b[i + 2]!;
-    if (dr >= PIXEL_DIFF || -dr >= PIXEL_DIFF || dg >= PIXEL_DIFF || -dg >= PIXEL_DIFF || db >= PIXEL_DIFF || -db >= PIXEL_DIFF) changed++;
+    if (pixelDiffers(a, i, b, i)) changed++;
   }
   return pixels === 0 ? 0 : changed / pixels;
 }
@@ -171,7 +247,7 @@ export type VisionOptions = {
   text?: (index: number) => string | undefined;
 };
 
-export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'same-scene' | 'superseded';
+export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'panned' | 'same-scene' | 'superseded';
 
 export type SceneDecision = {
   filename: string;
@@ -181,7 +257,7 @@ export type SceneDecision = {
   sameSceneAs?: string;
   /**
    * 外した理由: 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い / 同じスライドの途中の状態 /
-   * 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った
+   * 少しスクロール・パンしただけ / 同じ場面（色の分布） / 同じ場面の最後の 1 枚に譲った
    */
   reason?: SceneReason;
   /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
@@ -196,9 +272,12 @@ export type SceneDecision = {
   pixelDiff?: number;
   /** 比べた画像との文字のそろい具合（0〜1）。両方に文字がなければ付かない */
   textSim?: number;
+  /** 平行移動を調べたとき: 説明できずに残った画素の割合と、最もよく説明できた移動（160×90 の画素で） */
+  panLeft?: number;
+  panShift?: [number, number];
 };
 
-type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim'>;
+type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift'>;
 type Verdict = { reason?: SceneReason; metrics: Metrics };
 
 /**
@@ -284,6 +363,17 @@ export function pickShownSlides(
       return { reason: 'grown', metrics };
     }
     if (strongOnly) return { metrics };
+    // 5b. 画面を少しスクロール・パンしただけ（違っている画素の大半が、同じ向きの平行移動で説明できる）。
+    //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
+    //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
+    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
+      const pan = panResidual(thumb, otherThumb);
+      metrics.panLeft = round(pan.left);
+      // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない
+      if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
+      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
+    }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面
     const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
     if (threshold > 0 && footage) {
