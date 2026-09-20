@@ -697,10 +697,15 @@ try {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions');
     for (let i = 0; i < count; i++) await root.removeEntry(`20000101-0000${String(i).padStart(2, '0')}-fake`, { recursive: true });
   }, FAKE_SESSIONS);
-  // この時点で本物のセッションは残っていないことがある（前の手順で破棄している）ので、行ではなくパネルの準備を待つ
+  // この時点で本物のセッションは残っていないことがある（前の手順で破棄している）ので、行ではなくパネルの準備を待つ。
+  // #moreToggle は HTML の時点で hidden なので、一覧を描き終えるのを待たずに見ると必ず通ってしまう。
+  // renderSessions() は毎回 #hiddenToggle に件数（「（N）」）を入れるので、それを一覧を描いた印にする
   await popup.reload();
   await popup.waitForSelector('#startBtn', { state: 'attached' });
   await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent !== '');
+  await popup.waitForFunction(() => document.getElementById('hiddenToggle')?.textContent.includes('（'), null, { timeout: 5_000 });
+  const left = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  assert.ok(left.length < 10 && !left.some((t) => t.includes('fake ')), `the fake sessions should be gone: ${JSON.stringify(left)}`);
   assert.equal(await popup.evaluate(() => document.getElementById('moreToggle').hidden), true, 'toggle shown for a short list');
   console.log(`sessions: ${folded.total} rows rendered, 10 shown until "すべて表示" is pressed`);
   // api 2 の約束（#17）: vision は ready / building / idle / failed か null。抜けていたら約束違反。
