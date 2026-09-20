@@ -589,6 +589,37 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     ]);
   });
 
+  it('戻っている間に画面が少しずつ変わっても、合計 10 秒を超えたらそこから載せる', () => {
+    // 1 枚ずつの「この画面が続いた時間」だけで決めると、6 秒ごとに少し変わる長い戻りが丸ごと外れて、
+    // その区間に載る画像が 1 枚も無くなっていた
+    const step = Math.floor(PIXELS * 0.04);
+    const drift = (flipped: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
+      return f;
+    };
+    const flat = (v: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      return f;
+    };
+    // A（0 秒）→ B（60 秒）→ A に戻って 6 秒ごとに 8% ずつ揺れる（120〜150 秒）→ C（240 秒）
+    const frames: Array<[Uint8Array, number]> = [
+      [drift(0), 0], [drift(step), 5], [flat(200), 60],
+      [drift(0), 120], [drift(step * 2), 126], [drift(0), 132], [drift(step * 2), 138],
+      [flat(120), 240],
+    ];
+    const slides = frames.map(([, videoTime], i) => ({ ...slide(i + 1, 1), videoTime }));
+    const thumbs = new Map(frames.map(([img], i) => [slides[i]!.filename, img] as [string, Uint8Array]));
+    const d = pickShownSlides(slides, thumbs, 0.65, undefined, 'first');
+    // 120・126 秒は短い戻りとして外れるが、10 秒を超えた 132 秒からは載る（120〜240 秒が画像なしにならない）
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([
+      [true, undefined], [false, 'identical'], [true, undefined],
+      [false, 'revisit'], [false, 'revisit'], [true, undefined], [true, undefined],
+      [true, undefined],
+    ]);
+  });
+
   it('最後の 1 枚を載せる設定でも、戻っただけの画像は今の画面の代わりに選ばない', () => {
     // B のまとまりは [B, 戻っただけの A]。載せるのは B のまま
     const d = pick([1, 2, 1, 3], [0, 36, 58, 63], 'last');

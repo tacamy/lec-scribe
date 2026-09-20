@@ -329,6 +329,19 @@ export function pickShownSlides(
   /** 「前の画面に短く戻っただけ」として外した画像。まとまりの最後の 1 枚には選ばない */
   const revisits = new Set<number>();
   /**
+   * 今つながっている「戻り」の、最初の画像の動画時刻。戻りが途切れたら null。
+   * 1 枚ずつの「この画面が続いた時間」だけで決めると、戻っている間に画面が少しずつ変わる（注釈を書く、
+   * 少しスクロールする）ときに、どの 1 枚も 10 秒未満で外れ続け、長い戻りなのに画像が 1 枚も残らない
+   */
+  let revisitStart: number | null = null;
+  /** つながった戻りがまだ REVISIT_MAX_SECONDS 未満か（伸びたら、そこからは新しい画面として載せる） */
+  const revisitRunShort = (index: number): boolean => {
+    if (revisitStart === null) return true;
+    const elapsed = slides[index]!.videoTime - revisitStart;
+    // 巻き戻っている（シークした）ときは長さが分からないので、戻りを打ち切って載せる
+    return elapsed >= 0 && elapsed < REVISIT_MAX_SECONDS;
+  };
+  /**
    * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
    * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する。
    * tightOnly なら、そのうち文字を使わないもの（中身が同じ・見た目がごく近い）だけ。
@@ -408,7 +421,9 @@ export function pickShownSlides(
   const sceneSeconds = (index: number): number | undefined => {
     for (let j = index + 1; j < slides.length; j++) {
       const v = compare(j, index, true, true);
-      if (v && v.reason) continue;
+      // サムネイルが読めない画像は「同じ」とも「違う」とも言えない。そこで測るのをやめる（載せる側に倒す）
+      if (v === null) return undefined;
+      if (v.reason) continue;
       const seconds = slides[j]!.videoTime - slides[index]!.videoTime;
       return seconds >= 0 ? seconds : undefined;
     }
@@ -457,9 +472,10 @@ export function pickShownSlides(
       }
       if (verdict && !verdict.reason) {
         // 前の画面に短く戻っただけなら載せない。間の発話は、今載っている画像の下に入る
-        const revisit = briefRevisit(index);
+        const revisit = revisitRunShort(index) ? briefRevisit(index) : null;
         if (revisit) {
           revisits.add(index);
+          revisitStart ??= slide.videoTime;
           // via には戻った先の画像を残す
           decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', via: slides[revisit.to]!.filename, ...revisit.verdict.metrics });
           return;
@@ -469,8 +485,9 @@ export function pickShownSlides(
         // 短く戻っていた間に撮れた続きの画像。戻った先の画面と今も同じなら、戻った画像と同じ扱いにする
         // （今のまとまりの 1 枚として載せない）。直前の 1 枚とだけ比べて連ねると、画面が少しずつ変わっていく間
         // ずっと外れ続けて、その区間の画像が 1 枚も残らない（戻った先とは似ても似つかない画像まで外れる）
-        if (matchPreviousGroup(index)) {
+        if (revisitRunShort(index) && matchPreviousGroup(index)) {
           revisits.add(index);
+          revisitStart ??= slide.videoTime;
           decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: 'revisit', ...(via ? { via } : {}), ...verdict.metrics });
           return;
         }
@@ -479,6 +496,7 @@ export function pickShownSlides(
       }
       if (verdict?.reason) {
         lastInGroup = index;
+        revisitStart = null;
         decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
         const text = vision?.text?.(index);
         const anchorText = vision?.text?.(last.index);
@@ -486,6 +504,7 @@ export function pickShownSlides(
         return;
       }
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
+      revisitStart = null;
       // サムネイルが読めなかった画像を基準にすると、以後すべての比較ができなくなる。前の基準を残す
       if (verdict) {
         previousGroup = { first: last.index, last: lastInGroup };
