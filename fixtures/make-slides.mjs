@@ -18,7 +18,7 @@ const out = path.join(here, 'slides.webm');
 const raw = path.join(here, 'slides.raw.webm');
 
 /** 描画内容を変えたら上げる。スモークテストは古い世代の動画を作り直す */
-export const FIXTURE_VERSION = 3;
+export const FIXTURE_VERSION = 4;
 
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage();
@@ -66,8 +66,11 @@ const base64 = await page.evaluate(async ({ slides, seconds, width, height, cloc
       const y = height * (0.28 + line * 0.11);
       ctx.fillText(`• 項目 ${line + 1}: スライド ${i + 1} の本文テキスト（${'あいうえお'.repeat(1 + ((i + line) % 3))}）`, width * 0.36, y);
     }
-    // スライド 2 は表示から 1.8 秒後に 1 行増える（文字が後から出るスライドの代わり。最終状態の上書きを確かめる）
-    if (i === 1 && t - i * seconds * 1000 >= 1800) {
+    // スライド 2 は表示時間の 65% が過ぎたところで 1 行増える（文字が後から出るスライドの代わり。最終状態の上書きを確かめる）。
+    // 検知は 0.5 秒ごとに見て、切り替わりから 1.0〜1.5 秒後に保存する。増える行は「保存より後」に出て、
+    // 「次の切り替わりまでに 1 回は必ず見られる」必要があるので、スライドは 3 秒以上にする（3 秒なら 1.95 秒後に出て 1.05 秒残る）。
+    // 2 秒のスライドで 1.8 秒後に出していた頃は、残りの 0.2 秒にたまたま 1 回見たときだけ通っていた
+    if (i === 1 && t - i * seconds * 1000 >= seconds * 1000 * 0.65) {
       ctx.fillText('• 追加の行（あとから表示）', width * 0.36, height * 0.83);
     }
     // Wipe: a small box whose contents move every frame.
