@@ -1,5 +1,6 @@
 #!/bin/bash
-# LecScribe の Mac 側サーバーを入れて常駐させる。利用者はターミナルでこの 1 行を実行する:
+# LecScribe（動画を見ながらノートを取るための汎用の道具。個人の学習用。利用するサイトの規約に従ってください）の
+# Mac 側サーバーを入れて常駐させる。利用者はターミナルでこの 1 行を実行する:
 #
 #   curl -fsSL https://raw.githubusercontent.com/tacamy/lec-scribe/main/install.sh | bash
 #
