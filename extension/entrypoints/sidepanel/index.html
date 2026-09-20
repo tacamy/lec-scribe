@@ -77,6 +77,8 @@
       <section class="sessions" id="sessions" hidden>
         <h2>保存済みセッション</h2>
         <ul id="sessionList"></ul>
+        <!-- 一覧は全件を描いておき、11 件目からは見た目だけ畳む（§15.1） -->
+        <button type="button" class="link" id="moreToggle" aria-controls="sessionList" hidden>すべて表示</button>
         <button type="button" class="link" id="hiddenToggle" hidden>非表示のセッションを表示</button>
       </section>
 

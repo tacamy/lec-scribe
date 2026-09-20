@@ -87,6 +87,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* 一覧は全件出す。ポップアップは縦が限られるので、一覧の中でスクロールさせる（5 件目が途中で切れて続きがあると分かる高さ） */
 .popup .sessions ul { max-height: 300px; overflow-y: auto; padding-right: 2px; }
 .sessions li { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+/* 一覧は全件を描いておき、11 件目から（li.extra）は見た目だけ畳む。処理中・送信待ちの行（pinned）は畳まない */
+.sessions ul.collapsed li.extra:not(.pinned) { display: none; }
+/* 「すべて表示」で開いた瞬間だけ、出てくる行を少し上からふわっと出す。描き直しのたびに動かないよう reveal の付いた一覧に限る */
+.sessions ul.reveal li.extra { transition: opacity 0.18s ease, translate 0.18s ease; }
+@starting-style {
+  .sessions ul.reveal li.extra { opacity: 0; translate: 0 -4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sessions ul.reveal li.extra { transition: none; }
+}
 .sessionMain { display: flex; min-width: 0; }
 .sessionTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
 .sessionMeta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -657,6 +657,50 @@ try {
   assert.equal(typeof serverApi, 'number', `server did not report an api version: ${serverApi}`);
   assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
+
+  // §15.1: 一覧は全件を描いておき、11 件目からは見た目だけ畳む。録音は時間がかかるので、OPFS に空のセッションを直接置いて件数を増やす
+  // （録音済み・未送信の形。処理済みにするとパネルがサーバーにフォルダの有無を聞きに行く）。ID を古くして一覧の末尾に並べる
+  const FAKE_SESSIONS = 12;
+  await popup.evaluate(async (count) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions', { create: true });
+    for (let i = 0; i < count; i++) {
+      const sessionId = `20000101-0000${String(i).padStart(2, '0')}-fake`;
+      const dir = await root.getDirectoryHandle(sessionId, { create: true });
+      for (const [name, value] of [['session.json', { sessionId, title: `fake ${i}`, startedAt: '2000-01-01T00:00:00.000Z' }], ['status.json', { stage: 'captured', audioBytes: 1, durationMs: 1000 }]]) {
+        const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+        await writable.write(JSON.stringify(value));
+        await writable.close();
+      }
+    }
+  }, FAKE_SESSIONS);
+  await popup.reload();
+  await popup.waitForSelector('#moreToggle:not([hidden])', { timeout: 5_000 });
+  const listView = () =>
+    popup.evaluate(() => {
+      const rows = [...document.querySelectorAll('#sessionList li')];
+      return { total: rows.length, visible: rows.filter((li) => getComputedStyle(li).display !== 'none').length, label: document.getElementById('moreToggle').textContent };
+    });
+  const folded = await listView();
+  assert.ok(folded.total >= FAKE_SESSIONS, `all sessions should be in the DOM: ${JSON.stringify(folded)}`);
+  assert.equal(folded.visible, 10, JSON.stringify(folded));
+  assert.equal(folded.label, `すべて表示（残り ${folded.total - 10} 件）`);
+  await popup.click('#moreToggle');
+  const opened = await listView();
+  assert.equal(opened.visible, opened.total, JSON.stringify(opened));
+  assert.equal(opened.label, '10 件だけ表示');
+  await popup.click('#moreToggle');
+  assert.equal((await listView()).visible, 10);
+  // 片付け（後の手順の一覧を元の件数に戻す）。10 件以下なら「すべて表示」は出ない
+  await popup.evaluate(async (count) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions');
+    for (let i = 0; i < count; i++) await root.removeEntry(`20000101-0000${String(i).padStart(2, '0')}-fake`, { recursive: true });
+  }, FAKE_SESSIONS);
+  // この時点で本物のセッションは残っていないことがある（前の手順で破棄している）ので、行ではなくパネルの準備を待つ
+  await popup.reload();
+  await popup.waitForSelector('#startBtn', { state: 'attached' });
+  await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent !== '');
+  assert.equal(await popup.evaluate(() => document.getElementById('moreToggle').hidden), true, 'toggle shown for a short list');
+  console.log(`sessions: ${folded.total} rows rendered, 10 shown until "すべて表示" is pressed`);
   // api 2 の約束（#17）: vision は ready / building / idle / failed か null。抜けていたら約束違反。
   // 版の確認を先にしておく（古いサーバーでは vision が無いのが正しく、そのときは版の不一致の方を知らせる）
   const VISION_STATES = ['ready', 'building', 'idle', 'failed'];
