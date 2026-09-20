@@ -462,10 +462,11 @@ export class Pipeline {
             ...(reused ? { notesReused: true } : {}),
           };
         }).catch(async (e: unknown) => {
-          const message = e instanceof Error ? e.message : String(e);
-          // 「中止」のときは前回の結果を残す。それ以外の失敗では文字起こしそのままの本文に戻す
-          if (signal.aborted) return { notes: false, notesError: message };
-          return await fallbackNotes(message);
+          // 「中止」のときは前回の結果を残し、外側で cancelled として書く。ここで notes: false のまま返すと
+          // 段階が done になり、利用者が自分で止めたのに一覧へ「ノートを整えられませんでした」が出る（§13.5）
+          if (signal.aborted) throw e;
+          // それ以外の失敗では文字起こしそのままの本文に戻す
+          return await fallbackNotes(e instanceof Error ? e.message : String(e));
         });
       }
 
