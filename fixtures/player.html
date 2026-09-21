@@ -43,6 +43,9 @@
         <span>readyState <code id="rs">0</code></span>
       </div>
       <p>生成: <code>pnpm fixtures:make</code>／配信: <code>pnpm fixtures:serve</code> → <code>http://127.0.0.1:8787/player.html</code></p>
+      <!-- 広告・計測でよく見る形の別オリジン iframe（localhost は 127.0.0.1 とは別オリジン）。
+           これらで「別ドメインの埋め込みがあります」の警告が出ないことを smoke で確かめる（SPEC §8.1） -->
+      <div id="embeds"></div>
     </main>
     <script>
       const v = document.getElementById('fixturePlayer_html5_api');
@@ -54,6 +57,11 @@
         v.src = chosen;
         document.getElementById('videoName').textContent = chosen;
       }
+      // 計測用（0×0 で hidden）と、小さすぎてプレイヤーではありえない大きさの別オリジン iframe を置く
+      const embedSrc = `http://localhost:${location.port}/embed.html`;
+      document.getElementById('embeds').innerHTML =
+        `<iframe src="${embedSrc}" width="0" height="0" style="display:none;visibility:hidden"></iframe>` +
+        `<iframe src="${embedSrc}" width="120" height="60" title="tiny"></iframe>`;
       document.getElementById('play').onclick = () => v.play();
       document.getElementById('pause').onclick = () => v.pause();
       for (const b of document.querySelectorAll('[data-seek]')) b.onclick = () => { v.currentTime = Math.max(0, v.currentTime + Number(b.dataset.seek)); };

@@ -255,8 +255,26 @@ try {
   assert.equal(chosen.playing, true);
   assert.equal(chosen.frameId, 0);
   assert.equal(probed.probe.frames, 1);
-  assert.deepEqual(probed.probe.crossOriginIframes, []);
+  // fixture には計測用（0×0・hidden）と小さすぎる別オリジン iframe が入っている。これらでは警告を出さない（SPEC §8.1）
+  assert.deepEqual(probed.probe.crossOriginIframes, [], 'hidden/tiny cross-origin iframes must not be reported');
   console.log(`probe: ${chosen.player} ${chosen.videoWidth}x${chosen.videoHeight} via ${chosen.selector}`);
+
+  // 逆に、プレイヤーが入りうる大きさの別オリジン iframe は報告する
+  await lecture.evaluate((port) => {
+    const f = document.createElement('iframe');
+    f.id = 'smokeBigEmbed';
+    f.src = `http://localhost:${port}/embed.html`;
+    f.width = '640';
+    f.height = '360';
+    document.getElementById('embeds').append(f);
+  }, FIXTURE_PORT);
+  const probedEmbed = await popup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ target: 'sw', type: 'PROBE', tabId }),
+    lectureTabId,
+  );
+  assert.deepEqual(probedEmbed.probe.crossOriginIframes, [`http://localhost:${FIXTURE_PORT}`], JSON.stringify(probedEmbed.probe));
+  await lecture.evaluate(() => document.getElementById('smokeBigEmbed').remove());
+  console.log('probe: player-sized cross-origin iframe is reported');
 
   // ポップアップ（?mode=popup）は Start 前に前面のタブの動画を調べて Video 行に出す。
   // 設定や状態が変わって render() が走っても、その表示が消えないこと（前の講義を文字起こししている間に

@@ -266,7 +266,7 @@ Phase ごとに「完了条件」を満たしてから次へ進む（§19）。
 1. パネル: 現在のタブを取得し、service worker に `START { tabId }` を送る
 2. service worker: 進行中セッションがあれば拒否する（同時 1 セッション）
 3. service worker: `chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: probe })` を実行。戻り値は frame ごとの `{ frameId, result }` で、各 frame の `<video>` 候補（§6.6 `VideoCandidate`）と cross-origin `<iframe>` の `src` 一覧が得られる
-4. 候補が皆無なら警告 `NO_VIDEO` を付けて音声のみ録音する（エラーにはしない。cross-origin iframe 内の動画は MVP 非対応で、iframe があれば `CROSS_ORIGIN_IFRAME` も付ける。D-09。数えるのは、見えていて 160×90 以上ある iframe だけ。幅と高さが 0 で `hidden` の広告・計測用の iframe まで数えると、動画のないページで的外れな警告が出るため。枠の中に本当に動画があるかは分からないので、文言も「動画がその中にある場合、スライド画像は取得できません」と言い切らない。2026-09-21）
+4. 候補が皆無なら警告 `NO_VIDEO` を付けて音声のみ録音する（エラーにはしない。cross-origin iframe 内の動画は MVP 非対応で、iframe があれば `CROSS_ORIGIN_IFRAME` も付ける。D-09。数えるのは、見えていて 160×90 以上ある iframe だけ。幅と高さが 0 で `hidden` の広告・計測用の iframe まで数えると、動画のないページで的外れな警告が出るため。枠の中に本当に動画があるかは分からないので、文言も「動画がその中にある場合、スライド画像は取得できません」と言い切らない。2026-09-21。大きさは枠 → `width` / `height` 属性の順に見て、描画されていない document では大きさで落とさない）
 5. service worker: `chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['USER_MEDIA'], justification })`（既存があれば再利用）
 6. service worker: `chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })` → offscreen に `CAPTURE_START { streamId, config, meta }`
 7. offscreen: `getUserMedia` → AudioContext パススルー → OPFS にセッションディレクトリ作成 → `MediaRecorder.start(timeslice)` → `recorderStartEpochMs = Date.now()` を返す
