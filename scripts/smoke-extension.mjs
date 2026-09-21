@@ -90,39 +90,39 @@ try {
     }
   }
 
-  const popup = await context.newPage();
+  const panel = await context.newPage();
   const errors = [];
-  popup.on('pageerror', (e) => errors.push(String(e)));
-  popup.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await popup.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
-  await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent === 'Ready');
-  assert.equal(await popup.getAttribute('#dot', 'data-state'), 'IDLE');
+  panel.on('pageerror', (e) => errors.push(String(e)));
+  panel.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  await panel.waitForFunction(() => document.getElementById('stateLabel')?.textContent === 'Ready');
+  assert.equal(await panel.getAttribute('#dot', 'data-state'), 'IDLE');
 
-  const state = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
+  const state = await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
   assert.equal(state.ok, true);
   assert.equal(state.state.state, 'IDLE');
 
   // 待機中は Audio / Video / Slides / Tab の行が出ない（hidden 属性が CSS に負けていないこと）
-  const idleRows = await popup.evaluate(() =>
+  const idleRows = await panel.evaluate(() =>
     Object.fromEntries(['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow', 'serverValue'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),
   );
   for (const id of ['audioRow', 'meter', 'videoRow', 'slidesRow', 'tabRow']) assert.equal(idleRows[id], 'none', `${id} visible while idle: ${JSON.stringify(idleRows)}`);
   assert.notEqual(idleRows.serverValue, 'none', JSON.stringify(idleRows));
-  // サーバー未接続のうちは「このMacと接続」がポップアップに出る
-  assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
+  // サーバー未接続のうちは「このMacと接続」がパネルに出る
+  assert.equal(await panel.evaluate(() => document.getElementById('setup').hidden), false, 'setup view hidden while unpaired');
   // 使い始める前の画面に、位置づけの 1 行が出ている（SPEC §3.0）
-  assert.equal(await popup.evaluate(() => document.getElementById('termsNote')?.textContent), '個人の学習用です。利用するサイトの規約に従ってください。');
+  assert.equal(await panel.evaluate(() => document.getElementById('termsNote')?.textContent), '個人の学習用です。利用するサイトの規約に従ってください。');
   // hidden 属性が CSS の display 指定に負けていないこと（計算後のスタイルで見る）
-  const setupDisplay = await popup.evaluate(() =>
+  const setupDisplay = await panel.evaluate(() =>
     Object.fromEntries(['status', 'rows', 'actions', 'footer', 'setup'].map((id) => [id, getComputedStyle(document.getElementById(id)).display])),
   );
   for (const id of ['status', 'rows', 'actions', 'footer']) assert.equal(setupDisplay[id], 'none', `${id} visible while unpaired: ${JSON.stringify(setupDisplay)}`);
   assert.notEqual(setupDisplay.setup, 'none', JSON.stringify(setupDisplay));
 
   // 長いタブ名や本文でパネルが横にはみ出さないこと（サイドパネルの最小幅相当で確認）
-  await popup.setViewportSize({ width: 320, height: 700 });
-  const overflow = await popup.evaluate(() => {
+  await panel.setViewportSize({ width: 320, height: 700 });
+  const overflow = await panel.evaluate(() => {
     const long = 'サンプル講座 - 12章｜グラフィックデザインの歴史と現在 '.repeat(4) + 'https://example.invalid/'.repeat(6);
     // 待機中は隠れている行も、録音中と同じ見た目で測る
     for (const row of document.querySelectorAll('.rows [hidden]')) row.hidden = false;
@@ -132,32 +132,32 @@ try {
     return { scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth };
   });
   assert.ok(overflow.scroll <= overflow.client, `panel overflows: ${JSON.stringify(overflow)}`);
-  await popup.reload();
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
 
   // STOP while idle is a no-op.
-  const stopped = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'STOP' }));
+  const stopped = await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'STOP' }));
   assert.equal(stopped.ok, true);
   assert.equal(stopped.state.state, 'IDLE');
 
   // START without the extension having been invoked on the tab (no activeTab
   // grant, as here) must fail cleanly: an ERROR state with a coded message and
   // no offscreen document left behind. Real captures are verified manually.
-  const rejected = await popup.evaluate(async () => {
+  const rejected = await panel.evaluate(async () => {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     return chrome.runtime.sendMessage({ target: 'sw', type: 'START', tabId: tab.id });
   });
   assert.equal(rejected.ok, false);
   assert.ok(['UNSUPPORTED_PAGE', 'CAPTURE_FAILED'].includes(rejected.error.code), rejected.error.code);
-  const after = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
+  const after = await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }));
   assert.equal(after.state.state, 'ERROR');
   assert.equal(after.state.error.code, rejected.error.code);
-  const offscreen = await popup.evaluate(() =>
+  const offscreen = await panel.evaluate(() =>
     chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }).then((c) => c.length),
   );
   assert.equal(offscreen, 0);
-  await popup.waitForFunction(() => document.getElementById('dot')?.dataset.state === 'ERROR');
-  assert.equal(await popup.isHidden('#message'), false);
+  await panel.waitForFunction(() => document.getElementById('dot')?.dataset.state === 'ERROR');
+  assert.equal(await panel.isHidden('#message'), false);
 
   // --- Phase 2: recording pipeline without tabCapture. offscreen.html is
   // loaded as an ordinary tab and fed an oscillator; chunks go through the
@@ -202,20 +202,20 @@ try {
   );
   console.log(`recorded ${rec.stopped.audioBytes} bytes in ${rec.stopped.durationMs} ms`);
 
-  // The popup lists the session from OPFS; discard it.
+  // The panel lists the session from OPFS; discard it.
   // （Downloads への書き出しは UI から外したので smoke でも通さない。chrome.downloads 絡みの揺れで不安定だった）
-  await popup.reload();
-  await popup.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.title || li.textContent.includes(id)), '2099-01-01 00:00:00');
+  await panel.reload();
+  await panel.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.title || li.textContent.includes(id)), '2099-01-01 00:00:00');
 
-  const stateBeforeDiscard = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
-  const discarded = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), rec.sessionId);
+  const stateBeforeDiscard = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  const discarded = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), rec.sessionId);
   assert.equal(discarded.ok, true, `${JSON.stringify(discarded)}\nstate before discard: ${JSON.stringify(stateBeforeDiscard)}`);
-  await popup.reload();
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
-  await popup.waitForTimeout(300);
-  const listed = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  await panel.waitForTimeout(300);
+  const listed = await panel.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
   assert.ok(!listed.some((t) => t.includes('2099-01-01')), `session still listed: ${listed}`);
-  const offscreenLeft = await popup.evaluate(() =>
+  const offscreenLeft = await panel.evaluate(() =>
     chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }).then((c) => c.length),
   );
   assert.equal(offscreenLeft, 0);
@@ -234,13 +234,13 @@ try {
     const v = document.querySelector('video');
     return [v.videoWidth, v.videoHeight];
   });
-  const lectureTabId = await popup.evaluate(
+  const lectureTabId = await panel.evaluate(
     async (url) => (await chrome.tabs.query({ url }))[0]?.id,
     `http://127.0.0.1:${FIXTURE_PORT}/*`,
   );
   assert.ok(lectureTabId, 'fixture tab id');
 
-  const probed = await popup.evaluate(
+  const probed = await panel.evaluate(
     (tabId) => chrome.runtime.sendMessage({ target: 'sw', type: 'PROBE', tabId }),
     lectureTabId,
   );
@@ -268,7 +268,7 @@ try {
     f.height = '360';
     document.getElementById('embeds').append(f);
   }, FIXTURE_PORT);
-  const probedEmbed = await popup.evaluate(
+  const probedEmbed = await panel.evaluate(
     (tabId) => chrome.runtime.sendMessage({ target: 'sw', type: 'PROBE', tabId }),
     lectureTabId,
   );
@@ -276,32 +276,32 @@ try {
   await lecture.evaluate(() => document.getElementById('smokeBigEmbed').remove());
   console.log('probe: player-sized cross-origin iframe is reported');
 
-  // ポップアップ（?mode=popup）は Start 前に前面のタブの動画を調べて Video 行に出す。
+  // パネルは Start 前に前面のタブの動画を調べて Video 行に出す。
   // 設定や状態が変わって render() が走っても、その表示が消えないこと（前の講義を文字起こししている間に
-  // 次の講義のポップアップを開くと、処理の段階が進むたびに render() が走る）。
-  // showProbe は「いま前面のタブ」を調べるので、講義のタブを前面にしてからポップアップを読み込む（navigate はタブを前面にしない）
-  const popup2 = await context.newPage();
-  popup2.on('pageerror', (e) => errors.push(String(e)));
+  // 次の講義のページでパネルを開くと、処理の段階が進むたびに render() が走る）。
+  // showProbe は「いま前面のタブ」を調べるので、講義のタブを前面にしてからパネルのページを読み込む（navigate はタブを前面にしない）
+  const panel2 = await context.newPage();
+  panel2.on('pageerror', (e) => errors.push(String(e)));
   await lecture.bringToFront();
-  await popup2.goto(`chrome-extension://${extensionId}/sidepanel.html?mode=popup`);
-  await popup2.waitForFunction(() => /再生中|一時停止|待機中/.test(document.getElementById('videoValue')?.textContent ?? ''), null, { timeout: 10_000 });
-  const probeText = await popup2.evaluate(() => document.getElementById('videoValue').textContent);
+  await panel2.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel2.waitForFunction(() => /再生中|一時停止|待機中/.test(document.getElementById('videoValue')?.textContent ?? ''), null, { timeout: 10_000 });
+  const probeText = await panel2.evaluate(() => document.getElementById('videoValue').textContent);
   // 設定に印を付けて外す（値が変わらないと onChanged は来ない）。どちらも render() を通る
-  await popup2.evaluate(async () => {
+  await panel2.evaluate(async () => {
     const { config } = await chrome.storage.local.get('config');
     await chrome.storage.local.set({ config: { ...config, smokeTouch: Date.now() } });
     await new Promise((r) => setTimeout(r, 300));
     await chrome.storage.local.set({ config });
     await new Promise((r) => setTimeout(r, 300));
   });
-  const afterRender = await popup2.evaluate(() => ({
+  const afterRender = await panel2.evaluate(() => ({
     text: document.getElementById('videoValue').textContent,
     hidden: document.getElementById('videoRow').hidden,
   }));
-  assert.equal(afterRender.text, probeText, `popup probe was wiped by a re-render: ${JSON.stringify(afterRender)}`);
+  assert.equal(afterRender.text, probeText, `panel probe was wiped by a re-render: ${JSON.stringify(afterRender)}`);
   assert.equal(afterRender.hidden, false, 'Video row hidden after re-render');
-  console.log(`popup: probe survives re-render (${probeText})`);
-  await popup2.close();
+  console.log(`panel: probe survives re-render (${probeText})`);
+  await panel2.close();
 
   // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。
   // offscreen.html をタブとして開き、合成ストリームでセッションを始めておく。
@@ -356,7 +356,7 @@ try {
     sameSceneColor: 0.65,
   };
   const target = { tabId: lectureTabId, frameId: chosen.frameId, selector: chosen.selector, index: chosen.index };
-  const detect = await popup.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide, detect }) => {
+  const detect = await panel.evaluate(async ({ tabId, frameId, selector, index, sessionId, slide, detect }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     return chrome.tabs.sendMessage(
       tabId,
@@ -393,7 +393,7 @@ try {
       globalThis.__lecscribe.revoke(files.map((f) => f.url));
       return out;
     }, frameSession);
-    const stopReply = await popup.evaluate(
+    const stopReply = await panel.evaluate(
       ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId }),
       target,
     );
@@ -403,7 +403,7 @@ try {
   }
 
   // 手動保存（パネルの「スクショを保存」相当）。終了後の静止画でも撮れる
-  const manual = await popup.evaluate(
+  const manual = await panel.evaluate(
     ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'CAPTURE_FRAME', reason: 'manual' }, { frameId }),
     target,
   );
@@ -415,14 +415,14 @@ try {
   assert.ok(manual.slide.t >= 0);
 
   // 最初の検知を明示的に止め、判定履歴（診断用）を受け取る
-  const firstStop = await popup.evaluate(
+  const firstStop = await panel.evaluate(
     ({ tabId, frameId }) => chrome.tabs.sendMessage(tabId, { target: 'content', type: 'DETECT_STOP' }, { frameId }),
     target,
   );
   assert.equal(firstStop.ok, true, JSON.stringify(firstStop));
 
   // 二重注入しても壊れないこと: もう一度注入 → DETECT_START → DETECT_STOP
-  const again = await popup.evaluate(async ({ tabId, frameId, selector, index, slide, detect }) => {
+  const again = await panel.evaluate(async ({ tabId, frameId, selector, index, slide, detect }) => {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     const started = await chrome.tabs.sendMessage(
       tabId,
@@ -505,11 +505,11 @@ try {
 
   // --- Phase 7: サーバーへ送信して文字起こし（スタブ）。設定にトークンを入れ、
   // パネルの「送信」相当の UPLOAD を service worker に投げて完了を待つ。
-  await popup.evaluate(
+  await panel.evaluate(
     ({ port, token }) => chrome.storage.local.set({ config: { server: { port, token } } }),
     { port: SERVER_PORT, token: SERVER_TOKEN },
   );
-  const uploadReply = await popup.evaluate(
+  const uploadReply = await panel.evaluate(
     (id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }),
     frameSession,
   );
@@ -519,7 +519,7 @@ try {
   const transitions = [];
   let afterUpload;
   for (let i = 0; i < 200; i++) {
-    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    const s = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     const key = `${s.state}/${s.processing?.stage ?? '-'}${s.processing?.percent !== undefined ? ` ${s.processing.percent}%` : ''}`;
     if (transitions[transitions.length - 1] !== key) transitions.push(key);
     if (!s.processing && (s.state === 'COMPLETED' || s.state === 'IDLE' || s.state === 'ERROR')) {
@@ -529,8 +529,8 @@ try {
     await new Promise((r) => setTimeout(r, 150));
   }
   // 遅れて届く進捗で状態が戻らないことも確認する
-  await popup.waitForTimeout(2500);
-  const settled = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  await panel.waitForTimeout(2500);
+  const settled = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const trace = `transitions: ${transitions.join(' → ')}\nfinal: ${JSON.stringify(settled)}`;
   assert.ok(afterUpload, `upload never settled\n${trace}`);
   assert.equal(afterUpload.error, undefined, `upload error: ${JSON.stringify(afterUpload.error)}\n${trace}`);
@@ -560,8 +560,8 @@ try {
   const notesMd = readFileSync(path.join(serverOut, outDir, 'notes.md'), 'utf8');
   assert.ok(notesMd.includes('# smoke frames') && notesMd.includes('![slide_001](slides/slide_001.png)'), notesMd.slice(0, 300));
   // 拡張側の status.json も done になり、一覧に「フォルダを開く」と「やり直す」が出る
-  await popup.reload();
-  await popup.waitForFunction(
+  await panel.reload();
+  await panel.waitForFunction(
     (id) =>
       [...document.querySelectorAll('#sessionList li')].some(
         (li) => li.textContent.includes(id) && li.textContent.includes('フォルダを開く') && li.textContent.includes('やり直す'),
@@ -569,14 +569,14 @@ try {
     '2099-01-01 00:00:01',
     { timeout: 10_000 },
   );
-  const beforeDiscard = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
-  const discardedFrames = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
+  const beforeDiscard = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  const discardedFrames = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
   assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);
   console.log(`server: transcribed via ${outDir} (${produced.length} files)`);
   console.log(`frames: ${frames.slides.length} slides saved, png ${be32(frames.head, 16)}x${be32(frames.head, 20)}`);
 
   // 接続承認: 拡張ページから POST /pair →（osascript スタブが「許可」）→ 以後はトークンなしで通る
-  const paired = await popup.evaluate(async (port) => {
+  const paired = await panel.evaluate(async (port) => {
     const reply = await chrome.runtime.sendMessage({ target: 'sw', type: 'PAIR' });
     const { config } = await chrome.storage.local.get('config');
     // 承認時に発行されたトークンで /health を呼ぶと authorized / paired になる（Origin は GET に付かない）
@@ -589,17 +589,17 @@ try {
   assert.equal(paired.health.authorized, true, JSON.stringify(paired.health));
   assert.equal(paired.health.paired, true, JSON.stringify(paired.health));
   // 押し直し: 拡張は今のトークンを添えるので、サーバーはダイアログを出さず同じトークンを返す（作り直さない。処理中の監視が切れないように）
-  const repaired = await popup.evaluate(async () => {
+  const repaired = await panel.evaluate(async () => {
     const reply = await chrome.runtime.sendMessage({ target: 'sw', type: 'PAIR' });
     const { config } = await chrome.storage.local.get('config');
     return { reply, token: config.server.token };
   });
   assert.equal(repaired.reply.ok, true, JSON.stringify(repaired));
   assert.equal(repaired.token, paired.server.token, 'pressing pair again replaced the token');
-  await popup.reload();
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
-  assert.equal(await popup.evaluate(() => document.getElementById('setup').hidden), true, 'setup view still visible after pairing');
-  assert.equal(await popup.evaluate(() => document.getElementById('actions').hidden), false, 'Start hidden after pairing');
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  assert.equal(await panel.evaluate(() => document.getElementById('setup').hidden), true, 'setup view still visible after pairing');
+  assert.equal(await panel.evaluate(() => document.getElementById('actions').hidden), false, 'Start hidden after pairing');
   console.log('pairing: approved via dialog stub through the service worker, issued token authorizes /health, pressing again keeps it');
 
   // 処理中の破棄: whisperkit を遅くしてもう 1 本送り、transcribing の途中で DISCARD する。
@@ -629,12 +629,12 @@ try {
     }, sessionId);
   }
   await off3.close();
-  const cancelUpload = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), cancelSession);
+  const cancelUpload = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), cancelSession);
   assert.equal(cancelUpload.ok, true, JSON.stringify(cancelUpload));
   const cancelTrace = [];
   let reachedTranscribing = false;
   for (let i = 0; i < 100; i++) {
-    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    const s = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     const key = `${s.state}/${s.processing?.stage ?? '-'}`;
     if (cancelTrace[cancelTrace.length - 1] !== key) cancelTrace.push(key);
     if (s.processing?.stage === 'transcribing') {
@@ -645,12 +645,12 @@ try {
   }
   assert.ok(reachedTranscribing, `never reached transcribing: ${cancelTrace.join(' → ')}`);
   // 処理中にもう 1 本「文字起こしする」→ 送信待ちに並ぶ（処理中の分は変わらない）
-  const queuedReply = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), queuedSession);
+  const queuedReply = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), queuedSession);
   assert.equal(queuedReply.ok, true, JSON.stringify(queuedReply));
   assert.deepEqual(queuedReply.state.pendingUploads, [queuedSession], JSON.stringify(queuedReply.state));
   assert.equal(queuedReply.state.processing?.sessionId, cancelSession, JSON.stringify(queuedReply.state));
   const cancelStarted = Date.now();
-  const cancelled = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), cancelSession);
+  const cancelled = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), cancelSession);
   const cancelMs = Date.now() - cancelStarted;
   assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
   assert.ok(cancelMs < 5000, `discard during processing took ${cancelMs} ms (whisperkit stub sleeps 30 s)`);
@@ -660,7 +660,7 @@ try {
   assert.equal(cancelled.state.pendingUploads, undefined, JSON.stringify(cancelled.state));
   let queuedTranscribing = false;
   for (let i = 0; i < 100; i++) {
-    const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    const s = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     if (s.processing?.sessionId === queuedSession && s.processing.stage === 'transcribing') {
       queuedTranscribing = true;
       break;
@@ -668,20 +668,20 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
   assert.ok(queuedTranscribing, 'queued session never reached transcribing');
-  const cancelled2 = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), queuedSession);
+  const cancelled2 = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), queuedSession);
   assert.equal(cancelled2.ok, true, JSON.stringify(cancelled2));
   assert.equal(cancelled2.state.processing, undefined, JSON.stringify(cancelled2.state));
   assert.notEqual(cancelled2.state.state, 'PROCESSING', JSON.stringify(cancelled2.state));
   assert.ok(!readdirSync(serverOut).some((d) => d === queuedSession || d.endsWith(`_${queuedSession}`)), `server dir still exists: ${readdirSync(serverOut)}`);
   // 遅れて届く polling 結果で処理中に戻らないこと
-  await popup.waitForTimeout(2500);
-  const afterCancel = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  await panel.waitForTimeout(2500);
+  const afterCancel = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   assert.equal(afterCancel.processing, undefined, JSON.stringify(afterCancel));
   assert.equal(afterCancel.pendingUploads, undefined, JSON.stringify(afterCancel));
-  await popup.reload();
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
-  await popup.waitForTimeout(300);
-  const listedAfterCancel = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  await panel.waitForTimeout(300);
+  const listedAfterCancel = await panel.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
   assert.ok(!listedAfterCancel.some((t) => t.includes('2099-01-01 00:00:02') || t.includes('2099-01-01 00:00:03')), `cancelled session still listed: ${listedAfterCancel}`);
   rmSync(slowMarker, { force: true });
   console.log(`cancel: discarded while transcribing in ${cancelMs} ms, queued session started and was discarded too (${cancelTrace.join(' → ')})`);
@@ -699,7 +699,7 @@ try {
   // §15.1: 一覧は全件を描いておき、11 件目からは見た目だけ畳む。録音は時間がかかるので、OPFS に空のセッションを直接置いて件数を増やす
   // （録音済み・未送信の形。処理済みにするとパネルがサーバーにフォルダの有無を聞きに行く）。ID を古くして一覧の末尾に並べる
   const FAKE_SESSIONS = 12;
-  await popup.evaluate(async (count) => {
+  await panel.evaluate(async (count) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions', { create: true });
     for (let i = 0; i < count; i++) {
       const sessionId = `20000101-0000${String(i).padStart(2, '0')}-fake`;
@@ -711,10 +711,10 @@ try {
       }
     }
   }, FAKE_SESSIONS);
-  await popup.reload();
-  await popup.waitForSelector('#moreToggle:not([hidden])', { timeout: 5_000 });
+  await panel.reload();
+  await panel.waitForSelector('#moreToggle:not([hidden])', { timeout: 5_000 });
   const listView = () =>
-    popup.evaluate(() => {
+    panel.evaluate(() => {
       const rows = [...document.querySelectorAll('#sessionList li')];
       return { total: rows.length, visible: rows.filter((li) => getComputedStyle(li).display !== 'none').length, label: document.getElementById('moreToggle').textContent };
     });
@@ -722,27 +722,27 @@ try {
   assert.ok(folded.total >= FAKE_SESSIONS, `all sessions should be in the DOM: ${JSON.stringify(folded)}`);
   assert.equal(folded.visible, 10, JSON.stringify(folded));
   assert.equal(folded.label, `すべて表示（残り ${folded.total - 10} 件）`);
-  await popup.click('#moreToggle');
+  await panel.click('#moreToggle');
   const opened = await listView();
   assert.equal(opened.visible, opened.total, JSON.stringify(opened));
   assert.equal(opened.label, '10 件だけ表示');
-  await popup.click('#moreToggle');
+  await panel.click('#moreToggle');
   assert.equal((await listView()).visible, 10);
   // 片付け（後の手順の一覧を元の件数に戻す）。10 件以下なら「すべて表示」は出ない
-  await popup.evaluate(async (count) => {
+  await panel.evaluate(async (count) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions');
     for (let i = 0; i < count; i++) await root.removeEntry(`20000101-0000${String(i).padStart(2, '0')}-fake`, { recursive: true });
   }, FAKE_SESSIONS);
   // この時点で本物のセッションは残っていないことがある（前の手順で破棄している）ので、行ではなくパネルの準備を待つ。
   // #moreToggle は HTML の時点で hidden なので、一覧を描き終えるのを待たずに見ると必ず通ってしまう。
   // renderSessions() は毎回 #hiddenToggle に件数（「（N）」）を入れるので、それを一覧を描いた印にする
-  await popup.reload();
-  await popup.waitForSelector('#startBtn', { state: 'attached' });
-  await popup.waitForFunction(() => document.getElementById('stateLabel')?.textContent !== '');
-  await popup.waitForFunction(() => document.getElementById('hiddenToggle')?.textContent.includes('（'), null, { timeout: 5_000 });
-  const left = await popup.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  await panel.waitForFunction(() => document.getElementById('stateLabel')?.textContent !== '');
+  await panel.waitForFunction(() => document.getElementById('hiddenToggle')?.textContent.includes('（'), null, { timeout: 5_000 });
+  const left = await panel.evaluate(() => [...document.querySelectorAll('#sessionList li')].map((li) => li.textContent));
   assert.ok(left.length < 10 && !left.some((t) => t.includes('fake ')), `the fake sessions should be gone: ${JSON.stringify(left)}`);
-  assert.equal(await popup.evaluate(() => document.getElementById('moreToggle').hidden), true, 'toggle shown for a short list');
+  assert.equal(await panel.evaluate(() => document.getElementById('moreToggle').hidden), true, 'toggle shown for a short list');
   console.log(`sessions: ${folded.total} rows rendered, 10 shown until "すべて表示" is pressed`);
   // api 2 の約束（#17）: vision は ready / building / idle / failed か null。抜けていたら約束違反。
   // 版の確認を先にしておく（古いサーバーでは vision が無いのが正しく、そのときは版の不一致の方を知らせる）
@@ -796,13 +796,13 @@ try {
     }, sessionId);
   }
   await off4.close();
-  const failedA = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryA);
+  const failedA = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryA);
   assert.equal(failedA.ok, false, JSON.stringify(failedA));
   assert.equal(failedA.error.code, 'SERVER_UNREACHABLE', JSON.stringify(failedA.error));
   assert.equal(failedA.error.retryable, true, JSON.stringify(failedA.error));
-  const failedB = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
+  const failedB = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
   assert.equal(failedB.ok, false, JSON.stringify(failedB));
-  const kept = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  const kept = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   // 失敗したものは最後尾に回る（1 本の失敗で後ろが待たされないように）。A → B の順で失敗したので [A, B]
   assert.deepEqual(kept.pendingUploads, [retryA, retryB], `queue was dropped: ${JSON.stringify(kept)}`);
   assert.ok(kept.warnings.includes('SERVER_UNREACHABLE'), JSON.stringify(kept.warnings));
@@ -814,16 +814,16 @@ try {
     await new Promise((r) => setTimeout(r, 200));
   }
   // 恒久的な失敗（存在しないセッション）では、その 1 本だけ落ちて他は行列に残る
-  const gone = await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: '20990101-000009-smok' }));
+  const gone = await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: '20990101-000009-smok' }));
   assert.equal(gone.ok, false, JSON.stringify(gone));
-  const afterPermanent = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+  const afterPermanent = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   assert.deepEqual(afterPermanent.pendingUploads, [retryA, retryB], `permanent failure evicted the queue: ${JSON.stringify(afterPermanent)}`);
-  const resent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
+  const resent = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), retryB);
   assert.equal(resent.ok, true, JSON.stringify(resent));
   assert.deepEqual(resent.state.pendingUploads, [retryA], JSON.stringify(resent.state));
   let drained = null;
   for (let i = 0; i < 100; i++) {
-    drained = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    drained = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     if (!drained.processing && !drained.pendingUploads) break;
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -839,7 +839,7 @@ try {
   const restartServer = async (extraArgs) => {
     // パネルは一覧を描き直すたびにサーバーへ問い合わせる（フォルダの有無、版）。その最中にサーバーを止めると
     // 接続拒否がコンソールのエラーになり、最後の「ページのエラーなし」に引っかかる。問い合わせが終わるのを待ってから止める
-    await popup.waitForLoadState('networkidle');
+    await panel.waitForLoadState('networkidle');
     localServer.kill();
     await new Promise((r) => setTimeout(r, 500));
     localServer = spawn(process.execPath, [...localServerArgs, ...extraArgs], { stdio: 'ignore' });
@@ -850,10 +850,10 @@ try {
     assert.fail('local server did not come back');
   };
   const redo = async (sessionId) => {
-    const sent = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
+    const sent = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), sessionId);
     assert.equal(sent.ok, true, JSON.stringify(sent));
     for (let i = 0; i < 100; i++) {
-      const s = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+      const s = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
       if (!s.processing && !s.pendingUploads) return s;
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -861,9 +861,9 @@ try {
   };
   // その講義の行に出ている注意書きと、ほかの行に出ている数（この講義の行に出ていることを確かめるため）
   const noteOf = async (sessionId) => {
-    await popup.reload();
-    await popup.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
-    return popup.evaluate((id) => {
+    await panel.reload();
+    await panel.waitForSelector('#sessionList li', { state: 'attached', timeout: 5_000 });
+    return panel.evaluate((id) => {
       const row = document.querySelector(`#sessionList li[data-session-id="${id}"]`);
       const all = [...document.querySelectorAll('#sessionList li .sessionNote')];
       const own = [...(row?.querySelectorAll('.sessionNote') ?? [])].map((n) => ({ text: n.textContent, title: n.title }));
@@ -883,7 +883,7 @@ try {
   // 印（status.json の notesProblem）は完了を見届けた offscreen が書く。見届けられなかったとき（途中でブラウザを閉じた、など）を
   // 再現するために OPFS の印を直接書き換え、一覧がサーバーの今の状態に合わせて直すことを見る（§11.3）
   const editStatus = (sessionId, patch) =>
-    popup.evaluate(
+    panel.evaluate(
       async ({ id, patch }) => {
         const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
         const handle = await dir.getFileHandle('status.json');
@@ -899,16 +899,16 @@ try {
       { id: sessionId, patch },
     );
   const storedFlag = (sessionId) =>
-    popup.evaluate(async (id) => {
+    panel.evaluate(async (id) => {
       const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
       const status = JSON.parse(await (await (await dir.getFileHandle('status.json')).getFile()).text());
       return { notesProblem: status.notesProblem, notesError: status.notesError };
     }, sessionId);
   /** 一覧は描いたあとでサーバーに聞き、食い違っていれば直して描き直す。その描き直しまで待つ */
   const noteAfterSync = async (sessionId, expectNotes) => {
-    await popup.reload();
-    await popup.waitForSelector(`#sessionList li[data-session-id="${sessionId}"]`, { state: 'attached', timeout: 5_000 });
-    await popup.waitForFunction(
+    await panel.reload();
+    await panel.waitForSelector(`#sessionList li[data-session-id="${sessionId}"]`, { state: 'attached', timeout: 5_000 });
+    await panel.waitForFunction(
       ({ id, n }) => document.querySelectorAll(`#sessionList li[data-session-id="${id}"] .sessionNote`).length === n,
       { id: sessionId, n: expectNotes },
       { timeout: 5_000 },
@@ -956,26 +956,26 @@ try {
   await off5.close();
   const codexSlowStub = stub('codex-slow', 'sleep 30');
   await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
-  const sentFinish = await popup.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
+  const sentFinish = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);
   assert.equal(sentFinish.ok, true, JSON.stringify(sentFinish));
   let atPolishing = null;
   for (let i = 0; i < 100; i++) {
-    atPolishing = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    atPolishing = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     if (atPolishing.processing?.stage === 'polishing') break;
     await new Promise((r) => setTimeout(r, 200));
   }
   assert.equal(atPolishing.processing?.stage, 'polishing', `did not reach polishing: ${JSON.stringify(atPolishing.processing)}`);
   const finishRow = `#sessionList li[data-session-id="${finishId}"]`;
-  await popup.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
+  await panel.waitForSelector(`${finishRow} button`, { timeout: 5_000 });
   const stopStarted = Date.now();
-  await popup.locator(`${finishRow} button`, { hasText: '中止' }).click();
-  await popup.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
-  const confirmText = await popup.evaluate(() => document.getElementById('confirmText').textContent);
+  await panel.locator(`${finishRow} button`, { hasText: '中止' }).click();
+  await panel.waitForSelector('#confirmDialog[open]', { timeout: 5_000 });
+  const confirmText = await panel.evaluate(() => document.getElementById('confirmText').textContent);
   assert.ok(confirmText.includes('ノート作成を中止します') && confirmText.includes('録音も残ります'), `unexpected confirm text: ${confirmText}`);
-  await popup.click('#confirmOk');
+  await panel.click('#confirmOk');
   let afterFinish = null;
   for (let i = 0; i < 100; i++) {
-    afterFinish = (await popup.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
+    afterFinish = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
     if (!afterFinish.processing) break;
     await new Promise((r) => setTimeout(r, 200));
   }

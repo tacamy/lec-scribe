@@ -74,7 +74,7 @@ void fetchHealth(config.server)
 $('pair').addEventListener('click', async () => {
   show('Mac の画面に確認ダイアログが出ます。「許可」を押してください…');
   try {
-    // 承認と保存は service worker が行う（ポップアップからも同じ経路）
+    // 承認と保存は service worker が行う（パネルからも同じ経路）
     await sendToBackground.pair();
     config = await loadConfig();
     renderPairStatus();
@@ -101,7 +101,7 @@ unpairBtn.addEventListener('click', async () => {
 });
 
 $('test').addEventListener('click', async () => {
-  // ほかの画面（ポップアップの接続・解除）で変わっているかもしれないので読み直す
+  // ほかの画面（パネルの接続・解除）で変わっているかもしれないので読み直す
   config = await loadConfig();
   const { server } = config;
   show('接続中…');

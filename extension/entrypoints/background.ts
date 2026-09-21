@@ -28,10 +28,9 @@ import {
  * LecScribe は動画を見ながらノートを取るための汎用の道具（SPEC §3.0）。個人の学習用で、利用するサイトの
  * 規約に従うのは使う人の責任。特定のサイト向けの処理や、サイト側の検知を回避する処理はここにも入れない。
  *
- * Service worker: owns the state machine and wires popup ⇄ offscreen ⇄ content.
- * It may be terminated at any time, so nothing here is kept in memory
- * across events; the live state is in chrome.storage.session and the
- * MediaStream lives in the offscreen document.
+ * Service worker: 状態機械を持ち、パネル ⇄ offscreen ⇄ content script をつなぐ。
+ * いつ止められてもよいように、イベントをまたいでメモリに何も残さない。今の状態は
+ * chrome.storage.session に、MediaStream は offscreen document にある。
  */
 export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -44,38 +43,124 @@ export default defineBackground(() => {
       const state = await readState();
       if (state.tabId === tabId && isActive(state)) await stop('tab closed');
     });
+    void forgetPanelTab(tabId);
   });
 
-  // 録音中のタブがページ遷移すると content script が消える。録音は続ける。
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    // 録音中のタブがページ遷移すると content script が消える。録音は続ける
     if (changeInfo.status === 'loading') void serialized(() => onTabNavigated(tabId));
+    // 別のサイトへ移ったらパネルを閉じる（許可が切れるため。SPEC D-12）
+    if (changeInfo.status === 'complete') void closePanelIfGrantLost(tabId);
   });
 
   chrome.downloads.onChanged.addListener((delta) => {
     if (delta.state) void serialized(() => onDownloadSettled());
   });
 
-  // The icon opens the popup (that click grants activeTab for the tab, which
-  // getMediaStreamId needs; an open side panel would not). Start in the popup
-  // opens the side panel for monitoring. Reset the persisted behaviour in
-  // case an earlier build set it to open the panel directly.
+  // アイコンのクリックは自前で受けて（setUpPanel の action.onClicked）、そのタブにだけパネルを開く。
+  // Chrome に任せる openPanelOnActionClick は使わない（全タブ共通のパネルが開いてしまう）。
+  // 前の版が設定を残しているかもしれないので、毎回明示的に切る
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
-  // サイドパネルは録音を始めたタブにだけ出す（Start 時にそのタブ向けに有効化する）。
-  // 全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
+  // サイドパネルはアイコンを押したタブにだけ出す。全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
   void chrome.sidePanel.setOptions({ enabled: false }).catch(() => undefined);
+
+  setUpPanel();
 
   void serialized(reconcile);
 });
 
+/** パネルを開いているタブと、そのとき見ていたページのオリジン。許可が切れたときに閉じる対象 */
+const PANEL_TABS_KEY = 'panelTabs';
+type PanelTabs = Record<number, string>;
+
+async function panelTabs(): Promise<PanelTabs> {
+  const stored = (await chrome.storage.session.get(PANEL_TABS_KEY))[PANEL_TABS_KEY];
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as PanelTabs) : {};
+}
+
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Every handler reads, mutates and writes the stored state; running them
- * one at a time keeps concurrent events (three downloads finishing at once,
- * a tab closing during Stop) from clobbering each other's writes.
+ * アイコンのクリックで、そのタブにサイドパネルを開く（SPEC D-12）。
+ * クリック（action.onClicked）は activeTab が出る正規のきっかけで、tabCapture の開始にはこの許可が要る。
+ * service worker はいつ止まってもよいので、開いたタブは chrome.storage.session に置く
+ */
+function setUpPanel(): void {
+  chrome.action.onClicked.addListener((tab) => {
+    if (tab.id === undefined) return;
+    const tabId = tab.id;
+    // open はユーザー操作の直後でないと呼べないので、setOptions は待たずに続ける。
+    // 全体のパネルは無効のままなので、パネルはこのタブにだけ出る。もう開いているときに押すと、許可だけが新しくなる。
+    // ここが唯一の入り口なので、失敗したら黙って何も起きないのではなくログに残す（Chrome の再起動直後などに起こりうる）
+    const warn = (e: unknown) => console.warn('[LecScribe] サイドパネルを開けませんでした', e);
+    void chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }).catch(warn);
+    void chrome.sidePanel.open({ tabId }).catch(warn);
+    // クリックの時点では activeTab があるので URL が読める。移動先が同じサイトかを後で見るために覚えておく
+    void panelSerialized(async () => {
+      const tabs = await panelTabs();
+      await chrome.storage.session.set({ [PANEL_TABS_KEY]: { ...tabs, [tabId]: originOf(tab.url) ?? '' } });
+    });
+  });
+}
+
+/**
+ * 別のサイトへ移動すると activeTab の許可が切れ、そのパネルから Start しても失敗する。何もしていないときに限って
+ * パネルを閉じ、次はアイコンから開き直してもらう（許可が新しくなる）。
+ *
+ * 許可が残っているのは同じオリジンの中を移動している間だけなので、パネルを開いたときのオリジンと比べる。
+ * URL が読めるかどうかでは判定できない（127.0.0.1 は host_permissions で常に読めるため）
+ */
+async function closePanelIfGrantLost(tabId: number): Promise<void> {
+  await panelSerialized(async () => {
+    const tabs = await panelTabs();
+    const opened = tabs[tabId];
+    if (opened === undefined) return;
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (tab && opened !== '' && originOf(tab.url) === opened) return;
+    const state = await readState();
+    // 録音中・処理中・送信待ち・書き出し中は閉じない（録音は移動しても続くし、進み具合を見ているかもしれない）
+    if (isActive(state) || state.processing || state.exporting || state.pendingUploads?.length) return;
+    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => undefined);
+    const { [tabId]: _closed, ...rest } = tabs;
+    await chrome.storage.session.set({ [PANEL_TABS_KEY]: rest });
+  });
+}
+
+async function forgetPanelTab(tabId: number): Promise<void> {
+  await panelSerialized(async () => {
+    const tabs = await panelTabs();
+    if (!(tabId in tabs)) return;
+    const { [tabId]: _closed, ...rest } = tabs;
+    await chrome.storage.session.set({ [PANEL_TABS_KEY]: rest });
+  });
+}
+
+/**
+ * どのハンドラも、保存された状態を読んで書き換えて書き戻す。1 つずつ流すことで、同時に起きたイベント
+ * （3 つのダウンロードが同時に終わる、Stop の最中にタブが閉じる）が互いの書き込みを潰さないようにする。
  */
 let queue: Promise<unknown> = Promise.resolve();
 function serialized<T>(task: () => Promise<T>): Promise<T> {
   const next = queue.then(task, task);
   queue = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * パネルの出し入れ用の行列。状態の更新（serialized）とは分ける。あちらには数分かかる送信も並ぶので、
+ * 同じ行列に入れるとタブを移動してからパネルが閉じるまでが遅れる
+ */
+let panelQueue: Promise<unknown> = Promise.resolve();
+function panelSerialized<T>(task: () => Promise<T>): Promise<T> {
+  const next = panelQueue.then(task, task);
+  panelQueue = next.catch(() => undefined);
   return next;
 }
 
@@ -206,8 +291,8 @@ async function start(tabId: number): Promise<SessionState> {
     const probe = await runProbe(tabId).catch(() => undefined);
 
     await ensureOffscreenDocument();
-    // Requires the extension to have been invoked on this tab (activeTab is
-    // granted when the popup opens on it). The id is single-use and short-lived.
+    // このタブで拡張が呼ばれていること（アイコンのクリックで activeTab が出ていること）が要る。
+    // 取れる id は 1 回きりで、すぐ古くなる
     let streamId: string;
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
@@ -648,7 +733,7 @@ async function discardSession(sessionId: string, options: { output?: 'keep' | 'd
 
 /**
  * ローカルサーバーと接続する。サーバーが Mac のダイアログで承認を求め、「許可」なら拡張専用のトークンを返すので保存する。
- * ポップアップはダイアログにフォーカスを取られて閉じるため、fetch はここ（service worker）で行う。
+ * 承認のダイアログにフォーカスを取られても止まらないように、fetch はここ（service worker）で行う。
  * 今のトークンを添える。サーバーがまだ承認しているトークンなら、ダイアログを出さずに接続済みと返る（押し直しで切れない）
  */
 async function pair(): Promise<{ state: SessionState; paired: boolean }> {

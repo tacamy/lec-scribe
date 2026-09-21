@@ -17,9 +17,8 @@ import {
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-/** The same page is the action popup (`?mode=popup`) and the side panel. */
-const isPopup = new URLSearchParams(location.search).get('mode') === 'popup';
-if (isPopup) document.body.classList.add('popup');
+// このページはサイドパネル専用。アイコンのクリックで service worker がそのタブに開く（SPEC D-12）。
+// 2026-09-21 まではポップアップ（?mode=popup）も兼ねていた
 const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
@@ -58,7 +57,7 @@ const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSect
 
 /**
  * 一覧の行のタイトルは幅の都合で省略されることがあるので、省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）と全文を出す。
- * 1 つの要素を使い回して行の上に重ねる（ポップアップでは一覧の中がスクロールするので、行の中に置くと切れる）
+ * 1 つの要素を使い回して行の上に重ねる（行の中に置くと、幅の狭いパネルでは切れてしまう）
  */
 const sessionTip = document.createElement('div');
 sessionTip.className = 'sessionTip';
@@ -97,8 +96,7 @@ function hideSessionTip(soon = true) {
 }
 sessionTip.addEventListener('mouseenter', () => window.clearTimeout(tipHideTimer));
 sessionTip.addEventListener('mouseleave', () => hideSessionTip());
-sessionList.addEventListener('scroll', () => hideSessionTip(false));
-// サイドパネルでは一覧ではなくパネル全体が動くので、そちらのスクロールでも閉じる（位置がずれたまま残らないように）
+// 一覧の中ではなくパネル全体が動くので、そのスクロールで閉じる（位置がずれたまま残らないように）
 window.addEventListener('scroll', () => hideSessionTip(false), true);
 window.addEventListener('resize', () => hideSessionTip(false));
 document.addEventListener('keydown', (e) => {
@@ -245,10 +243,10 @@ function render(state: SessionState) {
   serverValue.textContent = describeServer(state);
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
-  // ポップアップで Start 前に調べた動画は、状態が変わって描き直しても消さない。
-  // 前の講義を文字起こししている間に次の講義のポップアップを開くと、処理の段階が進むたびにここを通る
+  // Start 前に調べた動画は、状態が変わって描き直しても消さない。
+  // 前の講義を文字起こししている間に次の講義のページでパネルを開くと、処理の段階が進むたびにここを通る
   if (active) lastProbe = null;
-  else if (isPopup && lastProbe) applyProbe(lastProbe);
+  else if (lastProbe) applyProbe(lastProbe);
 
   if (state.state === 'CAPTURING') {
     footer.textContent = state.processing
@@ -263,10 +261,10 @@ function render(state: SessionState) {
     footer.textContent = '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
-  } else if (isPopup) {
-    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
   } else {
-    footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
+    // 許可が切れて Start できないときの案内は、失敗したときのエラー文（アイコンを押し直す）が受け持つ。
+    // 別のサイトへ移動したらパネルは閉じるので、ここに常に出しておく必要はない
+    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。';
   }
 
   if (state.state === 'CAPTURING') startStatsLoop();
@@ -387,29 +385,76 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') void checkServerVersion();
 });
 
-/** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
-/** ポップアップで Start 前に調べた動画。render() のたびに描き直すために覚えておき、Start したら捨てる */
+/** Start 前に調べた動画。render() のたびに描き直すために覚えておき、Start したら捨てる */
 let lastProbe: ProbeSummary | null = null;
 const PROBE_WARNINGS: WarningCode[] = ['NO_VIDEO', 'CROSS_ORIGIN_IFRAME'];
+/** ページの移動ごとに増やす。前のページのために始めた調べ物が、移動後に結果を書き込むのを防ぐ */
+let navigation = 0;
 
-async function showProbe() {
+/**
+ * このパネルが付いているタブ。パネルはタブごとに開いているので、パネルのいるウィンドウの前面のタブがそれにあたる。
+ * lastFocusedWindow では、ほかのウィンドウを操作している間に別のタブを指してしまう
+ */
+async function panelTab(): Promise<chrome.tabs.Tab | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+/** Start 前に、パネルのタブの動画を調べて表示する（activeTab があるうちだけ調べられる） */
+async function showProbe(generation = navigation): Promise<ProbeSummary | null> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab?.id) return;
+    const tab = await panelTab();
+    if (!tab?.id) return null;
     const { probe } = await sendToBackground.probe(tab.id);
-    if (isActive(current)) return;
+    // 調べている間にページが移動していたら、古いページの結果は捨てる（render() が拾って残り続けるため）
+    if (isActive(current) || generation !== navigation) return null;
     lastProbe = probe;
     applyProbe(probe);
+    return probe;
   } catch {
-    // 内部ページなど、調べられないタブでは何も出さない
+    // 内部ページなど、調べられないタブでは何も出さない。前のページの結果が残っていれば消す
+    // （パネルはページの移動をまたいで開いたままなので、古い表示が残りうる）
+    if (!isActive(current) && generation === navigation) clearProbe();
+    return null;
   }
+}
+
+/**
+ * 動画プレイヤーは、ページの読み込みが終わったあとで <video> を差し込むことが多い。読み込み完了の時点で 1 回
+ * 調べるだけだと「動画が見つかりません」のままになるので、見つかるまで間をあけて何度か調べ直す。
+ * 数字は移動からの経過時間（ミリ秒）で、調べるのにかかった時間は差し引く
+ */
+const PROBE_AT_MS = [0, 1_500, 4_000, 8_000, 15_000];
+
+function probeAfterNavigation(generation: number, attempt = 0, since = Date.now()): void {
+  window.setTimeout(
+    () => {
+      if (generation !== navigation || isActive(current)) return;
+      void showProbe(generation).then((probe) => {
+        if (probe?.chosen || attempt + 1 >= PROBE_AT_MS.length) return;
+        probeAfterNavigation(generation, attempt + 1, since);
+      });
+    },
+    Math.max(0, (PROBE_AT_MS[attempt] ?? 0) - (Date.now() - since)),
+  );
+}
+
+/** Start 前の動画の表示と、その警告を消す（ページを移動したとき、調べられなかったとき） */
+function clearProbe() {
+  lastProbe = null;
+  videoRow.hidden = true;
+  renderWarnings(lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)));
 }
 
 /** Start 前の確認用に、動画が見つかったときだけ Video 行を出す（見つからなければ警告で伝える） */
 function applyProbe(probe: ProbeSummary) {
   videoValue.textContent = describeProbe(probe);
   videoRow.hidden = !probe.chosen;
-  if (probe.chosen) return;
+  if (probe.chosen) {
+    // 前のページで出した「動画が見つかりません」を残さない（パネルは移動をまたいで開いたままなので残りうる）
+    renderWarnings(lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)));
+    return;
+  }
   const codes: WarningCode[] = ['NO_VIDEO'];
   if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
   // 状態から出している警告（接続できない等）は残し、動画の警告だけ入れ替える
@@ -474,7 +519,7 @@ const SESSIONS_SHOWN = 10;
 let showAllSessions = false;
 /**
  * 削除・中止の確認ダイアログ（HTML の <dialog>）。
- * ブラウザの confirm() はポップアップ・サイドパネルでは表示されずに閉じられることがあるので使わない
+ * ブラウザの confirm() はサイドパネルでは表示されずに閉じられることがあるので使わない
  */
 const confirmDialog = $<HTMLDialogElement>('confirmDialog');
 const confirmText = $('confirmText');
@@ -723,20 +768,9 @@ async function act(run: () => Promise<{ state: SessionState }>) {
 startBtn.addEventListener('click', () => {
   startBtn.disabled = true;
   void act(async () => {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = await panelTab();
     if (!tab?.id) throw new Error('アクティブなタブがありません。');
-    if (!isPopup) return sendToBackground.start(tab.id);
-    // ポップアップはサイドパネルが開いた瞬間にフォーカスを失って閉じる。
-    // 先に録音開始を投げておけば、ポップアップが消えても service worker 側で処理が続く。
-    const started = sendToBackground.start(tab.id);
-    started.catch(() => undefined);
-    // このタブにだけパネルを出す（全体のパネルは service worker が無効にしている）。
-    // クリック直後のユーザー操作が有効なうちに open を呼びたいので setOptions は待たずに続ける
-    void chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
-    await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
-    const result = await started;
-    window.close();
-    return result;
+    return sendToBackground.start(tab.id);
   });
 });
 
@@ -798,9 +832,33 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 onStateChange(render);
+
+// パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す。
+// 別のサイトへ移動して許可が切れていれば、調べられず何も出ない（何もしていなければ service worker がパネルを閉じる）
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // 読み込みの開始・完了と、URL だけが変わる移動（ページを読み込み直さないサイト）を拾う
+  if (changeInfo.status === undefined && changeInfo.url === undefined) return;
+  if (isActive(current)) return;
+  void panelTab().then((tab) => {
+    if (tab?.id !== tabId) return;
+    if (changeInfo.status === 'loading') {
+      // 移動が始まったら、前のページの動画の表示は消しておく
+      navigation++;
+      clearProbe();
+      return;
+    }
+    probeAfterNavigation(++navigation);
+  });
+});
+// ほかのタブやウィンドウから戻ってきたときも調べ直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !isActive(current)) probeAfterNavigation(++navigation);
+});
+
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
-  if (isPopup && !isActive(state)) void showProbe();
+  // 開いた直後も、遅れて差し込まれるプレイヤーを拾えるように調べ直しの仕組みに乗せる
+  if (!isActive(state)) probeAfterNavigation(navigation);
   // 版の確認は描画を待たせない（3 秒かかることがある）
   void checkServerVersion();
 });
