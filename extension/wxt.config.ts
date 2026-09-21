@@ -27,11 +27,8 @@ export default defineConfig({
     // ローカルサーバー（Phase 7）向け。fixture ページ（127.0.0.1:8787）への
     // 注入テストにも使う。動画サイトへの常時アクセスは要求しない（activeTab のみ）。
     host_permissions: ['http://127.0.0.1/*'],
-    // The same page serves as the action popup and as the side panel. The
-    // icon click that opens the popup is what grants activeTab for the tab,
-    // which chrome.tabCapture.getMediaStreamId requires; Start in the popup
-    // then opens the side panel, which stays open while the page is used.
-    // ポップアップは持たない。アイコンのクリック（action.onClicked）でそのタブにサイドパネルを開く（SPEC D-12）
+    // ポップアップは持たない。アイコンのクリック（action.onClicked）でそのタブにサイドパネルを開く（SPEC D-12）。
+    // このクリックがそのタブの activeTab を与え、chrome.tabCapture.getMediaStreamId はその許可を必要とする
     action: { default_title: 'LecScribe' },
     minimum_chrome_version: '116',
   },

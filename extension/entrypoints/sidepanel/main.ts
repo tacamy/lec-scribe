@@ -57,7 +57,7 @@ const mainSections = [$('status'), $('rows'), $('actions'), footer, sessionsSect
 
 /**
  * 一覧の行のタイトルは幅の都合で省略されることがあるので、省略されているときだけ、タイトルに乗せる（かボタンに Tab で入る）と全文を出す。
- * 1 つの要素を使い回して行の上に重ねる（ポップアップでは一覧の中がスクロールするので、行の中に置くと切れる）
+ * 1 つの要素を使い回して行の上に重ねる（行の中に置くと、幅の狭いパネルでは切れてしまう）
  */
 const sessionTip = document.createElement('div');
 sessionTip.className = 'sessionTip';
@@ -96,8 +96,7 @@ function hideSessionTip(soon = true) {
 }
 sessionTip.addEventListener('mouseenter', () => window.clearTimeout(tipHideTimer));
 sessionTip.addEventListener('mouseleave', () => hideSessionTip());
-sessionList.addEventListener('scroll', () => hideSessionTip(false));
-// サイドパネルでは一覧ではなくパネル全体が動くので、そちらのスクロールでも閉じる（位置がずれたまま残らないように）
+// 一覧の中ではなくパネル全体が動くので、そのスクロールで閉じる（位置がずれたまま残らないように）
 window.addEventListener('scroll', () => hideSessionTip(false), true);
 window.addEventListener('resize', () => hideSessionTip(false));
 document.addEventListener('keydown', (e) => {
@@ -386,26 +385,58 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') void checkServerVersion();
 });
 
-/** Start 前に現在のタブの動画を調べて表示する（ポップアップのみ。activeTab があるため） */
-/** ポップアップで Start 前に調べた動画。render() のたびに描き直すために覚えておき、Start したら捨てる */
+/** Start 前に調べた動画。render() のたびに描き直すために覚えておき、Start したら捨てる */
 let lastProbe: ProbeSummary | null = null;
 const PROBE_WARNINGS: WarningCode[] = ['NO_VIDEO', 'CROSS_ORIGIN_IFRAME'];
+/** ページの移動ごとに増やす。前のページのために始めた調べ物が、移動後に結果を書き込むのを防ぐ */
+let navigation = 0;
 
-async function showProbe(): Promise<ProbeSummary | null> {
+/**
+ * このパネルが付いているタブ。パネルはタブごとに開いているので、パネルのいるウィンドウの前面のタブがそれにあたる。
+ * lastFocusedWindow では、ほかのウィンドウを操作している間に別のタブを指してしまう
+ */
+async function panelTab(): Promise<chrome.tabs.Tab | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+/** Start 前に、パネルのタブの動画を調べて表示する（activeTab があるうちだけ調べられる） */
+async function showProbe(generation = navigation): Promise<ProbeSummary | null> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = await panelTab();
     if (!tab?.id) return null;
     const { probe } = await sendToBackground.probe(tab.id);
-    if (isActive(current)) return null;
+    // 調べている間にページが移動していたら、古いページの結果は捨てる（render() が拾って残り続けるため）
+    if (isActive(current) || generation !== navigation) return null;
     lastProbe = probe;
     applyProbe(probe);
     return probe;
   } catch {
     // 内部ページなど、調べられないタブでは何も出さない。前のページの結果が残っていれば消す
     // （パネルはページの移動をまたいで開いたままなので、古い表示が残りうる）
-    if (!isActive(current)) clearProbe();
+    if (!isActive(current) && generation === navigation) clearProbe();
     return null;
   }
+}
+
+/**
+ * 動画プレイヤーは、ページの読み込みが終わったあとで <video> を差し込むことが多い。読み込み完了の時点で 1 回
+ * 調べるだけだと「動画が見つかりません」のままになるので、見つかるまで間をあけて何度か調べ直す。
+ * 数字は移動からの経過時間（ミリ秒）で、調べるのにかかった時間は差し引く
+ */
+const PROBE_AT_MS = [0, 1_500, 4_000, 8_000, 15_000];
+
+function probeAfterNavigation(generation: number, attempt = 0, since = Date.now()): void {
+  window.setTimeout(
+    () => {
+      if (generation !== navigation || isActive(current)) return;
+      void showProbe(generation).then((probe) => {
+        if (probe?.chosen || attempt + 1 >= PROBE_AT_MS.length) return;
+        probeAfterNavigation(generation, attempt + 1, since);
+      });
+    },
+    Math.max(0, (PROBE_AT_MS[attempt] ?? 0) - (Date.now() - since)),
+  );
 }
 
 /** Start 前の動画の表示と、その警告を消す（ページを移動したとき、調べられなかったとき） */
@@ -420,7 +451,7 @@ function applyProbe(probe: ProbeSummary) {
   videoValue.textContent = describeProbe(probe);
   videoRow.hidden = !probe.chosen;
   if (probe.chosen) {
-    // 前のページで出した「動画が見つかりません」を残さない（ポップアップは毎回開き直すので要らなかった）
+    // 前のページで出した「動画が見つかりません」を残さない（パネルは移動をまたいで開いたままなので残りうる）
     renderWarnings(lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)));
     return;
   }
@@ -488,7 +519,7 @@ const SESSIONS_SHOWN = 10;
 let showAllSessions = false;
 /**
  * 削除・中止の確認ダイアログ（HTML の <dialog>）。
- * ブラウザの confirm() はポップアップ・サイドパネルでは表示されずに閉じられることがあるので使わない
+ * ブラウザの confirm() はサイドパネルでは表示されずに閉じられることがあるので使わない
  */
 const confirmDialog = $<HTMLDialogElement>('confirmDialog');
 const confirmText = $('confirmText');
@@ -737,7 +768,7 @@ async function act(run: () => Promise<{ state: SessionState }>) {
 startBtn.addEventListener('click', () => {
   startBtn.disabled = true;
   void act(async () => {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = await panelTab();
     if (!tab?.id) throw new Error('アクティブなタブがありません。');
     return sendToBackground.start(tab.id);
   });
@@ -804,44 +835,30 @@ onStateChange(render);
 
 // パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す。
 // 別のサイトへ移動して許可が切れていれば、調べられず何も出ない（何もしていなければ service worker がパネルを閉じる）
-{
-  /** ページの移動ごとに増やす。前の移動のために予約した調べ直しを、次の移動が始まったら捨てる */
-  let navigation = 0;
-  // 動画プレイヤーは、ページの読み込みが終わったあとで <video> を差し込むことが多い。読み込み完了の時点で 1 回調べるだけだと
-  // 「動画が見つかりません」のままになるので、見つかるまで間をあけて何度か調べ直す
-  const RETRY_AFTER_MS = [0, 1_500, 4_000, 8_000, 15_000];
-  const probeAfterNavigation = (generation: number, attempt = 0) => {
-    window.setTimeout(() => {
-      if (generation !== navigation || isActive(current)) return;
-      void showProbe().then((probe) => {
-        if (probe?.chosen || attempt + 1 >= RETRY_AFTER_MS.length) return;
-        probeAfterNavigation(generation, attempt + 1);
-      });
-    }, RETRY_AFTER_MS[attempt]);
-  };
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    // 読み込みの開始・完了と、URL だけが変わる移動（ページを読み込み直さないサイト）を拾う
-    if (changeInfo.status === undefined && changeInfo.url === undefined) return;
-    if (isActive(current)) return;
-    void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
-      if (tab?.id !== tabId) return;
-      if (changeInfo.status === 'loading') {
-        // 移動が始まったら、前のページの動画の表示は消しておく
-        navigation++;
-        clearProbe();
-        return;
-      }
-      probeAfterNavigation(++navigation);
-    });
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // 読み込みの開始・完了と、URL だけが変わる移動（ページを読み込み直さないサイト）を拾う
+  if (changeInfo.status === undefined && changeInfo.url === undefined) return;
+  if (isActive(current)) return;
+  void panelTab().then((tab) => {
+    if (tab?.id !== tabId) return;
+    if (changeInfo.status === 'loading') {
+      // 移動が始まったら、前のページの動画の表示は消しておく
+      navigation++;
+      clearProbe();
+      return;
+    }
+    probeAfterNavigation(++navigation);
   });
-  // ほかのタブやウィンドウから戻ってきたときも調べ直す
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !isActive(current)) probeAfterNavigation(++navigation);
-  });
-}
+});
+// ほかのタブやウィンドウから戻ってきたときも調べ直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !isActive(current)) probeAfterNavigation(++navigation);
+});
+
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
-  if (!isActive(state)) void showProbe();
+  // 開いた直後も、遅れて差し込まれるプレイヤーを拾えるように調べ直しの仕組みに乗せる
+  if (!isActive(state)) probeAfterNavigation(navigation);
   // 版の確認は描画を待たせない（3 秒かかることがある）
   void checkServerVersion();
 });
