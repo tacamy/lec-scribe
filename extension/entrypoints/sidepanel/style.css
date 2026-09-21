@@ -32,7 +32,15 @@ body {
 .panel { padding: 14px 16px 12px; display: grid; gap: 12px; max-width: 480px; min-width: 0; overflow-x: hidden; }
 .panel > * { min-width: 0; }
 body.popup { width: 360px; }
-.header { display: flex; align-items: baseline; justify-content: space-between; }
+.header { display: flex; align-items: center; justify-content: space-between; }
+.headerActions { display: flex; align-items: center; gap: 2px; }
+/* アイコンだけのボタン（設定、サイドパネルで開く）。線画のアイコンは文字色に合わせる */
+.iconBtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.iconBtn:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.iconBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.iconBtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* 歯車の歯は短く太く（細い線のままだと舵輪や太陽に見える） */
+.iconBtn svg .teeth { stroke-width: 3.4; stroke-linecap: butt; }
 h1 { margin: 0; font-size: 16px; font-weight: 600; }
 .phase { font-size: 11px; color: var(--muted); }
 button.link { padding: 2px 6px; border: 0; background: transparent; color: var(--accent); font-weight: 500; font-size: 12px; }

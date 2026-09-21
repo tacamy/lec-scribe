@@ -792,6 +792,26 @@ snapBtn.addEventListener('click', async () => {
 
 $('optionsBtn').addEventListener('click', () => void chrome.runtime.openOptionsPage());
 
+// ポップアップから、自分のタイミングでサイドパネルへ切り替える（一覧を広く見たいとき。§15.1）。
+// 状態の正本は chrome.storage.session と offscreen にあるので、録音中・処理中に切り替えても何も止まらない。
+// パネルは Start のときと同じく、いま見ているタブにだけ出す（全体のパネルは service worker が無効にしている）
+const openPanelBtn = $<HTMLButtonElement>('openPanelBtn');
+openPanelBtn.hidden = !isPopup;
+openPanelBtn.addEventListener('click', () => {
+  void (async () => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id) return showMessage('アクティブなタブがありません。');
+    // クリック直後のユーザー操作が有効なうちに open を呼びたいので、setOptions は待たずに続ける（Start と同じ）
+    void chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
+    try {
+      await chrome.sidePanel.open({ tabId: tab.id });
+      window.close(); // パネルにフォーカスが移ると自分で閉じるが、念のため
+    } catch (e) {
+      showMessage(`サイドパネルを開けませんでした: ${toErrorInfo(e).message}`);
+    }
+  })();
+});
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes['config']) void refreshConfig().then(() => render(current)).then(checkServerVersion);
 });

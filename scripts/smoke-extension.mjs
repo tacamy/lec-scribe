@@ -268,6 +268,19 @@ try {
   await popup2.goto(`chrome-extension://${extensionId}/sidepanel.html?mode=popup`);
   await popup2.waitForFunction(() => /再生中|一時停止|待機中/.test(document.getElementById('videoValue')?.textContent ?? ''), null, { timeout: 10_000 });
   const probeText = await popup2.evaluate(() => document.getElementById('videoValue').textContent);
+  // §15.1: 上部のボタンはアイコンだけなので、名前を aria-label と title で持つ。「サイドパネルで開く」はポップアップにだけ出す
+  // （実際にパネルが開くかは headless では確かめられないので、Mac 実機の CHECKS AS で見る）
+  const headerButtons = (page) =>
+    page.evaluate(() =>
+      Object.fromEntries(
+        [...document.querySelectorAll('.headerActions .iconBtn')].map((b) => [b.id, { shown: getComputedStyle(b).display !== 'none', label: b.getAttribute('aria-label'), title: b.title, text: b.textContent.trim() }]),
+      ),
+    );
+  assert.deepEqual(await headerButtons(popup2), {
+    openPanelBtn: { shown: true, label: 'サイドパネルで開く', title: 'サイドパネルで開く', text: '' },
+    optionsBtn: { shown: true, label: '設定', title: '設定', text: '' },
+  });
+  assert.equal((await headerButtons(popup)).openPanelBtn.shown, false, 'the side panel itself must not offer "open in side panel"');
   // 設定に印を付けて外す（値が変わらないと onChanged は来ない）。どちらも render() を通る
   await popup2.evaluate(async () => {
     const { config } = await chrome.storage.local.get('config');
