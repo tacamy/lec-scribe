@@ -272,7 +272,9 @@ function render(state: SessionState) {
   } else if (isPopup) {
     footer.textContent = '動画ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
   } else if (PANEL_FIRST) {
-    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。Start できないときは、ツールバーの LecScribe アイコンをもう一度押してください。';
+    // 許可が切れて Start できないときの案内は、失敗したときのエラー文（アイコンを押し直す）が受け持つ。
+    // 別のサイトへ移動したらパネルは閉じるので、ここに常に出しておく必要はない
+    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。';
   } else {
     footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
   }
