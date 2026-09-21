@@ -121,9 +121,30 @@ export function probeVideos(): ProbeResult {
     };
   };
 
+  // 別ドメインの iframe のうち、動画プレイヤーが入っていそうなものだけを数える。見えない・ごく小さい iframe は広告や計測の
+  // ためのもので（幅と高さが 0 で hidden の同期用 iframe など）、数えると動画のないページで的外れな警告が出る（2026-09-21）。
+  // 160×90 は、埋め込みの動画プレイヤーとして見かける最小の大きさより小さい
+  const MIN_PLAYER_WIDTH = 160;
+  const MIN_PLAYER_HEIGHT = 90;
+  // まだ描画されていない document（背景のタブなど）では rect がすべて 0 になる。そこで大きさを見ると本物の
+  // プレイヤーまで落ちるので、その場合は大きさの判定をしない（<video> で videoWidth を予備に使うのと同じ理由）
+  const laidOut = document.documentElement.getBoundingClientRect().height > 0;
+  // 幅・高さは rect → width / height 属性の順に見る。どちらからも分からないときは、描画されている document なら
+  // 「0（＝隠れている）」、描画されていない document なら「判定しない」とする
+  const sideOf = (fromRect: number, attr: string | null): number => {
+    if (fromRect > 0) return fromRect;
+    const fromAttr = Number(attr);
+    if (attr !== null && attr.trim() !== '' && Number.isFinite(fromAttr)) return fromAttr;
+    return laidOut ? 0 : Number.POSITIVE_INFINITY;
+  };
   const crossOriginIframes: string[] = [];
   for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
     try {
+      const rect = iframe.getBoundingClientRect();
+      const style = getComputedStyle(iframe);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      if (sideOf(rect.width, iframe.getAttribute('width')) < MIN_PLAYER_WIDTH) continue;
+      if (sideOf(rect.height, iframe.getAttribute('height')) < MIN_PLAYER_HEIGHT) continue;
       const origin = new URL(iframe.src, location.href).origin;
       if (origin !== location.origin && origin !== 'null' && !crossOriginIframes.includes(origin)) {
         crossOriginIframes.push(origin);
