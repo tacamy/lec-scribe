@@ -258,14 +258,14 @@ try {
   assert.deepEqual(probed.probe.crossOriginIframes, []);
   console.log(`probe: ${chosen.player} ${chosen.videoWidth}x${chosen.videoHeight} via ${chosen.selector}`);
 
-  // ポップアップ（?mode=popup）は Start 前に前面のタブの動画を調べて Video 行に出す。
+  // パネルは Start 前に前面のタブの動画を調べて Video 行に出す。
   // 設定や状態が変わって render() が走っても、その表示が消えないこと（前の講義を文字起こししている間に
-  // 次の講義のポップアップを開くと、処理の段階が進むたびに render() が走る）。
-  // showProbe は「いま前面のタブ」を調べるので、講義のタブを前面にしてからポップアップを読み込む（navigate はタブを前面にしない）
+  // 次の講義のページでパネルを開くと、処理の段階が進むたびに render() が走る）。
+  // showProbe は「いま前面のタブ」を調べるので、講義のタブを前面にしてからパネルのページを読み込む（navigate はタブを前面にしない）
   const popup2 = await context.newPage();
   popup2.on('pageerror', (e) => errors.push(String(e)));
   await lecture.bringToFront();
-  await popup2.goto(`chrome-extension://${extensionId}/sidepanel.html?mode=popup`);
+  await popup2.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await popup2.waitForFunction(() => /再生中|一時停止|待機中/.test(document.getElementById('videoValue')?.textContent ?? ''), null, { timeout: 10_000 });
   const probeText = await popup2.evaluate(() => document.getElementById('videoValue').textContent);
   // 設定に印を付けて外す（値が変わらないと onChanged は来ない）。どちらも render() を通る
@@ -282,7 +282,7 @@ try {
   }));
   assert.equal(afterRender.text, probeText, `popup probe was wiped by a re-render: ${JSON.stringify(afterRender)}`);
   assert.equal(afterRender.hidden, false, 'Video row hidden after re-render');
-  console.log(`popup: probe survives re-render (${probeText})`);
+  console.log(`panel: probe survives re-render (${probeText})`);
   await popup2.close();
 
   // Phase 4 のフレーム保存には offscreen 側でキャプチャ中のセッションが要る。

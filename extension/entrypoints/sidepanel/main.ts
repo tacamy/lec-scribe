@@ -2,7 +2,6 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
-import { PANEL_FIRST } from '../../src/experiment';
 import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
 import { listSessions, setNotesProblem, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
@@ -18,14 +17,8 @@ import {
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-/** The same page is the action popup (`?mode=popup`) and the side panel. */
-const isPopup = new URLSearchParams(location.search).get('mode') === 'popup';
-if (isPopup) document.body.classList.add('popup');
-/**
- * Start 前に、いまのタブの動画を調べて見せるか。これまではポップアップだけ（アイコンを押した直後で activeTab がある）。
- * 実験 PANEL_FIRST ではアイコンがパネルを直接開くので、パネルも開いた直後は同じ条件になる
- */
-const probesBeforeStart = isPopup || PANEL_FIRST;
+// このページはサイドパネル専用。アイコンのクリックで service worker がそのタブに開く（SPEC D-12）。
+// 2026-09-21 まではポップアップ（?mode=popup）も兼ねていた
 const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
@@ -251,10 +244,10 @@ function render(state: SessionState) {
   serverValue.textContent = describeServer(state);
   syncProcessingClock(state);
   renderWarnings(active ? state.warnings : state.warnings.filter((w) => w === 'SERVER_UNREACHABLE'));
-  // ポップアップで Start 前に調べた動画は、状態が変わって描き直しても消さない。
-  // 前の講義を文字起こししている間に次の講義のポップアップを開くと、処理の段階が進むたびにここを通る
+  // Start 前に調べた動画は、状態が変わって描き直しても消さない。
+  // 前の講義を文字起こししている間に次の講義のページでパネルを開くと、処理の段階が進むたびにここを通る
   if (active) lastProbe = null;
-  else if (probesBeforeStart && lastProbe) applyProbe(lastProbe);
+  else if (lastProbe) applyProbe(lastProbe);
 
   if (state.state === 'CAPTURING') {
     footer.textContent = state.processing
@@ -269,14 +262,10 @@ function render(state: SessionState) {
     footer.textContent = '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。';
   } else if (state.exporting) {
     footer.textContent = 'ダウンロード中です…';
-  } else if (isPopup) {
-    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
-  } else if (PANEL_FIRST) {
+  } else {
     // 許可が切れて Start できないときの案内は、失敗したときのエラー文（アイコンを押し直す）が受け持つ。
     // 別のサイトへ移動したらパネルは閉じるので、ここに常に出しておく必要はない
     footer.textContent = '動画ページで動画を再生した状態で Start を押してください。';
-  } else {
-    footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
   }
 
   if (state.state === 'CAPTURING') startStatsLoop();
@@ -413,7 +402,7 @@ async function showProbe(): Promise<ProbeSummary | null> {
     return probe;
   } catch {
     // 内部ページなど、調べられないタブでは何も出さない。前のページの結果が残っていれば消す
-    // （実験 PANEL_FIRST ではパネルがページの移動をまたいで開いたままなので、古い表示が残りうる）
+    // （パネルはページの移動をまたいで開いたままなので、古い表示が残りうる）
     if (!isActive(current)) clearProbe();
     return null;
   }
@@ -750,18 +739,7 @@ startBtn.addEventListener('click', () => {
   void act(async () => {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) throw new Error('アクティブなタブがありません。');
-    if (!isPopup) return sendToBackground.start(tab.id);
-    // ポップアップはサイドパネルが開いた瞬間にフォーカスを失って閉じる。
-    // 先に録音開始を投げておけば、ポップアップが消えても service worker 側で処理が続く。
-    const started = sendToBackground.start(tab.id);
-    started.catch(() => undefined);
-    // このタブにだけパネルを出す（全体のパネルは service worker が無効にしている）。
-    // クリック直後のユーザー操作が有効なうちに open を呼びたいので setOptions は待たずに続ける
-    void chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
-    await chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
-    const result = await started;
-    window.close();
-    return result;
+    return sendToBackground.start(tab.id);
   });
 });
 
@@ -824,9 +802,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 onStateChange(render);
 
-// 実験 PANEL_FIRST: パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す
-// （ポップアップは毎回開き直すので要らなかった）。別のサイトへ移動して許可が切れていれば、調べられず何も出ない
-if (PANEL_FIRST && !isPopup) {
+// パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す。
+// 別のサイトへ移動して許可が切れていれば、調べられず何も出ない（何もしていなければ service worker がパネルを閉じる）
+{
   /** ページの移動ごとに増やす。前の移動のために予約した調べ直しを、次の移動が始まったら捨てる */
   let navigation = 0;
   // 動画プレイヤーは、ページの読み込みが終わったあとで <video> を差し込むことが多い。読み込み完了の時点で 1 回調べるだけだと
@@ -863,7 +841,7 @@ if (PANEL_FIRST && !isPopup) {
 }
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
-  if (probesBeforeStart && !isActive(state)) void showProbe();
+  if (!isActive(state)) void showProbe();
   // 版の確認は描画を待たせない（3 秒かかることがある）
   void checkServerVersion();
 });

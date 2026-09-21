@@ -12,7 +12,7 @@
 
 ## 構成
 
-- `extension/` — WXT + TypeScript。`entrypoints/background.ts`（service worker、状態機械）、`entrypoints/offscreen/`（tabCapture のストリームと録音の正本）、`entrypoints/sidepanel/`（同じページをポップアップ `?mode=popup` とサイドパネルで使う）、`entrypoints/detector.ts`（Start 時に動画のある frame へ `chrome.scripting.executeScript` で注入する検知スクリプト。`src/probe.ts` の `probeVideos` は `func` として文字列注入されるので外部参照禁止）、`src/`（config / state / messages / format / probe / opfs）
+- `extension/` — WXT + TypeScript。`entrypoints/background.ts`（service worker、状態機械）、`entrypoints/offscreen/`（tabCapture のストリームと録音の正本）、`entrypoints/sidepanel/`（サイドパネル。アイコンのクリックで service worker がそのタブに開く。ポップアップは持たない。SPEC D-12）、`entrypoints/detector.ts`（Start 時に動画のある frame へ `chrome.scripting.executeScript` で注入する検知スクリプト。`src/probe.ts` の `probeVideos` は `func` として文字列注入されるので外部参照禁止）、`src/`（config / state / messages / format / probe / opfs）
 - `server/` — Node 22 + TypeScript、ランタイム依存なし。Phase 7 で ffmpeg と whisperkit-cli を呼ぶ
 - `fixtures/` — video.js 風プレイヤーページと合成スライド動画（Phase 3〜6 の確認用）
 - `scripts/smoke-extension.mjs` — headless Chromium に拡張を読み込む統合テスト

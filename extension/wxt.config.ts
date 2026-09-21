@@ -31,7 +31,8 @@ export default defineConfig({
     // icon click that opens the popup is what grants activeTab for the tab,
     // which chrome.tabCapture.getMediaStreamId requires; Start in the popup
     // then opens the side panel, which stays open while the page is used.
-    action: { default_title: 'LecScribe', default_popup: 'sidepanel.html?mode=popup' },
+    // ポップアップは持たない。アイコンのクリック（action.onClicked）でそのタブにサイドパネルを開く（SPEC D-12）
+    action: { default_title: 'LecScribe' },
     minimum_chrome_version: '116',
   },
 });

@@ -1,7 +1,6 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { authHeaders, loadConfig, saveConfig, serverEnabled, type Config } from '../src/config';
 import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
-import { PANEL_FIRST } from '../src/experiment';
 import { makeSessionId } from '../src/format';
 import {
   hasTarget,
@@ -56,21 +55,19 @@ export default defineBackground(() => {
     if (delta.state) void serialized(() => onDownloadSettled());
   });
 
-  // The icon opens the popup (that click grants activeTab for the tab, which
-  // getMediaStreamId needs; an open side panel would not). Start in the popup
-  // opens the side panel for monitoring. Reset the persisted behaviour in
-  // case an earlier build set it to open the panel directly.
+  // アイコンのクリックは自前で受けて（setUpPanel の action.onClicked）、そのタブにだけパネルを開く。
+  // Chrome に任せる openPanelOnActionClick は使わない（全タブ共通のパネルが開いてしまう）。
+  // 前の版が設定を残しているかもしれないので、毎回明示的に切る
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
-  // サイドパネルは録音を始めたタブにだけ出す（Start 時にそのタブ向けに有効化する）。
-  // 全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
+  // サイドパネルはアイコンを押したタブにだけ出す。全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
   void chrome.sidePanel.setOptions({ enabled: false }).catch(() => undefined);
 
-  if (PANEL_FIRST) setUpPanelFirst();
+  setUpPanel();
 
   void serialized(reconcile);
 });
 
-/** パネルを開いているタブ（実験 PANEL_FIRST）。許可が切れたときに閉じる対象 */
+/** パネルを開いているタブ。許可が切れたときに閉じる対象 */
 const PANEL_TABS_KEY = 'panelTabs';
 
 async function panelTabs(): Promise<number[]> {
@@ -79,17 +76,15 @@ async function panelTabs(): Promise<number[]> {
 }
 
 /**
- * 実験 PANEL_FIRST（src/experiment.ts）: アイコンでサイドパネルを直接開き、許可が切れたら閉じる。
+ * アイコンのクリックで、そのタブにサイドパネルを開く。許可が切れたら閉じる（SPEC D-12）。
+ * クリック（action.onClicked）は activeTab が出る正規のきっかけで、tabCapture の開始にはこの許可が要る。
  * service worker はいつ止まってもよいので、開いたタブの一覧は chrome.storage.session に置く
  */
-function setUpPanelFirst(): void {
-  // ポップアップがあると action.onClicked は来ない。manifest は触らず、実行時に外す（実験をやめたら戻る）
-  void chrome.action.setPopup({ popup: '' }).catch(() => undefined);
-
+function setUpPanel(): void {
   chrome.action.onClicked.addListener((tab) => {
     if (tab.id === undefined) return;
     const tabId = tab.id;
-    // open はユーザー操作の直後でないと呼べないので、setOptions は待たずに続ける（ポップアップの Start と同じ）。
+    // open はユーザー操作の直後でないと呼べないので、setOptions は待たずに続ける。
     // 全体のパネルは無効のままなので、パネルはこのタブにだけ出る。もう開いているときに押すと、許可だけが新しくなる
     void chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
     void chrome.sidePanel.open({ tabId }).catch(() => undefined);
