@@ -399,24 +399,39 @@ document.addEventListener('visibilitychange', () => {
 let lastProbe: ProbeSummary | null = null;
 const PROBE_WARNINGS: WarningCode[] = ['NO_VIDEO', 'CROSS_ORIGIN_IFRAME'];
 
-async function showProbe() {
+async function showProbe(): Promise<ProbeSummary | null> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab?.id) return;
+    if (!tab?.id) return null;
     const { probe } = await sendToBackground.probe(tab.id);
-    if (isActive(current)) return;
+    if (isActive(current)) return null;
     lastProbe = probe;
     applyProbe(probe);
+    return probe;
   } catch {
-    // 内部ページなど、調べられないタブでは何も出さない
+    // 内部ページなど、調べられないタブでは何も出さない。前のページの結果が残っていれば消す
+    // （実験 PANEL_FIRST ではパネルがページの移動をまたいで開いたままなので、古い表示が残りうる）
+    if (!isActive(current)) clearProbe();
+    return null;
   }
+}
+
+/** Start 前の動画の表示と、その警告を消す（ページを移動したとき、調べられなかったとき） */
+function clearProbe() {
+  lastProbe = null;
+  videoRow.hidden = true;
+  renderWarnings(lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)));
 }
 
 /** Start 前の確認用に、動画が見つかったときだけ Video 行を出す（見つからなければ警告で伝える） */
 function applyProbe(probe: ProbeSummary) {
   videoValue.textContent = describeProbe(probe);
   videoRow.hidden = !probe.chosen;
-  if (probe.chosen) return;
+  if (probe.chosen) {
+    // 前のページで出した「動画が見つかりません」を残さない（ポップアップは毎回開き直すので要らなかった）
+    renderWarnings(lastWarningCodes.filter((c) => !PROBE_WARNINGS.includes(c)));
+    return;
+  }
   const codes: WarningCode[] = ['NO_VIDEO'];
   if (probe.crossOriginIframes.length > 0) codes.push('CROSS_ORIGIN_IFRAME');
   // 状態から出している警告（接続できない等）は残し、動画の警告だけ入れ替える
@@ -809,13 +824,38 @@ onStateChange(render);
 // 実験 PANEL_FIRST: パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す
 // （ポップアップは毎回開き直すので要らなかった）。別のサイトへ移動して許可が切れていれば、調べられず何も出ない
 if (PANEL_FIRST && !isPopup) {
+  /** ページの移動ごとに増やす。前の移動のために予約した調べ直しを、次の移動が始まったら捨てる */
+  let navigation = 0;
+  // 動画プレイヤーは、ページの読み込みが終わったあとで <video> を差し込むことが多い。読み込み完了の時点で 1 回調べるだけだと
+  // 「動画が見つかりません」のままになるので、見つかるまで間をあけて何度か調べ直す
+  const RETRY_AFTER_MS = [0, 1_500, 4_000, 8_000, 15_000];
+  const probeAfterNavigation = (generation: number, attempt = 0) => {
+    window.setTimeout(() => {
+      if (generation !== navigation || isActive(current)) return;
+      void showProbe().then((probe) => {
+        if (probe?.chosen || attempt + 1 >= RETRY_AFTER_MS.length) return;
+        probeAfterNavigation(generation, attempt + 1);
+      });
+    }, RETRY_AFTER_MS[attempt]);
+  };
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status !== 'complete' || isActive(current)) return;
+    // 読み込みの開始・完了と、URL だけが変わる移動（ページを読み込み直さないサイト）を拾う
+    if (changeInfo.status === undefined && changeInfo.url === undefined) return;
+    if (isActive(current)) return;
     void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
       if (tab?.id !== tabId) return;
-      lastProbe = null;
-      void showProbe();
+      if (changeInfo.status === 'loading') {
+        // 移動が始まったら、前のページの動画の表示は消しておく
+        navigation++;
+        clearProbe();
+        return;
+      }
+      probeAfterNavigation(++navigation);
     });
+  });
+  // ほかのタブやウィンドウから戻ってきたときも調べ直す
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !isActive(current)) probeAfterNavigation(++navigation);
   });
 }
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
