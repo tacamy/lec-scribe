@@ -1,6 +1,7 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { authHeaders, loadConfig, saveConfig, serverEnabled, type Config } from '../src/config';
 import { LecError, toErrorInfo, type ErrorInfo } from '../src/errors';
+import { PANEL_FIRST } from '../src/experiment';
 import { makeSessionId } from '../src/format';
 import {
   hasTarget,
@@ -64,8 +65,65 @@ export default defineBackground(() => {
   // 全タブ共通のパネルは無効にして、他のタブでは画面を広く使えるようにする
   void chrome.sidePanel.setOptions({ enabled: false }).catch(() => undefined);
 
+  if (PANEL_FIRST) setUpPanelFirst();
+
   void serialized(reconcile);
 });
+
+/** パネルを開いているタブ（実験 PANEL_FIRST）。許可が切れたときに閉じる対象 */
+const PANEL_TABS_KEY = 'panelTabs';
+
+async function panelTabs(): Promise<number[]> {
+  const stored = (await chrome.storage.session.get(PANEL_TABS_KEY))[PANEL_TABS_KEY];
+  return Array.isArray(stored) ? (stored as number[]) : [];
+}
+
+/**
+ * 実験 PANEL_FIRST（src/experiment.ts）: アイコンでサイドパネルを直接開き、許可が切れたら閉じる。
+ * service worker はいつ止まってもよいので、開いたタブの一覧は chrome.storage.session に置く
+ */
+function setUpPanelFirst(): void {
+  // ポップアップがあると action.onClicked は来ない。manifest は触らず、実行時に外す（実験をやめたら戻る）
+  void chrome.action.setPopup({ popup: '' }).catch(() => undefined);
+
+  chrome.action.onClicked.addListener((tab) => {
+    if (tab.id === undefined) return;
+    const tabId = tab.id;
+    // open はユーザー操作の直後でないと呼べないので、setOptions は待たずに続ける（ポップアップの Start と同じ）。
+    // 全体のパネルは無効のままなので、パネルはこのタブにだけ出る。もう開いているときに押すと、許可だけが新しくなる
+    void chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }).catch(() => undefined);
+    void chrome.sidePanel.open({ tabId }).catch(() => undefined);
+    void serialized(async () => {
+      const tabs = await panelTabs();
+      if (!tabs.includes(tabId)) await chrome.storage.session.set({ [PANEL_TABS_KEY]: [...tabs, tabId] });
+    });
+  });
+
+  // 別のサイトへ移動すると activeTab の許可が切れ、そのパネルから Start しても失敗する。何もしていないときに限って
+  // パネルを閉じ、次はアイコンから開き直してもらう（許可が新しくなる）。許可が残っているかは、タブの URL が読めるかで
+  // 分かる（tabs 権限は持っていないので、URL が読めるのは activeTab が効いている間だけ）。同じサイトの中の移動では残る
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status !== 'complete') return;
+    void serialized(async () => {
+      const tabs = await panelTabs();
+      if (!tabs.includes(tabId)) return;
+      const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+      if (!tab || tab.url !== undefined) return;
+      const state = await readState();
+      // 録音中・処理中・送信待ちの間は閉じない（録音は移動しても続くし、進み具合を見ているかもしれない）
+      if (isActive(state) || state.processing || state.pendingUploads?.length) return;
+      await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => undefined);
+      await chrome.storage.session.set({ [PANEL_TABS_KEY]: tabs.filter((id) => id !== tabId) });
+    });
+  });
+
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    void serialized(async () => {
+      const tabs = await panelTabs();
+      if (tabs.includes(tabId)) await chrome.storage.session.set({ [PANEL_TABS_KEY]: tabs.filter((id) => id !== tabId) });
+    });
+  });
+}
 
 /**
  * Every handler reads, mutates and writes the stored state; running them

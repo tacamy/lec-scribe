@@ -2,6 +2,7 @@ import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
 import { ForeignServerError, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
+import { PANEL_FIRST } from '../../src/experiment';
 import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
 import { listSessions, setNotesProblem, setSessionHidden, type StoredSession } from '../../src/opfs/session-store';
@@ -20,6 +21,11 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 /** The same page is the action popup (`?mode=popup`) and the side panel. */
 const isPopup = new URLSearchParams(location.search).get('mode') === 'popup';
 if (isPopup) document.body.classList.add('popup');
+/**
+ * Start 前に、いまのタブの動画を調べて見せるか。これまではポップアップだけ（アイコンを押した直後で activeTab がある）。
+ * 実験 PANEL_FIRST ではアイコンがパネルを直接開くので、パネルも開いた直後は同じ条件になる
+ */
+const probesBeforeStart = isPopup || PANEL_FIRST;
 const dot = $('dot');
 const stateLabel = $('stateLabel');
 const elapsed = $('elapsed');
@@ -247,7 +253,7 @@ function render(state: SessionState) {
   // ポップアップで Start 前に調べた動画は、状態が変わって描き直しても消さない。
   // 前の講義を文字起こししている間に次の講義のポップアップを開くと、処理の段階が進むたびにここを通る
   if (active) lastProbe = null;
-  else if (isPopup && lastProbe) applyProbe(lastProbe);
+  else if (probesBeforeStart && lastProbe) applyProbe(lastProbe);
 
   if (state.state === 'CAPTURING') {
     footer.textContent = state.processing
@@ -264,6 +270,8 @@ function render(state: SessionState) {
     footer.textContent = 'ダウンロード中です…';
   } else if (isPopup) {
     footer.textContent = '動画ページで動画を再生した状態で Start を押してください。開始後はサイドパネルで状態を確認できます。';
+  } else if (PANEL_FIRST) {
+    footer.textContent = '動画ページで動画を再生した状態で Start を押してください。Start できないときは、ツールバーの LecScribe アイコンをもう一度押してください。';
   } else {
     footer.textContent = '録音を始めるにはツールバーの LecScribe アイコンから Start を押してください。';
   }
@@ -797,9 +805,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 onStateChange(render);
+
+// 実験 PANEL_FIRST: パネルは同じサイトの中でページを移動しても開いたままなので、移動が終わったら動画を調べ直す
+// （ポップアップは毎回開き直すので要らなかった）。別のサイトへ移動して許可が切れていれば、調べられず何も出ない
+if (PANEL_FIRST && !isPopup) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status !== 'complete' || isActive(current)) return;
+    void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
+      if (tab?.id !== tabId) return;
+      lastProbe = null;
+      void showProbe();
+    });
+  });
+}
 void refreshConfig().then(() => sendToBackground.getState()).then(({ state }) => {
   render(state);
-  if (isPopup && !isActive(state)) void showProbe();
+  if (probesBeforeStart && !isActive(state)) void showProbe();
   // 版の確認は描画を待たせない（3 秒かかることがある）
   void checkServerVersion();
 });
