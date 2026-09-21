@@ -121,9 +121,17 @@ export function probeVideos(): ProbeResult {
     };
   };
 
+  // 別ドメインの iframe のうち、動画プレイヤーが入っていそうなものだけを数える。見えない・ごく小さい iframe は広告や計測の
+  // ためのもので（幅と高さが 0 で hidden の同期用 iframe など）、数えると動画のないページで的外れな警告が出る（2026-09-21）。
+  // 160×90 は、埋め込みの動画プレイヤーとして見かける最小の大きさより小さい
+  const MIN_PLAYER_WIDTH = 160;
+  const MIN_PLAYER_HEIGHT = 90;
   const crossOriginIframes: string[] = [];
   for (const iframe of Array.from(document.querySelectorAll('iframe'))) {
     try {
+      const rect = iframe.getBoundingClientRect();
+      const style = getComputedStyle(iframe);
+      if (style.display === 'none' || style.visibility === 'hidden' || rect.width < MIN_PLAYER_WIDTH || rect.height < MIN_PLAYER_HEIGHT) continue;
       const origin = new URL(iframe.src, location.href).origin;
       if (origin !== location.origin && origin !== 'null' && !crossOriginIframes.includes(origin)) {
         crossOriginIframes.push(origin);
