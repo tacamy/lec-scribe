@@ -9,8 +9,9 @@ import type { SlideEntry } from './merge.ts';
  * 「同じ」と判断できるものを notes.md / lecture.md から外す。画像そのものは slides/ に残す。
  *
  * 判断の材料は、画素の差、macOS の Vision で測る見た目の距離、写っている文字（文字認識）、
- * 色の分布。色の分布は拡張が記録した trigger.stillFraction（動き続けている画素を除いた
- * 静止部分の割合）が半分未満の画像＝映像中心の画面にだけ効かせる。スライド中心の画面では、
+ * 行ごとの色の並び（スクロール）、色の分布。色の分布は拡張が記録した trigger.stillFraction（動き続けている
+ * 画素を除いた静止部分の割合）が半分未満の画像＝映像中心の画面と、写真・映像らしい画面で切り替えの瞬間の変化
+ * （trigger.diffPrev）が小さかった画像＝同じショットの続きにだけ効かせる。スライド中心の画面では、
  * 同じ配色で文字だけ違うスライドが「同じ場面」に見えてしまうため。
  */
 
@@ -132,6 +133,110 @@ export function panResidual(a: Uint8Array, b: Uint8Array): { diff: number; left:
  */
 const REVISIT_MAX_SECONDS = 10;
 
+/**
+ * 画面を大きくスクロールした組をまとめるための値（2026-09-22）。
+ * panResidual は縦 12 画素（13%）までしか探さない。Web ページをカード 1 行分（25 画素前後）以上スクロールすると
+ * 探索の外になるうえ、写真を含む画面は縮小で画素がぴったり合わず、探索を広げても「説明できた画素」は 3〜4 割にしか
+ * 届かない（GD I-2 の 2 章 057→058→059）。そこで画素ではなく、行ごとの平均色の並びがどれだけずれた位置で重なるかを見る
+ */
+/** 探す縦のずれの上限（高さに対する割合）。重なりが半分を切ると根拠が薄い */
+const SCROLL_MAX_SHIFT_RATIO = 0.5;
+/**
+ * これ未満のずれは「スクロール」とみなさない（小さな移動は 5b の平行移動の規則が見る）。同じ型の別スライドや、
+ * カーソルが動いただけ・図が色から白黒に変わっただけの画面（12 章 GD の 005→006）は、ずれ 4 行前後で行が重なってしまう
+ */
+const SCROLL_MIN_SHIFT = 8;
+/** 行の平均色の差（0〜255）がこれ以下なら同じ行とみなす。この差までは一致 1、超えるほど 0 に近づける */
+const SCROLL_ROW_TOLERANCE = 16;
+/**
+ * 行の並びに凹凸があること（その画像の行の中央値から 16 以上離れた行が、この割合以上。2 枚の少ない方で見る）。
+ * 白地に文字だけのスライドは行の平均色がほぼ白のままで、どんなずれでも行が重なってしまうため対象外にする。
+ * 「地の色（中央値）から離れた行だけを数える」形も試したが、カードや写真が並ぶページでは中央値が地の色にならず、
+ * 2 章の 057→058 のような本物のスクロールが 0.5 を切って拾えなくなったので、数えるのは重なった行の全部にした
+ */
+const SCROLL_MIN_STRUCTURE = 0.3;
+/** 重なった行のうち色が合う行の割合がこれ以上なら同じ画面（2 章の 057→058 は 0.65、058→059 は 0.76、5 章の 028→030 は 0.95） */
+const SCROLL_MIN_MATCH = 0.6;
+/**
+ * 見た目の距離がこれ以下の組だけ調べる（スクロールした組は 0.24〜0.34。図が増えた・白黒になった別の画面は 0.46 以上）。
+ * 5b と同じく `--scene-vision-photo` を超えない
+ */
+const SCROLL_MAX_VISION = 0.4;
+/** 両方に 3 行以上の文字があるとき、共通する行がこの割合を切れば別の画面（同じ配色の別のページ） */
+const SCROLL_MIN_SHARED_LINES = 0.3;
+
+/**
+ * 2 枚を縦にずらして重ねたとき、行ごとの平均色がどれだけ合うか。
+ * dy は a の行 y を b の行 y + dy に重ねるずれ（行）、match は重なった行のうち色が合う行の割合（差に応じて 0〜1）、
+ * structure は 2 枚のうち凹凸の少ない方の、行の並びの凹凸（中央値から離れた行の割合）
+ */
+export function rowScroll(a: Uint8Array, b: Uint8Array): { dy: number; match: number; structure: number } {
+  const W = THUMB_WIDTH;
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
+  const H = Math.floor(pixels / W);
+  if (H === 0) return { dy: 0, match: 0, structure: 0 };
+  const profile = (px: Uint8Array): Float64Array => {
+    const out = new Float64Array(H * 3);
+    for (let y = 0; y < H; y++) {
+      let r = 0;
+      let g = 0;
+      let bl = 0;
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        r += px[i]!;
+        g += px[i + 1]!;
+        bl += px[i + 2]!;
+      }
+      out[y * 3] = r / W;
+      out[y * 3 + 1] = g / W;
+      out[y * 3 + 2] = bl / W;
+    }
+    return out;
+  };
+  const rowDiff = (p: Float64Array, y: number, q: Float64Array, y2: number) =>
+    (Math.abs(p[y * 3]! - q[y2 * 3]!) + Math.abs(p[y * 3 + 1]! - q[y2 * 3 + 1]!) + Math.abs(p[y * 3 + 2]! - q[y2 * 3 + 2]!)) / 3;
+  /** 行の並びの凹凸: 行の中央値から離れた行の割合 */
+  const structureOf = (p: Float64Array): number => {
+    const median = new Float64Array(3);
+    for (let c = 0; c < 3; c++) {
+      const values = Array.from({ length: H }, (_, y) => p[y * 3 + c]!).sort((x, y) => x - y);
+      median[c] = values[Math.floor(H / 2)]!;
+    }
+    let away = 0;
+    for (let y = 0; y < H; y++) if (rowDiff(p, y, median, 0) > SCROLL_ROW_TOLERANCE) away++;
+    return away / H;
+  };
+  const pa = profile(a);
+  const pb = profile(b);
+  const structure = Math.min(structureOf(pa), structureOf(pb));
+  const maxShift = Math.floor(H * SCROLL_MAX_SHIFT_RATIO);
+  let best = { dy: 0, match: 0 };
+  for (let dy = -maxShift; dy <= maxShift; dy++) {
+    if (Math.abs(dy) < SCROLL_MIN_SHIFT) continue;
+    let sum = 0;
+    let n = 0;
+    for (let y = 0; y < H; y++) {
+      const y2 = y + dy;
+      if (y2 < 0 || y2 >= H) continue;
+      sum += Math.max(0, 1 - rowDiff(pa, y, pb, y2) / SCROLL_ROW_TOLERANCE);
+      n++;
+    }
+    const match = n > 0 ? sum / n : 0;
+    if (match > best.match) best = { dy, match };
+  }
+  return { ...best, structure };
+}
+
+/**
+ * 同じ場面の続きを、切り替えの瞬間の変化の大きさで見分けるための値（2026-09-22）。
+ * 拡張は保存した画像ごとに、切り替えを検知した瞬間の画素の変化率（trigger.diffPrev）を残す。写真・映像の画面で
+ * この値が小さければ、カット（別の写真・別のショットへの切り替え）ではなく、同じショットの中でカメラや被写体が
+ * 動いた・字幕が出た、ということ。色の分布の規則（同じ場面）は静止部分が半分未満の画像＝映像らしい画面にだけ
+ * 効かせているが、ゆっくり動くカメラが静物を写していると静止部分が多く測られて外れる（「はじめに」の 014〜016。
+ * 0.51〜0.83）。そこでこの値も入口にする。拡張の cutThreshold（0.3）と同じ線
+ */
+const SHOT_CUT_DIFF = 0.3;
+
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
   try {
@@ -245,6 +350,29 @@ export function textContained(a: string, b: string): boolean {
   return i / short.length >= CONTAINED_MIN;
 }
 
+/**
+ * 読み取れた行のうち、相手にも（読み違いを許して 7 割合う形で）ある行の割合。少ない方の行数を分母にする。
+ * スクロールした同じページは行の多くが共通し、同じ配色の別のページは見出しくらいしか共通しない。
+ * どちらかの行が 3 行に満たなければ判断できないので undefined
+ */
+export function sharedLineRatio(a: string, b: string): number | undefined {
+  const lines = (text: string) =>
+    text
+      .split('\n')
+      .map((line) => line.replace(/\s+/g, ''))
+      .filter((line) => line.length >= 3)
+      .map((line) => [...line]);
+  const x = lines(a);
+  const y = lines(b);
+  if (x.length < 3 || y.length < 3) return undefined;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  let hit = 0;
+  for (const s of short) {
+    if (long.some((l) => 1 - editDistance(s, l) / Math.max(s.length, l.length) >= 0.7)) hit++;
+  }
+  return hit / short.length;
+}
+
 /** macOS の Vision で測った「見た目の距離」と「写っている文字」を使うときの設定 */
 export type VisionOptions = {
   /** 画像の並び順（index）で距離を返す。測れない組は undefined */
@@ -257,7 +385,16 @@ export type VisionOptions = {
   text?: (index: number) => string | undefined;
 };
 
-export type SceneReason = 'identical' | 'vision' | 'text' | 'grown' | 'panned' | 'same-scene' | 'revisit' | 'superseded';
+export type SceneReason =
+  | 'identical'
+  | 'vision'
+  | 'text'
+  | 'grown'
+  | 'panned'
+  | 'scrolled'
+  | 'same-scene'
+  | 'revisit'
+  | 'superseded';
 
 export type SceneDecision = {
   filename: string;
@@ -285,9 +422,17 @@ export type SceneDecision = {
   /** 平行移動を調べたとき: 説明できずに残った画素の割合と、最もよく説明できた移動（160×90 の画素で） */
   panLeft?: number;
   panShift?: [number, number];
+  /** 縦のスクロールを調べたとき: 比べた画像を何行ずらすと重なるか（下にスクロールした画面なら正）と、そのときの一致（0〜1） */
+  scrollShift?: number;
+  scrollMatch?: number;
+  /** 両方に 3 行以上の文字があったとき、共通する行の割合 */
+  sharedLines?: number;
 };
 
-type Metrics = Pick<SceneDecision, 'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift'>;
+type Metrics = Pick<
+  SceneDecision,
+  'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift' | 'scrollShift' | 'scrollMatch' | 'sharedLines'
+>;
 type Verdict = { reason?: SceneReason; metrics: Metrics };
 
 /**
@@ -403,9 +548,34 @@ export function pickShownSlides(
       if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
       if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
     }
-    // 6. 映像中心の画面では、色の分布が同じなら同じ場面
-    const footage = typeof slide.trigger?.stillFraction === 'number' && slide.trigger.stillFraction < FOOTAGE_MAX_STILL;
-    if (threshold > 0 && footage) {
+    // 5c. 大きく縦にスクロールしただけ（行ごとの色の並びが、ずれた位置で重なる）。基準の画像とだけ比べる（5b と同じ理由）。
+    //     白地に文字だけの画面は行に凹凸がなく判断できないので対象外。
+    //     両方に読める文字が 3 行以上あって共通する行が少なければ、同じ配色の別のページなので残す
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
+      const shared = hasText ? sharedLineRatio(text, otherText) : undefined;
+      if (shared !== undefined) metrics.sharedLines = round(shared);
+      if (shared === undefined || shared >= SCROLL_MIN_SHARED_LINES) {
+        const scroll = rowScroll(thumb, otherThumb);
+        if (scroll.structure >= SCROLL_MIN_STRUCTURE) {
+          metrics.scrollShift = scroll.dy;
+          metrics.scrollMatch = round(scroll.match);
+          if (scroll.match >= SCROLL_MIN_MATCH) return { reason: 'scrolled', metrics };
+        }
+      }
+    }
+    // 6. 映像中心の画面では、色の分布が同じなら同じ場面。
+    //    写真・映像らしい画面（色の多様さ）で、切り替えの瞬間の変化が小さかった（カットではなく、同じショットの中で
+    //    カメラや被写体が動いた・字幕が出た）画像も、色の分布で見る。ただし両方に文字があって中身が違えば別の場面
+    const stillFraction = slide.trigger?.stillFraction;
+    const footage = typeof stillFraction === 'number' && stillFraction < FOOTAGE_MAX_STILL;
+    const cutDiff = slide.trigger?.diffPrev;
+    const sameShot =
+      typeof cutDiff === 'number' &&
+      cutDiff < SHOT_CUT_DIFF &&
+      entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS &&
+      entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS &&
+      !(hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && textSim! < SAME_TEXT_SIM && !textContained(text, otherText));
+    if (threshold > 0 && (footage || sameShot)) {
       const match = colorMatch(thumb, otherThumb);
       metrics.colorMatch = round(match);
       if (match >= threshold) return { reason: 'same-scene', metrics };
