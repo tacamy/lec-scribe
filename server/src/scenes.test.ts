@@ -17,6 +17,7 @@ import {
   textSimilarity,
   THUMB_HEIGHT,
   THUMB_WIDTH,
+  uniformFraction,
 } from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
@@ -545,10 +546,13 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
 });
 
 describe('前の画面に短く戻っただけの画像（2026-09-20）', () => {
-  /** 画面ごとに濃さの違う無地に近い画像。同じ番号なら中身が同じ、違う番号なら全画素が違う */
+  /** 画面ごとに濃さの違う画像（上半分と下半分で濃さを変え、「ほぼ一色」にはしない）。同じ番号なら中身が同じ、違う番号なら全画素が違う */
   const screen = (n: number) => {
     const f = new Uint8Array(PIXELS * 4).fill(255);
-    for (let p = 0; p < PIXELS; p++) f.set([40 * n, 40 * n, 40 * n], p * 4);
+    for (let p = 0; p < PIXELS; p++) {
+      const v = 40 * n + (p < PIXELS / 2 ? 0 : 60);
+      f.set([v, v, v], p * 4);
+    }
     return f;
   };
   /** times の時刻（秒）に screens の画面が撮れた講義 */
@@ -594,14 +598,20 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     // 画素の 4% ずつ変わっていく画面。直前の 1 枚とだけ比べて連ねると、戻った先とは似ていない画像まで
     // ずっと「戻っただけ」として外れ続け、その区間に載る画像が 1 枚も無くなっていた
     const step = Math.floor(PIXELS * 0.04);
+    /** 上半分が白、下半分が灰色の画面（「ほぼ一色」にはしない）。上半分の先頭 flipped 画素だけ黒くする */
     const drift = (flipped: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = PIXELS / 2; p < PIXELS; p++) f.set([100, 100, 100], p * 4);
       for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
       return f;
     };
+    /** 濃さ v の画面（上半分 v、下半分 v + 60。「ほぼ一色」にはしない） */
     const flat = (v: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
-      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      for (let p = 0; p < PIXELS; p++) {
+        const w = Math.min(255, v + (p < PIXELS / 2 ? 0 : 60));
+        f.set([w, w, w], p * 4);
+      }
       return f;
     };
     const frames: [Uint8Array, number][] = [[drift(0), 0], [flat(0), 30], [drift(0), 60], [drift(step), 62], [drift(step * 2), 64], [flat(120), 200]];
@@ -618,14 +628,20 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     // 1 枚ずつの「この画面が続いた時間」だけで決めると、6 秒ごとに少し変わる長い戻りが丸ごと外れて、
     // その区間に載る画像が 1 枚も無くなっていた
     const step = Math.floor(PIXELS * 0.04);
+    /** 上半分が白、下半分が灰色の画面（「ほぼ一色」にはしない）。上半分の先頭 flipped 画素だけ黒くする */
     const drift = (flipped: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = PIXELS / 2; p < PIXELS; p++) f.set([100, 100, 100], p * 4);
       for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
       return f;
     };
+    /** 濃さ v の画面（上半分 v、下半分 v + 60。「ほぼ一色」にはしない） */
     const flat = (v: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
-      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      for (let p = 0; p < PIXELS; p++) {
+        const w = Math.min(255, v + (p < PIXELS / 2 ? 0 : 60));
+        f.set([w, w, w], p * 4);
+      }
       return f;
     };
     // A（0 秒）→ B（60 秒）→ A に戻って 6 秒ごとに 8% ずつ揺れる（120〜150 秒）→ C（240 秒）
@@ -654,6 +670,43 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     expect(e.map((x) => x.shown)).toEqual([true, false, false, true, true]);
     expect(e[3]).toMatchObject({ standsFor: 'slide_002.png' });
     expect(e[2]).toMatchObject({ reason: 'revisit', sameSceneAs: 'slide_004.png' });
+  });
+});
+
+describe('ほぼ一色の画像（2026-09-22）', () => {
+  const solid = (v: number) => new Uint8Array(PIXELS * 4).fill(v);
+  /** 一色の地に、marks 画素だけ反対の色の印を置く */
+  const withMark = (v: number, marks: number) => {
+    const f = solid(v);
+    for (let p = 0; p < marks; p++) f.set([255 - v, 255 - v, 255 - v], p * 4);
+    return f;
+  };
+  const thumbs = (...frames: Uint8Array[]) => new Map(frames.map((f, i) => [`slide_${String(i + 1).padStart(3, '0')}.png`, f] as [string, Uint8Array]));
+
+  it('uniformFraction は一色なら 1、印のある分だけ下がる', () => {
+    expect(uniformFraction(solid(0))).toBe(1);
+    expect(uniformFraction(solid(128))).toBe(1);
+    expect(uniformFraction(withMark(0, 144))).toBeCloseTo(0.99, 3);
+    expect(uniformFraction(footage(1))).toBeLessThan(0.9);
+  });
+
+  it('真っ黒・灰色の画像は載せず、比較の基準にもしない（前後の同じ場面はつながったまま）', () => {
+    const d = pickShownSlides([slide(1, 0.2), slide(2, 0.2), slide(3, 0.2)], thumbs(footage(1, 60), solid(0), footage(2, 60)), 0.65, undefined, 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'blank'], [false, 'same-scene']]);
+    expect(d[1]!.sameSceneAs).toBeUndefined();
+    // 最初の 1 枚が一色（動画の先頭の灰色）でも、次の画像が基準になる
+    const e = pickShownSlides([slide(1, 0.2), slide(2, 0.2)], thumbs(solid(128), footage(1)), 0.65, undefined, 'first');
+    expect(e.map((x) => [x.shown, x.reason])).toEqual([[false, 'blank'], [true, undefined]]);
+    // 最後の 1 枚を載せる設定でも、一色の画像はまとまりの代わりに選ばれない
+    const f = pickShownSlides([slide(1, 0.2), slide(2, 0.2), slide(3, 0.2)], thumbs(footage(1, 60), footage(2, 60), solid(0)), 0.65, undefined, 'last');
+    expect(f.map((x) => [x.filename, x.shown])).toEqual([['slide_001.png', false], ['slide_002.png', true], ['slide_003.png', false]]);
+  });
+
+  it('白地に短い見出しがあるだけの画像や、暗い画面に読める文字がある画像は残す（印が 1% あれば一色ではない）', () => {
+    for (const frame of [withMark(255, 150), withMark(20, 300)]) {
+      expect(uniformFraction(frame)).toBeLessThan(0.995);
+      expect(pickShownSlides([slide(1, 1)], thumbs(frame), 0.65, undefined, 'first')[0]!.shown).toBe(true);
+    }
   });
 });
 

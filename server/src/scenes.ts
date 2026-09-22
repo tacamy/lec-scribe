@@ -36,6 +36,28 @@ function pixelDiffers(a: Uint8Array, i: number, b: Uint8Array, j: number): boole
 }
 /** 色の多様さ（ビット）がこれ以上なら写真・映像とみなし、Vision の判定を広めに使う。文字中心のスライドは 0〜3 */
 const PHOTO_ENTROPY_BITS = 3.0;
+/**
+ * 画素のこの割合以上が中央値の色から PIXEL_DIFF 以内なら「ほぼ一色」とみなして載せない（2026-09-22）。
+ * 真っ黒（「はじめに」の 025。フェードの途中）、動画の先頭の灰色 1 枚、暗い画面に小さな点だけが動くコマ（7 章 GD の 060。99.7%）。
+ * 白地に短い見出しだけのスライドは 28 セッションで最大 97.9%、読める文字のある暗い画面は 98.0% だったので、その上に線を引く
+ */
+const BLANK_MIN_UNIFORM = 0.995;
+
+/** 画素の何割が、その画像の中央値の色から PIXEL_DIFF 以内にあるか（1 に近いほど一色） */
+export function uniformFraction(a: Uint8Array): number {
+  const pixels = Math.floor(a.length / 4);
+  if (pixels === 0) return 1;
+  const median = new Uint8Array(3);
+  for (let c = 0; c < 3; c++) {
+    const values = new Uint8Array(pixels);
+    for (let p = 0; p < pixels; p++) values[p] = a[p * 4 + c]!;
+    values.sort();
+    median[c] = values[Math.floor(pixels / 2)]!;
+  }
+  let near = 0;
+  for (let p = 0; p < pixels; p++) if (!pixelDiffers(a, p * 4, median, 0)) near++;
+  return near / pixels;
+}
 /** 文字のそろい具合がこれ以上なら同じ文字とみなす（文字認識の読み違いを許す） */
 const SAME_TEXT_SIM = 0.8;
 /** 短い方の文字のこの割合が、順序を保って長い方に含まれていれば「含まれる」 */
@@ -386,6 +408,7 @@ export type VisionOptions = {
 };
 
 export type SceneReason =
+  | 'blank'
   | 'identical'
   | 'vision'
   | 'text'
@@ -403,8 +426,9 @@ export type SceneDecision = {
   /** 載せない場合、代わりに載っている画像 */
   sameSceneAs?: string;
   /**
-   * 外した理由: 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い / 同じスライドの途中の状態 /
-   * 少しスクロール・パンしただけ / 同じ場面（色の分布） / 前の画面に短く戻っただけ / 同じ場面の最後の 1 枚に譲った
+   * 外した理由: ほぼ一色（真っ黒など。sameSceneAs は付かない） / 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い /
+   * 同じスライドの途中の状態 / 少しスクロール・パンしただけ / 大きくスクロールしただけ / 同じ場面（色の分布） /
+   * 前の画面に短く戻っただけ / 同じ場面の最後の 1 枚に譲った
    */
   reason?: SceneReason;
   /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
@@ -619,6 +643,13 @@ export function pickShownSlides(
     return seconds !== undefined && seconds < REVISIT_MAX_SECONDS ? match : null;
   };
   slides.forEach((slide, index) => {
+    // 0. ほぼ一色の画像（真っ黒、フェードの途中、動画の先頭の灰色）は載せない。比較の基準にもしないので、
+    //    直前の画面のまとまりは切れず、間の発話は今載っている画像の下に入る
+    const thumb = thumbs.get(slide.filename);
+    if (thumb && uniformFraction(thumb) >= BLANK_MIN_UNIFORM) {
+      decisions.push({ filename: slide.filename, shown: false, reason: 'blank' });
+      return;
+    }
     if (lastShown) {
       const last = lastShown;
       let verdict = compare(index, last.index, false);
