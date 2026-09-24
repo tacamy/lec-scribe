@@ -24,6 +24,55 @@
 - 同じ場面の画像が何枚も撮れたときは、まとめて 1 枚だけ載せます（見た目の近さ、写っている文字、色の分布で判定。画像自体は残ります）
 - ChatGPT（Codex CLI）かローカルの Ollama を使える場合は、話し言葉を書き言葉に整え、全体の要点と話題ごとの見出し・要点を付けられます
 
+## しくみ
+
+Chrome 拡張が録音と画面の保存を、Mac 上の常駐サーバーが文字起こしとノート作りを担当します。番号の順に進みます。
+
+```mermaid
+flowchart TB
+  subgraph chrome["Chrome 拡張（動画のタブ）"]
+    direction TB
+    panel["① サイドパネル<br/>Start / Stop、進み具合、一覧（やり直す・削除）"]
+    sw["② service worker<br/>状態機械。開始・停止の配線"]
+    detector["③ 検知スクリプト（動画のある frame に注入）<br/>&lt;video&gt; を見張り、画面が変わったときだけ画像を保存"]
+    offscreen["④ offscreen document<br/>タブの音声を録音して OPFS に逐次保存"]
+    panel --> sw
+    sw --> detector
+    sw --> offscreen
+    detector -- "スライド画像・タイムライン" --> offscreen
+  end
+
+  offscreen -- "⑤ Stop 後に送信（127.0.0.1、承認したトークン）<br/>audio.webm + slides/ + slides.json" --> receive
+
+  subgraph mac["Mac ローカルサーバー（Node.js、ログイン時に自動起動）"]
+    direction TB
+    receive["受信・順番待ち"]
+    convert["⑥ 音声を変換<br/>ffmpeg（webm → wav 16 kHz）"]
+    transcribe["⑦ 文字起こし<br/>whisperkit-cli（large-v3、日本語）"]
+    merge["⑧ 統合<br/>スライドと発話を時間順に並べる<br/>同じ場面の画像を 1 枚にまとめる（画素・macOS Vision・文字認識・色）"]
+    polish["⑨ ノートを整える（任意）<br/>Codex CLI か Ollama"]
+    receive --> convert --> transcribe --> merge --> polish
+  end
+
+  polish -- "文字起こしの本文だけ" --> chatgpt[("ChatGPT（Codex CLI 経由）")]
+  polish --> out[("~/LecScribe/講義名_日時/<br/>notes.md + slides/")]
+  merge -. "整えない設定なら、そのまま" .-> out
+```
+
+| 順 | 担当 | すること |
+|---|---|---|
+| ① | サイドパネル | アイコンで開く。Start / Stop、進み具合、保存済みの一覧（フォルダを開く・やり直す・削除・中止） |
+| ② | service worker | 状態機械。開始・停止・送信の配線。Chrome に止められてもよいように、状態は `chrome.storage.session` に置く |
+| ③ | 検知スクリプト | `<video>` を見つけ、画面が変わったときだけ画像を保存する。文字が少しずつ出るスライドは、全部そろった状態で上書き |
+| ④ | offscreen document | タブの音声を録音し、OPFS に 10 秒ごとに書き足す（音はそのまま聞こえる）。録音の正本 |
+| ⑤ | offscreen → サーバー | Stop 後に 127.0.0.1 のサーバーへ送る。初回に「このMacと接続」で承認したトークンを付ける。失敗したら時間を置いて送り直す |
+| ⑥ | ffmpeg | webm → wav 16 kHz mono |
+| ⑦ | whisperkit-cli | 日本語の文字起こし。幻覚（同じ文の繰り返し）を除く |
+| ⑧ | サーバー（統合） | 発話を「そのとき映っていたスライド」に割り当てる。同じ場面の画像は 1 枚にまとめる（画像自体は `slides/` に残す） |
+| ⑨ | Codex CLI / Ollama（任意） | 話し言葉を書き言葉に整え、要点と見出しを付ける。送るのは文字起こしの本文だけで、音声と画像は送らない。前回の結果を使い回すので、「やり直す」で画像の選び方だけ変わったときは呼ばない |
+
+音声・画像・文字起こしは Mac から出ません。外に出るのは ⑨ を ChatGPT で使うときの文字起こしの本文だけです（Ollama なら Mac の中で完結）。
+
 ## 使い方
 
 ### 1. 準備（初回だけ）
