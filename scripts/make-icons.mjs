@@ -30,7 +30,8 @@ try {
     await page.setViewportSize({ width: canvas, height: canvas });
     const pad = (canvas - art) / 2;
     await page.setContent(
-      `<!doctype html><html><body style="margin:0;background:transparent"><img src="${src}" width="${art}" height="${art}" style="display:block;margin:${pad}px"></body></html>`,
+      // 正方形でない元画像は、つぶさずに art の枠の中央に収める（object-fit: contain）
+      `<!doctype html><html><body style="margin:0;background:transparent"><img src="${src}" width="${art}" height="${art}" style="display:block;margin:${pad}px;object-fit:contain"></body></html>`,
     );
     return page.screenshot({ omitBackground: true, clip: { x: 0, y: 0, width: canvas, height: canvas } });
   };

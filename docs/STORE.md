@@ -72,7 +72,7 @@ LecScribe は、動画を見ながらノートを取るための道具です。�
 
 | 画像 | サイズ | 用意 |
 |---|---|---|
-| 拡張のアイコン | 16 / 32 / 48 / 96 / 128 px | `extension/public/icon/` にある（`pnpm icons:make` で `extension/assets/icon.svg` から作る） |
+| 拡張のアイコン | 16 / 32 / 48 / 96 / 128 px | `extension/public/icon/` にある（`pnpm icons:make` で `extension/assets/icon.png`（透明背景・正方形）から作る。元画像を差し替えたら実行し直す） |
 | ストアのアイコン | 128×128（絵は中央の 96×96、周り 16px は透明。ストアの画像ガイドライン） | `docs/store/icon-128.png`（`pnpm icons:make` が一緒に作る） |
 | スクリーンショット | 1280×800 または 640×400、1〜5 枚 | Mac 実機で撮る（下の一覧） |
 | プロモーションタイル（任意） | 440×280 | 省略可 |
