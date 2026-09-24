@@ -53,10 +53,6 @@ export default defineBackground(() => {
     if (changeInfo.status === 'complete') void closePanelIfGrantLost(tabId);
   });
 
-  chrome.downloads.onChanged.addListener((delta) => {
-    if (delta.state) void serialized(() => onDownloadSettled());
-  });
-
   // アイコンのクリックは自前で受けて（setUpPanel の action.onClicked）、そのタブにだけパネルを開く。
   // Chrome に任せる openPanelOnActionClick は使わない（全タブ共通のパネルが開いてしまう）。
   // 前の版が設定を残しているかもしれないので、毎回明示的に切る
@@ -125,8 +121,8 @@ async function closePanelIfGrantLost(tabId: number): Promise<void> {
     const tab = await chrome.tabs.get(tabId).catch(() => undefined);
     if (tab && opened !== '' && originOf(tab.url) === opened) return;
     const state = await readState();
-    // 録音中・処理中・送信待ち・書き出し中は閉じない（録音は移動しても続くし、進み具合を見ているかもしれない）
-    if (isActive(state) || state.processing || state.exporting || state.pendingUploads?.length) return;
+    // 録音中・処理中・送信待ちの間は閉じない（録音は移動しても続くし、進み具合を見ているかもしれない）
+    if (isActive(state) || state.processing || state.pendingUploads?.length) return;
     await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => undefined);
     const { [tabId]: _closed, ...rest } = tabs;
     await chrome.storage.session.set({ [PANEL_TABS_KEY]: rest });
@@ -202,7 +198,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const [head, ...rest] = current.pendingUploads ?? [];
     if (!head) return;
     // 別のことが動いている間は手を出さない。アラームは 1 回きりなので、掛け直さないと二度と起きない
-    if (current.processing || current.exporting) {
+    if (current.processing) {
       await scheduleRetry(current.uploadAttempts?.[head] ?? 0);
       return;
     }
@@ -232,8 +228,6 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return { state: await unpair() };
     case 'FINISH_NOTES':
       return finishNotes(msg.sessionId);
-    case 'EXPORT':
-      return { state: await exportSession(msg.sessionId) };
     case 'DISCARD':
       return { state: await discardSession(msg.sessionId, msg) };
     case 'PROBE':
@@ -259,7 +253,6 @@ const DETECTOR_SCRIPT = 'detector.js';
 async function start(tabId: number): Promise<SessionState> {
   const current = await readState();
   if (isActive(current)) throw new LecError('BUSY', 'すでにキャプチャ中です。');
-  if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
   // 前のセッションの文字起こし（processing）は録音と独立に続く。offscreen document は共用
 
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
@@ -382,7 +375,6 @@ const VIDEO_WARNINGS = new Set<WarningCode>([
   'TAINTED',
 ]);
 const STALE_FRAME_MS = 5000;
-const EXPORT_LOOKUP_GRACE_MS = 15_000;
 
 function videoWarnings(status: VideoStatus): WarningCode[] {
   const warnings: WarningCode[] = [];
@@ -496,7 +488,6 @@ async function stop(endedBy: string, error?: ErrorInfo): Promise<SessionState> {
  */
 async function upload(sessionId: string, pending: string[] = []): Promise<SessionState> {
   const current = await readState();
-  if (current.exporting) throw new LecError('BUSY', 'エクスポートが終わるまでお待ちください。');
   const config = await loadConfig();
   if (!serverEnabled(config)) {
     throw new LecError('SERVER_REJECTED', 'ローカルサーバーと接続されていません。設定画面で「このMacと接続」を押してください。');
@@ -616,63 +607,6 @@ const STAGE_RANK: Record<ProcessingProgress['stage'], number> = {
   error: 6,
 };
 
-/** Downloads the session files through chrome.downloads from blob: URLs minted by the offscreen document. */
-async function exportSession(sessionId: string): Promise<SessionState> {
-  const current = await readState();
-  if (isActive(current) && current.sessionId === sessionId) throw new LecError('BUSY', '録音中のセッションは書き出せません。');
-  if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
-
-  await ensureOffscreenDocument();
-  const { files } = await sendToOffscreen.export(sessionId);
-  const downloadIds: number[] = [];
-  try {
-    for (const file of files) {
-      downloadIds.push(
-        await chrome.downloads.download({ url: file.url, filename: file.filename, conflictAction: 'uniquify', saveAs: false }),
-      );
-    }
-  } catch (e) {
-    await sendToOffscreen.revoke(files.map((f) => f.url)).catch(() => undefined);
-    await closeOffscreenIfIdle();
-    throw new LecError('EXPORT_FAILED', `ダウンロードを開始できません: ${toErrorInfo(e).message}`);
-  }
-  const next: SessionState = {
-    ...current,
-    error: undefined,
-    exporting: { sessionId, startedAt: Date.now(), downloadIds, urls: files.map((f) => f.url) },
-  };
-  await writeState(next);
-  return next;
-}
-
-/** Idempotent: looks at the real state of every download of the export instead of trusting one delta. */
-async function onDownloadSettled(): Promise<void> {
-  const current = await readState();
-  const exporting = current.exporting;
-  if (!exporting) return;
-
-  const items = await Promise.all(
-    exporting.downloadIds.map((id) => chrome.downloads.search({ id }).then((found) => found[0])),
-  );
-  // 作成直後は search がまだ項目を返さないことがある。猶予時間内の「見つからない」は
-  // 進行中とみなし、それを過ぎても見つからなければ（履歴から消された等）完了扱いにする。
-  const withinGrace = Date.now() - exporting.startedAt < EXPORT_LOOKUP_GRACE_MS;
-  const unsettled = items.some((item) => (item ? item.state === 'in_progress' : withinGrace));
-  if (unsettled) return;
-
-  const interrupted = items.find((item) => item?.state === 'interrupted');
-  const error: ErrorInfo | undefined = interrupted
-    ? { code: 'EXPORT_FAILED', message: `ダウンロードが中断されました: ${interrupted.error ?? 'unknown'}` }
-    : current.error;
-  await sendToOffscreen.revoke(exporting.urls).catch(() => undefined);
-  const lastSession =
-    current.lastSession?.sessionId === exporting.sessionId && !interrupted
-      ? { ...current.lastSession, exported: true }
-      : current.lastSession;
-  await writeState({ ...current, error, exporting: undefined, lastSession });
-  await closeOffscreenIfIdle();
-}
-
 /**
  * 一覧の「中止」「削除」。
  * - 処理中・送信待ち: 処理を止める。output が 'keep' でなければサーバー側のフォルダも消す（'delete' なら notes.md があっても）
@@ -682,7 +616,6 @@ async function onDownloadSettled(): Promise<void> {
 async function discardSession(sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}): Promise<SessionState> {
   let current = await readState();
   if (isActive(current) && current.sessionId === sessionId) throw new LecError('BUSY', '録音中のセッションは削除できません。');
-  if (current.exporting) throw new LecError('BUSY', 'エクスポート中です。');
 
   const config = await loadConfig();
   const wasProcessing = current.processing?.sessionId === sessionId;
@@ -879,9 +812,9 @@ async function closeOffscreenDocument(): Promise<void> {
   }
 }
 
-/** 録音・送信・文字起こしの polling・エクスポートのどれも動いていないときだけ閉じる */
+/** 録音・送信・文字起こしの polling のどれも動いていないときだけ閉じる */
 async function closeOffscreenIfIdle(): Promise<void> {
   const state = await readState();
-  if (isActive(state) || state.processing || state.exporting) return;
+  if (isActive(state) || state.processing) return;
   await closeOffscreenDocument();
 }
