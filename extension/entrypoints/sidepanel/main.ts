@@ -200,8 +200,8 @@ function render(state: SessionState) {
   current = state;
   const active = isActive(state);
   dot.dataset.state = state.state;
-  stateLabel.textContent = state.exporting ? 'Exporting' : STATE_LABEL[state.state];
-  dots.hidden = !(state.exporting || BUSY_STATES.has(state.state));
+  stateLabel.textContent = STATE_LABEL[state.state];
+  dots.hidden = !BUSY_STATES.has(state.state);
   tabValue.textContent = state.title ?? '—';
   tabValue.title = state.title ?? '';
 
@@ -211,12 +211,12 @@ function render(state: SessionState) {
 
   startBtn.hidden = active;
   stopBtn.hidden = !active;
-  startBtn.disabled = !!state.exporting;
+  startBtn.disabled = false;
   stopBtn.disabled = state.state === 'STOPPING';
   snapBtn.hidden = !(state.state === 'CAPTURING' && state.frameSource === 'direct');
   openBtn.hidden = !(state.state === 'COMPLETED' && !state.processing && state.lastSession?.outputDir);
   // サーバーと未接続で何も動いていなければ、「このMacと接続」だけを出す（接続しないと文字起こしできない）
-  const setupMode = !serverConfigured && !active && !state.processing && !state.exporting;
+  const setupMode = !serverConfigured && !active && !state.processing;
   setupSection.hidden = !setupMode;
   for (const el of mainSections) el.hidden = setupMode;
   if (setupMode) {
@@ -235,7 +235,7 @@ function render(state: SessionState) {
     const last = state.lastSession;
     audioValue.textContent =
       state.state === 'COMPLETED' && last
-        ? `録音完了 ${formatElapsed(last.durationMs)} / ${formatBytes(last.audioBytes)}${last.exported ? '（Downloads に書き出し済み）' : ''}`
+        ? `録音完了 ${formatElapsed(last.durationMs)} / ${formatBytes(last.audioBytes)}`
         : '—';
   }
 
@@ -259,8 +259,6 @@ function render(state: SessionState) {
     footer.textContent = '';
   } else if (state.state === 'COMPLETED') {
     footer.textContent = '「文字起こしする」でサーバーへ送ると、音声・スライドと文字起こしが ~/LecScribe/ に保存されます。';
-  } else if (state.exporting) {
-    footer.textContent = 'ダウンロード中です…';
   } else {
     // 許可が切れて Start できないときの案内は、失敗したときのエラー文（アイコンを押し直す）が受け持つ。
     // 別のサイトへ移動したらパネルは閉じるので、ここに常に出しておく必要はない
@@ -272,7 +270,7 @@ function render(state: SessionState) {
 
   // 一覧は録音中も出す（録音中のセッション自身は除く）。動画の状態更新のたびに
   // 作り直すとボタンがちらつくので、一覧に関係する状態が変わったときだけ描き直す
-  const key = [state.state, state.sessionId, state.processing?.stage, state.exporting ? 'x' : '', state.pendingUploads?.join(','), serverConfigured].join('|');
+  const key = [state.state, state.sessionId, state.processing?.stage, state.pendingUploads?.join(','), serverConfigured].join('|');
   if (key !== sessionsKey) {
     sessionsKey = key;
     void renderSessions();
@@ -680,14 +678,13 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     t.title = title;
     return t;
   };
-  // Downloads への生データ書き出しは UI から外した（サーバー側の .lecscribe/ に音声も残るため。EXPORT メッセージ自体は残している）
+  // Downloads への生データ書き出しは廃止した（サーバー側の .lecscribe/ に音声も残るため。SPEC §11.2）
   if (inFlight) {
     // 処理中・送信待ち: 「中止」だけ。初回なら途中のデータごと消し、やり直し中なら止めるだけ（前回の結果と録音は残る）。
     // ただし初回でも、ノート作成中（文字起こしは済んでいる）なら消さない。ノート作成だけを止めて、文字起こしのままのノートで
     // 完了にする（§11.3、2026-09-20。Codex が利用上限で進まないのを見て「中止」を押し、録音ごと失うのを防ぐ）
     const polishing = !done && current.processing?.sessionId === session.sessionId && current.processing.stage === 'polishing';
     const stopBtn = button('中止');
-    stopBtn.disabled = !!current.exporting;
     stopBtn.addEventListener('click', () => {
       const text = done
         ? `「${title}」のやり直しを中止します。前回の結果（~/LecScribe のフォルダ）と録音は残ります。`
@@ -704,10 +701,9 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   } else {
     const uploadBtn = button(done ? 'やり直す' : '文字起こしする', done ? '' : 'primary');
     uploadBtn.title = done ? '同じフォルダに文字起こしをやり直す' : 'ローカルサーバーへ送って文字起こしする（~/LecScribe に出力）';
-    uploadBtn.disabled = !!current.exporting || missing;
+    uploadBtn.disabled = missing;
     uploadBtn.addEventListener('click', () => void act(() => sendToBackground.upload(session.sessionId)));
     const removeBtn = button('削除', 'remove');
-    removeBtn.disabled = !!current.exporting;
     removeBtn.addEventListener('click', () => {
       // サーバー側のフォルダは、拡張が「処理済み」と思っていなくても残っていることがある（送信後に拡張が止まった等）。
       // 実際に消す範囲を必ず伝える

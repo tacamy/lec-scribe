@@ -7,7 +7,6 @@ export type ErrorCode =
   | 'RECORD_FAILED'
   | 'STORAGE_FAILED'
   | 'NO_SESSION'
-  | 'EXPORT_FAILED'
   | 'PROBE_FAILED'
   | 'NO_VIDEO'
   | 'SERVER_UNREACHABLE'

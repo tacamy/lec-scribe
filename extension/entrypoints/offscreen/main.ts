@@ -9,9 +9,9 @@ import {
   type CaptureStartResult,
   type CaptureStats,
   type CaptureStopResult,
-  type ExportFile,
-  type ExportResult,
   type ServerStatus,
+  type SessionFile,
+  type SessionFilesResult,
   type ServerTarget,
   type SessionMeta,
   type SlideSaveResult,
@@ -132,7 +132,8 @@ type Capture = {
 };
 
 let capture: Capture | null = null;
-const exportUrls = new Set<string>();
+/** sessionFiles で作った blob: URL。REVOKE で捨てる */
+const fileUrls = new Set<string>();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!hasTarget(msg, 'offscreen')) return false;
@@ -147,8 +148,8 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return stopCapture();
     case 'GET_STATS':
       return getStats();
-    case 'EXPORT':
-      return exportSession(msg.sessionId);
+    case 'SESSION_FILES':
+      return sessionFiles(msg.sessionId);
     case 'REVOKE':
       return revokeUrls(msg.urls);
     case 'DISCARD':
@@ -664,19 +665,22 @@ async function updateSlide(msg: Extract<ToOffscreen, { type: 'SLIDE_UPDATE' }>):
   return { seq: meta.seq, filename: meta.filename, bytes: bytes.size };
 }
 
-/** Creates blob: URLs for the session files; the worker downloads them (SPEC §11.2). */
-async function exportSession(sessionId: string): Promise<ExportResult> {
-  if (capture?.sessionId === sessionId) throw new LecError('BUSY', 'キャプチャ中のセッションはエクスポートできません。');
+/**
+ * セッションのファイルを blob: URL で読めるようにする。スモークテストが OPFS の中身（audio.webm、slides.json など）を
+ * 確かめるための入り口で、利用者向けの機能ではない（Downloads への書き出しは 2026-09-24 に廃止。SPEC §11.2）
+ */
+async function sessionFiles(sessionId: string): Promise<SessionFilesResult> {
+  if (capture?.sessionId === sessionId) throw new LecError('BUSY', 'キャプチャ中のセッションは読み出せません。');
   let dir: FileSystemDirectoryHandle;
   try {
     dir = await sessionDir(sessionId);
   } catch {
     throw new LecError('NO_SESSION', `セッション ${sessionId} が見つかりません。`);
   }
-  const files: ExportFile[] = [];
+  const files: SessionFile[] = [];
   const add = (file: File, relative: string) => {
     const url = URL.createObjectURL(file);
-    exportUrls.add(url);
+    fileUrls.add(url);
     files.push({ url, filename: `LecScribe/${sessionId}/${relative}`, bytes: file.size });
   };
   for (const name of [AUDIO_FILE, SESSION_FILE, STATUS_FILE, SLIDES_FILE, TIMELINE_FILE]) {
@@ -698,7 +702,7 @@ async function exportSession(sessionId: string): Promise<ExportResult> {
 
 function revokeUrls(urls: string[]): void {
   for (const url of urls) {
-    if (exportUrls.delete(url)) URL.revokeObjectURL(url);
+    if (fileUrls.delete(url)) URL.revokeObjectURL(url);
   }
 }
 
@@ -719,7 +723,7 @@ declare global {
       startFromStream: typeof startFromStream;
       stop: typeof stopCapture;
       stats: typeof getStats;
-      export: typeof exportSession;
+      sessionFiles: typeof sessionFiles;
       revoke: typeof revokeUrls;
       discard: typeof discardSession;
     };
@@ -729,7 +733,7 @@ window.__lecscribe = {
   startFromStream,
   stop: stopCapture,
   stats: getStats,
-  export: exportSession,
+  sessionFiles,
   revoke: revokeUrls,
   discard: discardSession,
 };
