@@ -248,7 +248,7 @@ export class Pipeline {
       ),
     ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
-    if (hidden.length > 0) this.log(`同じ場面として notes.md から外した画像: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
+    if (hidden.length > 0) this.log(`notes.md から外した画像（同じ場面・ほぼ一色）: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
     return shownSlides(slides, decisions);
   }
 

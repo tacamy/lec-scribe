@@ -4,7 +4,25 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveBin, run } from './exec.ts';
 import type { SlideEntry } from './merge.ts';
-import { colorEntropy, colorMatch, panResidual, pickShownSlides, readThumbnail, shownSlides, textContained, textSimilarity, THUMB_HEIGHT, THUMB_WIDTH } from './scenes.ts';
+import {
+  colorEntropy,
+  colorMatch,
+  columnMatch,
+  labelText,
+  panResidual,
+  pickShownSlides,
+  pixelDiff,
+  readThumbnail,
+  rowProfile,
+  rowScroll,
+  sharedLineRatio,
+  shownSlides,
+  textContained,
+  textSimilarity,
+  THUMB_HEIGHT,
+  THUMB_WIDTH,
+  uniformFraction,
+} from './scenes.ts';
 
 const PIXELS = THUMB_WIDTH * THUMB_HEIGHT;
 
@@ -19,6 +37,18 @@ function footage(seed: number, shade = 128): Uint8Array {
     f[p * 4 + 1] = v;
     f[p * 4 + 2] = v;
     f[p * 4 + 3] = 255;
+  }
+  return f;
+}
+
+/**
+ * 白地に横線だけの画面（文字中心のスライドの代わり。色の多様さは写真に届かず、行の並びにも凹凸が少ない）。
+ * seed で線の位置が変わり、画素の 2 割ほどが違う（「中身が同じ」には掛からない）
+ */
+function paper(seed: number): Uint8Array {
+  const f = new Uint8Array(PIXELS * 4).fill(255);
+  for (let y = 6 + seed * 3; y < 84; y += 12) {
+    for (let dy = 0; dy < 3; dy++) for (let x = 10; x < 150; x++) f.set([20, 20, 20], ((y + dy) * THUMB_WIDTH + x) * 4);
   }
   return f;
 }
@@ -494,10 +524,12 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
     }
   });
 
-  it('探す範囲（横 24・縦 12 画素）を超えて動いた画面は、別の画面として残す', () => {
-    for (const [sx, sy] of [[0, 18], [32, 0]] as const) {
-      expect(pickPair(webPage(0, 0), webPage(sx, sy)).map((x) => x.shown), `(${sx}, ${sy})`).toEqual([true, true]);
-    }
+  it('探す範囲（横 24 画素）を超えて横に動いた画面は別の画面として残し、縦に超えた画面は「大きくスクロールした組」の規則が引き取る', () => {
+    expect(pickPair(webPage(0, 0), webPage(32, 0)).map((x) => x.shown)).toEqual([true, true]);
+    // 縦 18 画素は平行移動では説明しきれない（残り 4 割超）が、行の並びが重なるので 5c で外れる（5b と 5c の境目）
+    const r = panResidual(webPage(0, 18), webPage(0, 0));
+    expect(r.left / r.diff).toBeGreaterThan(0.4);
+    expect(pickPair(webPage(0, 0), webPage(0, 18)).map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled']]);
   });
 
   it('移動は見つかっても、変わった画素が全体の 1 割に届かない小さなパンは、この規則では外さない', () => {
@@ -520,10 +552,13 @@ describe('画面を少しスクロール・パンしただけの組（2026-09-20
 });
 
 describe('前の画面に短く戻っただけの画像（2026-09-20）', () => {
-  /** 画面ごとに濃さの違う無地に近い画像。同じ番号なら中身が同じ、違う番号なら全画素が違う */
+  /** 画面ごとに濃さの違う画像（上半分と下半分で濃さを変え、「ほぼ一色」にはしない）。同じ番号なら中身が同じ、違う番号なら全画素が違う */
   const screen = (n: number) => {
     const f = new Uint8Array(PIXELS * 4).fill(255);
-    for (let p = 0; p < PIXELS; p++) f.set([40 * n, 40 * n, 40 * n], p * 4);
+    for (let p = 0; p < PIXELS; p++) {
+      const v = 40 * n + (p < PIXELS / 2 ? 0 : 60);
+      f.set([v, v, v], p * 4);
+    }
     return f;
   };
   /** times の時刻（秒）に screens の画面が撮れた講義 */
@@ -569,14 +604,20 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     // 画素の 4% ずつ変わっていく画面。直前の 1 枚とだけ比べて連ねると、戻った先とは似ていない画像まで
     // ずっと「戻っただけ」として外れ続け、その区間に載る画像が 1 枚も無くなっていた
     const step = Math.floor(PIXELS * 0.04);
+    /** 上半分が白、下半分が灰色の画面（「ほぼ一色」にはしない）。上半分の先頭 flipped 画素だけ黒くする */
     const drift = (flipped: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = PIXELS / 2; p < PIXELS; p++) f.set([100, 100, 100], p * 4);
       for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
       return f;
     };
+    /** 濃さ v の画面（上半分 v、下半分 v + 60。「ほぼ一色」にはしない） */
     const flat = (v: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
-      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      for (let p = 0; p < PIXELS; p++) {
+        const w = Math.min(255, v + (p < PIXELS / 2 ? 0 : 60));
+        f.set([w, w, w], p * 4);
+      }
       return f;
     };
     const frames: [Uint8Array, number][] = [[drift(0), 0], [flat(0), 30], [drift(0), 60], [drift(step), 62], [drift(step * 2), 64], [flat(120), 200]];
@@ -593,14 +634,20 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     // 1 枚ずつの「この画面が続いた時間」だけで決めると、6 秒ごとに少し変わる長い戻りが丸ごと外れて、
     // その区間に載る画像が 1 枚も無くなっていた
     const step = Math.floor(PIXELS * 0.04);
+    /** 上半分が白、下半分が灰色の画面（「ほぼ一色」にはしない）。上半分の先頭 flipped 画素だけ黒くする */
     const drift = (flipped: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let p = PIXELS / 2; p < PIXELS; p++) f.set([100, 100, 100], p * 4);
       for (let p = 0; p < flipped; p++) f.set([0, 0, 0], p * 4);
       return f;
     };
+    /** 濃さ v の画面（上半分 v、下半分 v + 60。「ほぼ一色」にはしない） */
     const flat = (v: number) => {
       const f = new Uint8Array(PIXELS * 4).fill(255);
-      for (let p = 0; p < PIXELS; p++) f.set([v, v, v], p * 4);
+      for (let p = 0; p < PIXELS; p++) {
+        const w = Math.min(255, v + (p < PIXELS / 2 ? 0 : 60));
+        f.set([w, w, w], p * 4);
+      }
       return f;
     };
     // A（0 秒）→ B（60 秒）→ A に戻って 6 秒ごとに 8% ずつ揺れる（120〜150 秒）→ C（240 秒）
@@ -629,5 +676,306 @@ describe('前の画面に短く戻っただけの画像（2026-09-20）', () => 
     expect(e.map((x) => x.shown)).toEqual([true, false, false, true, true]);
     expect(e[3]).toMatchObject({ standsFor: 'slide_002.png' });
     expect(e[2]).toMatchObject({ reason: 'revisit', sameSceneAs: 'slide_004.png' });
+  });
+});
+
+describe('ほぼ一色の画像（2026-09-22）', () => {
+  const solid = (v: number) => new Uint8Array(PIXELS * 4).fill(v);
+  /** 一色の地に、marks 画素だけ反対の色の印を置く */
+  const withMark = (v: number, marks: number) => {
+    const f = solid(v);
+    for (let p = 0; p < marks; p++) f.set([255 - v, 255 - v, 255 - v], p * 4);
+    return f;
+  };
+  const thumbs = (...frames: Uint8Array[]) => new Map(frames.map((f, i) => [`slide_${String(i + 1).padStart(3, '0')}.png`, f] as [string, Uint8Array]));
+
+  it('uniformFraction は一色なら 1、印のある分だけ下がる', () => {
+    expect(uniformFraction(solid(0))).toBe(1);
+    expect(uniformFraction(solid(128))).toBe(1);
+    expect(uniformFraction(withMark(0, 144))).toBeCloseTo(0.99, 3);
+    expect(uniformFraction(footage(1))).toBeLessThan(0.9);
+  });
+
+  it('真っ黒・灰色の画像は載せず、比較の基準にもしない（前後の同じ場面はつながったまま）', () => {
+    const d = pickShownSlides([slide(1, 0.2), slide(2, 0.2), slide(3, 0.2)], thumbs(footage(1, 60), solid(0), footage(2, 60)), 0.65, undefined, 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'blank'], [false, 'same-scene']]);
+    // 今載っている画像を指す（間の発話はその下に入る。scenes.json から辿れる）
+    expect(d[1]!.sameSceneAs).toBe('slide_001.png');
+    // 最初の 1 枚が一色（動画の先頭の灰色）でも、次の画像が基準になる
+    const e = pickShownSlides([slide(1, 0.2), slide(2, 0.2)], thumbs(solid(128), footage(1)), 0.65, undefined, 'first');
+    expect(e.map((x) => [x.shown, x.reason])).toEqual([[false, 'blank'], [true, undefined]]);
+    // 最後の 1 枚を載せる設定でも、一色の画像はまとまりの代わりに選ばれない
+    const f = pickShownSlides([slide(1, 0.2), slide(2, 0.2), slide(3, 0.2)], thumbs(footage(1, 60), footage(2, 60), solid(0)), 0.65, undefined, 'last');
+    expect(f.map((x) => [x.filename, x.shown])).toEqual([['slide_001.png', false], ['slide_002.png', true], ['slide_003.png', false]]);
+  });
+
+  it('白地に短い見出しがあるだけの画像や、暗い画面に読める文字がある画像は残す（印が 1% あれば一色ではない）', () => {
+    for (const frame of [withMark(255, 150), withMark(20, 300)]) {
+      expect(uniformFraction(frame)).toBeLessThan(0.995);
+      expect(pickShownSlides([slide(1, 1)], thumbs(frame), 0.65, undefined, 'first')[0]!.shown).toBe(true);
+    }
+  });
+
+  it('画素ではほぼ一色でも、文字認識が何か読めた画像は残す（淡い文字のタイトル、細い罫線）', () => {
+    const faint = withMark(255, 40); // 0.3% の印。画素だけなら一色
+    expect(uniformFraction(faint)).toBeGreaterThan(0.995);
+    const read = { distance: () => 1, tight: 0.2, photo: 0.55, text: () => '第3章' };
+    expect(pickShownSlides([slide(1, 1)], thumbs(faint), 0.65, read, 'first')[0]!.shown).toBe(true);
+    const unread = { ...read, text: () => '' };
+    expect(pickShownSlides([slide(1, 1)], thumbs(faint), 0.65, unread, 'first')[0]!.reason).toBe('blank');
+  });
+
+  it('ほぼ一色の画像は、直前の画像としての比較にも使わない（真っ黒と「暗い背景に字幕」は画素差 3% で同じに見える）', () => {
+    const caption = withMark(20, 400); // 暗い背景に字幕（一色ではない: 97.2%）
+    expect(pixelDiff(solid(0), caption)).toBeLessThan(0.05);
+    const d = pickShownSlides([slide(1, 1), slide(2, 1), slide(3, 1)], thumbs(footage(1, 128), solid(0), caption), 0.65, undefined, 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'blank'], [true, undefined]]);
+  });
+
+  it('フェードのコマを挟んでも、「この画面が続いた時間」はそこで途切れない（長い戻りが短い戻りに見えない）', () => {
+    const A = footage(1, 60);
+    const B = footage(2, 220);
+    const frames: Array<[Uint8Array, number]> = [[A, 0], [B, 10], [A, 20], [solid(0), 23], [A, 200]];
+    const slides = frames.map(([, videoTime], i) => ({ ...slide(i + 1, 1), videoTime }));
+    const d = pickShownSlides(slides, thumbs(...frames.map(([f]) => f)), 0.65, undefined, 'first');
+    // 20 秒に戻った A は 200 秒まで続く（真っ黒を飛ばして測る）ので短い戻りではなく、載る
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [true, undefined], [true, undefined], [false, 'blank'], [false, 'identical']]);
+  });
+});
+
+describe('画面を大きくスクロールした組（2026-09-22）', () => {
+  // 色は 3 つだけにして、色の多様さが写真の判定（3 ビット）に届かないようにする（届くと写真同士の規則が先にまとめる）
+  const RED = [230, 40, 40];
+  const BLUE = [30, 90, 200];
+  const DARK = [50, 50, 50];
+  type Band = { y: number; h: number; color: number[]; x?: number; w?: number };
+  /**
+   * 帯が並ぶ長いページ（帯の高さ・間隔・横の位置と幅はそろえない。そろえると、数行の平行移動でも別の帯同士が合ってしまい
+   * 5b が先にまとめる）。90 行より下の帯はスクロールすると現れる
+   */
+  const BANDS: Band[] = [
+    { y: 4, h: 9, x: 0, w: 120, color: RED },
+    { y: 20, h: 5, x: 30, w: 130, color: BLUE },
+    { y: 31, h: 13, x: 10, w: 90, color: DARK },
+    { y: 52, h: 7, x: 50, w: 100, color: RED },
+    { y: 66, h: 11, x: 0, w: 70, color: BLUE },
+    { y: 84, h: 4, x: 20, w: 140, color: DARK },
+    { y: 96, h: 10, x: 40, w: 80, color: RED },
+    { y: 112, h: 6, x: 5, w: 110, color: BLUE },
+  ];
+  const GREEN = [20, 150, 80];
+  const ORANGE = [240, 150, 30];
+  /** 別のページ: 帯の色も位置も高さも違う（余白の白は同じ） */
+  const OTHER_BANDS: Band[] = [
+    { y: 8, h: 16, x: 20, w: 100, color: GREEN },
+    { y: 30, h: 3, x: 0, w: 160, color: ORANGE },
+    { y: 39, h: 18, x: 60, w: 90, color: GREEN },
+    { y: 63, h: 3, x: 10, w: 80, color: ORANGE },
+    { y: 72, h: 15, x: 30, w: 120, color: GREEN },
+  ];
+  /** ページを sy 行だけ下に（sx 画素だけ右に）送った画面 */
+  const page = (sy: number, bands = BANDS, sx = 0) => {
+    const f = new Uint8Array(PIXELS * 4).fill(255);
+    for (let y = 0; y < THUMB_HEIGHT; y++) {
+      const band = bands.find((b) => y + sy >= b.y && y + sy < b.y + b.h);
+      if (!band) continue;
+      const x0 = Math.max(0, (band.x ?? 0) - sx);
+      const x1 = Math.min(THUMB_WIDTH, (band.x ?? 0) + (band.w ?? THUMB_WIDTH) - sx);
+      for (let x = x0; x < x1; x++) f.set([...band.color, 255], (y * THUMB_WIDTH + x) * 4);
+    }
+    return f;
+  };
+  const vision = (d: number, text?: (i: number) => string | undefined) => ({ distance: () => d, tight: 0.2, photo: 0.55, ...(text ? { text } : {}) });
+  const pickPair = (a: Uint8Array, b: Uint8Array, v = vision(0.3)) =>
+    pickShownSlides([slide(1, 1), slide(2, 1)], new Map([['slide_001.png', a], ['slide_002.png', b]]), 0.65, v, 'first');
+
+  const scroll = (a: Uint8Array, b: Uint8Array) => rowScroll(rowProfile(a), rowProfile(b));
+  /** カードが散らばる長いページ（位置も大きさもそろえない。列にも凹凸がある）。sy 行下に、sx 画素右に送った画面 */
+  const CARDS: Band[] = [
+    { y: 5, h: 12, x: 10, w: 40, color: DARK },
+    { y: 20, h: 9, x: 70, w: 50, color: BLUE },
+    { y: 38, h: 14, x: 20, w: 60, color: RED },
+    { y: 60, h: 10, x: 90, w: 45, color: DARK },
+    { y: 78, h: 8, x: 5, w: 35, color: BLUE },
+    { y: 96, h: 12, x: 60, w: 70, color: RED },
+    { y: 114, h: 9, x: 110, w: 40, color: DARK },
+  ];
+  const cards = (sy: number, sx = 0) => page(sy, CARDS, sx);
+
+  it('rowScroll は、帯の並びが重なるずれと、そのときの一致を返す', () => {
+    expect(colorEntropy(page(0))).toBeLessThan(3);
+    const r = scroll(page(0), page(20));
+    // a の行 y が b の行 y + dy と重なるので、20 行スクロールした画面とは dy = -20
+    expect(Math.abs(r.dy! + 20)).toBeLessThanOrEqual(1);
+    expect(r.match).toBeGreaterThan(0.8);
+    expect(r.structure).toBeGreaterThan(0.3);
+    // 別のページは、余白の白同士しか合わないので、まとめる線（0.6）に届かない
+    expect(scroll(page(0), page(0, OTHER_BANDS)).match).toBeLessThan(0.6);
+  });
+
+  it('行の並びが周期的で中身の並びだけ違うリストは、列の並びが合わないので残す', () => {
+    // 10 行周期のリスト。P は左端に、Q は右端に濃いセルがある（行の平均色は同じ）
+    const list = (x0: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let y = 0; y < THUMB_HEIGHT; y++) {
+        if (y % 10 >= 5) continue;
+        for (let x = x0; x < x0 + 40; x++) f.set([40, 40, 40], (y * THUMB_WIDTH + x) * 4);
+      }
+      return f;
+    };
+    const P = list(0);
+    const Q = list(120);
+    const r = scroll(P, Q);
+    expect(r.match).toBeGreaterThan(0.9); // 行だけ見れば「同じ」
+    const col = columnMatch(P, Q, r.dy!);
+    expect(col.informative).toBe(true);
+    expect(col.match).toBeLessThan(0.6); // 列を見れば別物（横 40 画素まで探しても届かない）
+    expect(pickPair(P, Q).map((x) => x.shown)).toEqual([true, true]);
+    // 本当にスクロールした同じ一覧なら列も合う
+    const c = columnMatch(cards(20), cards(0), scroll(cards(20), cards(0)).dy!);
+    expect(c.informative).toBe(true);
+    expect(c.match).toBeGreaterThan(0.9);
+    // 横いっぱいの帯だけの画面は列に凹凸がなく、列では判断しない（行と文字に任せる）
+    const FULL = BANDS.map((b) => ({ ...b, x: 0, w: THUMB_WIDTH }));
+    expect(columnMatch(page(20, FULL), page(0, FULL), scroll(page(20, FULL), page(0, FULL)).dy!).informative).toBe(false);
+    expect(pickPair(page(0, FULL), page(20, FULL)).map((x) => x.reason)).toEqual([undefined, 'scrolled']);
+  });
+
+  it('斜めに送った画面（縦にも横にもずれた）も、列のずれを探してまとめる', () => {
+    const d = pickPair(cards(0), cards(20, 30));
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled']]);
+    expect(Math.abs(d[1]!.scrollShift! - 20)).toBeLessThanOrEqual(1);
+    expect(Math.abs(Math.abs(d[1]!.scrollShiftX!) - 30)).toBeLessThanOrEqual(1);
+    // 横 40 画素を超えて動いた画面は残す
+    expect(pickPair(cards(0), cards(20, 60)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('文字認識の雑音（時計・ファイル名の断片・記号）は「別のラベル」に数えない', () => {
+    expect(labelText('1月20日（月）16:42\n✕ 1125octracear047\n山\n35S\nカメラ本体')).toBe('カメラ本体');
+    expect(labelText('35S\n19\n炭')).toBe('');
+    // 時計とファイル名の断片だけが違うアプリの画面は、ラベルが違うとはみなさずまとめる（文字全体では 0.8 そろわないので文字の規則には掛からない）
+    const clock = (i: number) => (i === 0 ? 'ファイル\n1月20日（月）16:42\n✕ 1125octracear047' : 'ファイル\n1月20日（月）17:03\n✕ 9977pctra31');
+    expect(textSimilarity(clock(0), clock(1))).toBeLessThan(0.8);
+    expect(pickPair(page(0), page(20), vision(0.3, clock)).map((x) => x.reason)).toEqual([undefined, 'scrolled']);
+  });
+
+  it('平行移動の探索範囲（縦 12 画素）を超えてスクロールしても、行の並びが重なれば外す', () => {
+    for (const sy of [16, 24, 32]) {
+      const d = pickPair(page(0), page(sy));
+      expect(d.map((x) => [x.shown, x.reason]), `sy=${sy}`).toEqual([[true, undefined], [false, 'scrolled']]);
+      // scrollShift は「基準の画像を何行ずらすと今の画像に重なるか」。下にスクロールした画面なら正
+      expect(Math.abs(d[1]!.scrollShift! - sy), `sy=${sy}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('別のページや、行の並びに凹凸が足りない画面は残す', () => {
+    expect(pickPair(page(0), page(0, OTHER_BANDS)).map((x) => x.shown)).toEqual([true, true]);
+    // 帯 1 本だけの画面（白地に見出しだけのスライドのような）は、帯が動けばどこかで重なってしまうので判断しない
+    const banner = (y: number) => page(0, [{ y, h: 10, color: DARK }]);
+    const r = scroll(banner(10), banner(40));
+    expect(r.match).toBeGreaterThan(0.6);
+    expect(r.structure).toBeLessThan(0.3);
+    expect(pickPair(banner(10), banner(40)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('別のラベルが付いた写真は、行の並びが重なっても残す（写真同士の規則と同じ歯止め）', () => {
+    const labels = (i: number) => (i === 0 ? 'カメラ本体' : '粗微動ユニット');
+    expect(pickPair(page(0), page(20), vision(0.3, labels)).map((x) => x.shown)).toEqual([true, true]);
+    // 片方にしかラベルがなければ「別のラベル」ではない（同じラベルなら文字の規則が先にまとめる）
+    const oneLabel = (i: number) => (i === 0 ? 'カメラ本体' : '');
+    expect(pickPair(page(0), page(20), vision(0.3, oneLabel)).map((x) => x.reason)).toEqual([undefined, 'scrolled']);
+  });
+
+  it('基準の画像とだけ比べるので、送り続けると探す範囲（45 行）を超えたところで次の 1 枚が残る。最後の 1 枚を載せる設定でも同じ', () => {
+    const frames = [page(0), page(20), page(40), page(70)];
+    const slides = frames.map((_, i) => slide(i + 1, 1));
+    const thumbs = new Map(frames.map((f, i) => [`slide_${String(i + 1).padStart(3, '0')}.png`, f] as [string, Uint8Array]));
+    const first = pickShownSlides(slides, thumbs, 0.65, vision(0.3), 'first');
+    expect(first.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled'], [false, 'scrolled'], [true, undefined]]);
+    const last = pickShownSlides(slides, thumbs, 0.65, vision(0.3), 'last');
+    expect(last.map((x) => x.shown)).toEqual([false, false, true, true]);
+    expect(last[2]).toMatchObject({ standsFor: 'slide_001.png' });
+    expect(last[0]).toMatchObject({ reason: 'superseded', sameSceneAs: 'slide_003.png' });
+  });
+
+  it('見た目の距離が 0.4 を超える組や、Vision を使わない設定では使わない', () => {
+    expect(pickPair(page(0), page(20), vision(0.45)).map((x) => x.shown)).toEqual([true, true]);
+    expect(pickPair(page(0), page(20), { distance: () => 0, tight: 0, photo: 0 }).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('両方に 3 行以上の文字があるなら「別のラベル」の歯止めは使わず、共通する行が少なければ同じ配色の別のページとして残す', () => {
+    // 送れば本文は入れ替わるので、文字がそろわないこと自体は根拠にしない。共通する行で見る
+    const scrolled = (i: number) => (i === 0 ? '春の企画展\n出品作品の一覧\n入場は無料です' : '出品作品の一覧\n入場は無科です\n会期は来月まで');
+    const s = pickPair(page(0), page(20), vision(0.3, scrolled));
+    expect(s.map((x) => x.reason)).toEqual([undefined, 'scrolled']);
+    expect(s[1]!.sharedLines).toBeCloseTo(0.667, 2);
+    // 同じ配色で本文がまるごと違うページ: 「別のラベル」の歯止めは（本文が 3 行以上なので）使わず、共通する行が無いことで残る
+    const different = (i: number) => (i === 0 ? '春の企画展\n出品作品の一覧\n入場は無料です' : '秋の講演会\n登壇者の紹介\n会場は本館です');
+    const d = pickPair(page(0), page(20), vision(0.3, different));
+    expect(d.map((x) => x.shown)).toEqual([true, true]);
+    expect(d[1]!.sharedLines).toBe(0);
+  });
+
+  it('sharedLineRatio は少ない方の行のうち相手にもある割合。3 行に満たなければ判断しない', () => {
+    expect(sharedLineRatio('a\nb\nc', 'a\nb\nc')).toBeUndefined();
+    expect(sharedLineRatio('京都芸術大学\n漁師見習いの字\nムカデにかまれた\nみぎてのじ', '京都芸術大学\n漁師見習いの字\nムカチくん\nムカデにかまれた')).toBeCloseTo(0.75);
+    expect(sharedLineRatio('春の企画展\n出品作品の一覧\n入場は無料です', '秋の講演会\n登壇者の紹介\n会場は本館です')).toBe(0);
+  });
+});
+
+describe('同じショットの続き（切り替えの瞬間の変化が小さい写真・映像、2026-09-22）', () => {
+  /** 色とりどりの写真。palette の色を画素ごとにランダムに置く（色の多様さは 3 ビット超）。seed で並びが変わる */
+  const PALETTE_A = [[200, 30, 30], [30, 160, 60], [40, 80, 220], [240, 200, 20], [120, 60, 160], [20, 200, 200], [250, 140, 40], [90, 90, 90], [230, 230, 230], [10, 10, 10]];
+  /** 別の場面: 色の階調（RGB 各 8 段階）が A と 1 つも重ならない */
+  const PALETTE_B = [[60, 120, 200], [180, 20, 120], [20, 60, 20], [140, 140, 20], [220, 100, 100], [70, 200, 120], [160, 90, 40], [210, 210, 90], [30, 30, 90], [130, 130, 130]];
+  const photo = (seed: number, palette: number[][]) => {
+    const f = new Uint8Array(PIXELS * 4);
+    let r = seed;
+    for (let p = 0; p < PIXELS; p++) {
+      r = (r * 1103515245 + 12345) & 0x7fffffff;
+      f.set([...palette[(r >> 16) % palette.length]!, 255], p * 4);
+    }
+    return f;
+  };
+  /** 静止部分が多い（スライドらしいと測られた）、自動で保存された画像。diffPrev は切り替えを検知した瞬間の変化率 */
+  const shot = (n: number, diffPrev: number, reason = 'change'): SlideEntry => ({ filename: `slide_${String(n).padStart(3, '0')}.png`, seq: n, videoTime: n * 10, reason, trigger: { diffPrev, stillFraction: 0.9 } });
+  const vision = (text?: (i: number) => string | undefined) => ({ distance: () => 0.8, tight: 0.2, photo: 0.55, ...(text ? { text } : {}) });
+  const pick = (slides: SlideEntry[], a: Uint8Array, b: Uint8Array, v = vision()) =>
+    pickShownSlides(slides, new Map([['slide_001.png', a], ['slide_002.png', b]]), 0.65, v, 'first');
+
+  it('写真は色の多様さが 3 ビットを超え、色の分布は同じ palette なら高く、別の palette なら 0', () => {
+    expect(colorEntropy(photo(1, PALETTE_A))).toBeGreaterThan(3);
+    expect(colorEntropy(paper(1))).toBeLessThan(3);
+    expect(colorMatch(photo(1, PALETTE_A), photo(2, PALETTE_A))).toBeGreaterThan(0.9);
+    expect(colorMatch(photo(1, PALETTE_A), photo(1, PALETTE_B))).toBe(0);
+  });
+
+  it('カメラが動いただけ（切り替えの瞬間の変化が小さい）なら、静止部分が多く測られていても色の分布でまとめる', () => {
+    const d = pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(2, PALETTE_A));
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'same-scene']]);
+  });
+
+  it('カット（切り替えの瞬間の変化が大きい）なら、色の分布が同じでも別の写真として残す', () => {
+    expect(pick([shot(1, 0.9), shot(2, 0.9)], photo(1, PALETTE_A), photo(2, PALETTE_A)).map((x) => x.shown)).toEqual([true, true]);
+    // 記録がない画像も残す
+    expect(pick([slide(1, 0.9), slide(2, 0.9)], photo(1, PALETTE_A), photo(2, PALETTE_A)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('手動・開始時の保存は、diffPrev が安定後の値（≒ 0）なので見ない（利用者がわざわざ撮った写真を色で消さない）', () => {
+    for (const reason of ['manual', 'initial']) {
+      expect(pick([shot(1, 0.9), shot(2, 0.001, reason)], photo(1, PALETTE_A), photo(2, PALETTE_A)).map((x) => x.shown), reason).toEqual([true, true]);
+    }
+  });
+
+  it('色の分布が違えば別の場面。写真でない画面（白地に線）には使わない', () => {
+    expect(pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(1, PALETTE_B)).map((x) => x.shown)).toEqual([true, true]);
+    expect(pick([shot(1, 0.9), shot(2, 0.1)], paper(1), paper(2)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('両方に文字があって中身が違えば残す（別のラベルが付いた別の写真）。同じ字幕なら外す', () => {
+    const labels = (i: number) => (i === 0 ? '地面のカタバミ' : '石垣に咲く花');
+    expect(pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(2, PALETTE_A), vision(labels)).map((x) => x.shown)).toEqual([true, true]);
+    const caption = () => '観察してその結果をまとめる';
+    expect(pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(2, PALETTE_A), vision(caption)).map((x) => x.reason)).toEqual([undefined, 'same-scene']);
   });
 });
