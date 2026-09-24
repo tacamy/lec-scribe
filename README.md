@@ -32,31 +32,31 @@ Chrome 拡張が録音と画面の保存を、Mac 上の常駐サーバーが文
 flowchart TB
   subgraph chrome["Chrome 拡張（動画のタブ）"]
     direction TB
-    panel["① サイドパネル<br/>Start / Stop、進み具合、一覧（やり直す・削除）"]
-    sw["② service worker<br/>状態機械。開始・停止の配線"]
-    detector["③ 検知スクリプト（動画のある frame に注入）<br/>&lt;video&gt; を見張り、画面が変わったときだけ画像を保存"]
-    offscreen["④ offscreen document<br/>タブの音声を録音して OPFS に逐次保存"]
+    panel["① サイドパネル<br/>Start / Stop、進み具合<br/>一覧（やり直す・削除）"]
+    sw["② service worker<br/>状態機械と<br/>開始・停止の配線"]
+    detector["③ 検知スクリプト<br/>動画のある frame に<br/>注入<br/>&lt;video&gt; を見張り<br/>画面が変わったときだけ<br/>画像を保存"]
+    offscreen["④ offscreen document<br/>タブの音声を録音して<br/>OPFS に逐次保存"]
     panel --> sw
     sw --> detector
     sw --> offscreen
-    detector -- "スライド画像・タイムライン" --> offscreen
+    detector -- "スライド画像と<br/>タイムライン" --> offscreen
   end
 
-  offscreen -- "⑤ Stop 後に送信（127.0.0.1、承認したトークン）<br/>audio.webm + slides/ + slides.json" --> receive
+  offscreen -- "⑤ Stop 後に送信（127.0.0.1）<br/>承認したトークンを付ける<br/>audio.webm<br/>slides/・slides.json" --> receive
 
   subgraph mac["Mac ローカルサーバー（Node.js、ログイン時に自動起動）"]
     direction TB
     receive["受信・順番待ち"]
-    convert["⑥ 音声を変換<br/>ffmpeg（webm → wav 16 kHz）"]
-    transcribe["⑦ 文字起こし<br/>whisperkit-cli（large-v3、日本語）"]
-    merge["⑧ 統合<br/>スライドと発話を時間順に並べる<br/>同じ場面の画像を 1 枚にまとめる（画素・macOS Vision・文字認識・色）"]
+    convert["⑥ 音声を変換<br/>ffmpeg<br/>webm → wav 16 kHz"]
+    transcribe["⑦ 文字起こし<br/>whisperkit-cli<br/>large-v3、日本語"]
+    merge["⑧ 統合<br/>スライドと発話を<br/>時間順に並べる<br/>同じ場面の画像は 1 枚に<br/>画素・Vision・<br/>文字認識・色"]
     polish["⑨ ノートを整える（任意）<br/>Codex CLI か Ollama"]
     receive --> convert --> transcribe --> merge --> polish
   end
 
   polish -- "文字起こしの本文だけ" --> chatgpt[("ChatGPT（Codex CLI 経由）")]
   polish --> out[("~/LecScribe/講義名_日時/<br/>notes.md + slides/")]
-  merge -. "整えない設定なら、そのまま" .-> out
+  merge -. "整えない設定なら<br/>そのまま" .-> out
 ```
 
 | 順 | 担当 | すること |
