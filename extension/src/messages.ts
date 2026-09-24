@@ -54,7 +54,6 @@ export type ToBackground =
    * 文字起こしまで済んでいるのに、録音ごと消さないため。進み具合の監視は止めない（完了は監視が受け取る）
    */
   | { target: 'sw'; type: 'FINISH_NOTES'; sessionId: string }
-  | { target: 'sw'; type: 'EXPORT'; sessionId: string }
   /**
    * 一覧の行を消す。output: 'delete' で ~/LecScribe のフォルダも消す（notes.md があっても）、'keep' で残す、
    * 省略時は処理中・送信待ちだけ消す（成果物があれば残す）。keepRecording で Chrome 側の録音は残す（やり直しの中止）
@@ -79,7 +78,8 @@ export type ToOffscreen =
   | { target: 'offscreen'; type: 'CAPTURE_START'; streamId: string; config: Config; meta: SessionMeta }
   | { target: 'offscreen'; type: 'CAPTURE_STOP' }
   | { target: 'offscreen'; type: 'GET_STATS' }
-  | { target: 'offscreen'; type: 'EXPORT'; sessionId: string }
+  /** セッションのファイルを blob: URL で読めるようにする（スモークテストが OPFS の中身を確かめるため）。読み終えたら REVOKE で捨てる */
+  | { target: 'offscreen'; type: 'SESSION_FILES'; sessionId: string }
   | { target: 'offscreen'; type: 'REVOKE'; urls: string[] }
   | { target: 'offscreen'; type: 'DISCARD'; sessionId: string }
   /** 検知用 content script が取得したフレーム（SPEC §6.6 SLIDE）。offscreen が OPFS に保存する */
@@ -154,8 +154,8 @@ export type CaptureStats = {
   lastSlideVideoTime: number | null;
 };
 
-export type ExportFile = { url: string; filename: string; bytes: number };
-export type ExportResult = { files: ExportFile[] };
+export type SessionFile = { url: string; filename: string; bytes: number };
+export type SessionFilesResult = { files: SessionFile[] };
 export type DetectStartResult = { status: VideoStatus };
 export type SlideSaveResult = { seq: number; filename: string; bytes: number };
 export type CaptureFrameResult = { slide: SlideMeta };
@@ -205,7 +205,6 @@ export const sendToBackground = {
   pair: () => send<StateReply & { paired: boolean }>({ target: 'sw', type: 'PAIR' }),
   unpair: () => send<StateReply>({ target: 'sw', type: 'UNPAIR' }),
   finishNotes: (sessionId: string) => send<StateReply & { finished: boolean }>({ target: 'sw', type: 'FINISH_NOTES', sessionId }),
-  export: (sessionId: string) => send<StateReply>({ target: 'sw', type: 'EXPORT', sessionId }),
   discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
     send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
@@ -224,7 +223,7 @@ export const sendToOffscreen = {
     send<CaptureStartResult>({ target: 'offscreen', type: 'CAPTURE_START', streamId, config, meta }),
   captureStop: () => send<CaptureStopResult>({ target: 'offscreen', type: 'CAPTURE_STOP' }),
   getStats: () => send<CaptureStats>({ target: 'offscreen', type: 'GET_STATS' }),
-  export: (sessionId: string) => send<ExportResult>({ target: 'offscreen', type: 'EXPORT', sessionId }),
+  sessionFiles: (sessionId: string) => send<SessionFilesResult>({ target: 'offscreen', type: 'SESSION_FILES', sessionId }),
   revoke: (urls: string[]) => send<object>({ target: 'offscreen', type: 'REVOKE', urls }),
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
   slide: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE' }>, 'target' | 'type'>) =>

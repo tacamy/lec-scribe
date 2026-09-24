@@ -28,7 +28,6 @@ export type SessionSummary = {
   durationMs: number;
   audioBytes: number;
   endedBy: string;
-  exported?: boolean;
   /** サーバーで文字起こしまで終わった出力先 */
   outputDir?: string;
 };
@@ -42,15 +41,6 @@ export type ProcessingProgress = {
   percent?: number;
   outputDir?: string;
   error?: string;
-};
-
-export type ExportProgress = {
-  sessionId: string;
-  /** Date.now() at the time the downloads were created */
-  startedAt: number;
-  downloadIds: number[];
-  /** Blob URLs created by the offscreen document; revoked once every download settles. */
-  urls: string[];
 };
 
 export type SessionState = {
@@ -70,8 +60,6 @@ export type SessionState = {
   video?: VideoStatus;
   /** The session that just finished (COMPLETED / ERROR) or the previous one (IDLE). */
   lastSession?: SessionSummary;
-  /** An export (chrome.downloads) in flight. */
-  exporting?: ExportProgress;
   /** サーバー送信〜文字起こしの進行状況 */
   processing?: ProcessingProgress;
   /** 別のセッションを処理中に Stop した録音。処理が終わり次第、順に送る */

@@ -180,7 +180,7 @@ try {
     await new Promise((r) => setTimeout(r, 1800));
     const stats = api.stats();
     const stopped = await api.stop();
-    const { files } = await api.export(sessionId);
+    const { files } = await api.sessionFiles(sessionId);
     const audio = files.find((f) => f.filename.endsWith('audio.webm'));
     const head = Array.from(new Uint8Array(await (await fetch(audio.url)).arrayBuffer()).slice(0, 4));
     api.revoke(files.map((f) => f.url));
@@ -203,7 +203,7 @@ try {
   console.log(`recorded ${rec.stopped.audioBytes} bytes in ${rec.stopped.durationMs} ms`);
 
   // The panel lists the session from OPFS; discard it.
-  // （Downloads への書き出しは UI から外したので smoke でも通さない。chrome.downloads 絡みの揺れで不安定だった）
+  // （Downloads への書き出しは廃止した。OPFS の中身は offscreen の sessionFiles で読む）
   await panel.reload();
   await panel.waitForFunction((id) => [...document.querySelectorAll('#sessionList li')].some((li) => li.title || li.textContent.includes(id)), '2099-01-01 00:00:00');
 
@@ -383,8 +383,8 @@ try {
       return { duration: v.duration, currentTime: v.currentTime, ended: v.ended, readyState: v.readyState, size: [v.videoWidth, v.videoHeight] };
     });
     const saved = await off2.evaluate(async (sessionId) => {
-      await globalThis.__lecscribe.stop(); // キャプチャ中は export できないので止めてから読む（この後 fail する）
-      const { files } = await globalThis.__lecscribe.export(sessionId);
+      await globalThis.__lecscribe.stop(); // キャプチャ中は sessionFiles で読めないので止めてから読む（この後 fail する）
+      const { files } = await globalThis.__lecscribe.sessionFiles(sessionId);
       const read = async (suffix) => {
         const f = files.find((x) => x.filename.endsWith(suffix));
         return f ? JSON.parse(await (await fetch(f.url)).text()) : null;
@@ -442,7 +442,7 @@ try {
   const frames = await off2.evaluate(async (sessionId) => {
     const api = globalThis.__lecscribe;
     const stopped = await api.stop();
-    const { files } = await api.export(sessionId);
+    const { files } = await api.sessionFiles(sessionId);
     const first = files.find((f) => f.filename.endsWith('slides/slide_001.png'));
     const head = first ? Array.from(new Uint8Array(await (await fetch(first.url)).arrayBuffer()).slice(0, 24)) : null;
     const meta = files.find((f) => f.filename.endsWith('slides.json'));
