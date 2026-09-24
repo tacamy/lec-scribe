@@ -868,14 +868,39 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     }
   });
 
-  it('別のページや、行の並びに凹凸が足りない画面は残す', () => {
+  it('別のページは残す', () => {
     expect(pickPair(page(0), page(0, OTHER_BANDS)).map((x) => x.shown)).toEqual([true, true]);
-    // 帯 1 本だけの画面（白地に見出しだけのスライドのような）は、帯が動けばどこかで重なってしまうので判断しない
-    const banner = (y: number) => page(0, [{ y, h: 10, color: DARK }]);
-    const r = scroll(banner(10), banner(40));
-    expect(r.match).toBeGreaterThan(0.6);
+  });
+
+  it('凹凸の少ないページ（白地にロゴや数行だけ）は、中身のある行だけで重ねる', () => {
+    // 白地の Web ページを少し送った: 小さなロゴと数行の文字が 10 行下に動いた。動いた画素は全体の 1 割に満たない
+    const SPARSE: Band[] = [
+      { y: 12, h: 8, x: 20, w: 40, color: DARK },
+      { y: 30, h: 3, x: 20, w: 90, color: DARK },
+      { y: 36, h: 3, x: 20, w: 70, color: DARK },
+      { y: 60, h: 10, x: 60, w: 50, color: BLUE },
+      { y: 100, h: 4, x: 20, w: 100, color: DARK },
+    ];
+    const sparse = (sy: number) => page(sy, SPARSE);
+    // 平行移動の探索範囲（縦 12 画素）の外まで送っても、中身のある行だけなら重なる
+    const r = scroll(sparse(20), sparse(0));
+    expect(r.sparse).toBe(true);
     expect(r.structure).toBeLessThan(0.3);
-    expect(pickPair(banner(10), banner(40)).map((x) => x.shown)).toEqual([true, true]);
+    expect(Math.abs(r.dy! - 20)).toBeLessThanOrEqual(1);
+    expect(r.match).toBeGreaterThan(0.8);
+    expect(pickPair(sparse(0), sparse(20)).map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled']]);
+    // 同じ白地でも、中身の位置と大きさが違う別のページは重ならない
+    const OTHER_SPARSE: Band[] = [
+      { y: 8, h: 12, x: 90, w: 50, color: BLUE },
+      { y: 44, h: 3, x: 20, w: 120, color: DARK },
+      { y: 70, h: 6, x: 30, w: 30, color: DARK },
+    ];
+    expect(scroll(page(0, OTHER_SPARSE), sparse(0)).match).toBeLessThan(0.6);
+    expect(pickPair(sparse(0), page(0, OTHER_SPARSE)).map((x) => x.shown)).toEqual([true, true]);
+    // 帯 1 本だけの画面でも、別のラベルが付いていれば残る（文字の歯止めは凹凸の少ないページでも効く）
+    const banner = (y: number) => page(0, [{ y, h: 10, color: DARK }]);
+    const labels = (i: number) => (i === 0 ? '第1章 導入' : '第2章 観察');
+    expect(pickPair(banner(10), banner(40), vision(0.3, labels)).map((x) => x.shown)).toEqual([true, true]);
   });
 
   it('別のラベルが付いた写真は、行の並びが重なっても残す（写真同士の規則と同じ歯止め）', () => {
