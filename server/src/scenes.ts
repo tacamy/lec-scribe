@@ -390,6 +390,49 @@ export function columnMatch(a: Uint8Array, b: Uint8Array, dy: number): { match: 
  */
 const SHOT_CUT_DIFF = 0.3;
 
+/**
+ * 撮影した紙面の上で手（指）が動いただけの組をまとめるための値（2026-09-24）。
+ * GD I-2 の 4 章は、本のページをカメラで撮り、講師が指さしながら話す動画で、指が動くたびに拡張が保存していた
+ * （95 枚のうち 12 組が指の位置だけの違い）。同じページに手が入っただけの組は、画素の 7〜23% が変わり、Vision は 0.21〜0.36、
+ * 色の分布は 0.79〜0.95。ページをめくった組は Vision 0.35〜0.72 で画素の 15〜57% が変わり、Vision が 0.4 以下の組もあるが、
+ * 読み取れた行が 1 つも共通しない（同じページなら 0.25〜0.86 が共通）。
+ * 入口は「静止部分が半分以上で 0.976 未満」: 何かが動き続けている（手）が映像そのものではない画面。スライドや Illustrator の
+ * 画面は 0.976 以上、映像は半分未満（色の分布の規則の担当）なので、この帯は撮影された物の上で何かが動いている画面にだけ当たる
+ * （4 章のページを指さす画面は 0.79〜0.95。0.92 で切ると、めくった直後の手が端に寄った画面 0.93〜0.95 が漏れて、
+ * 写真同士の規則で前のページを吸っていた: 011/012 の見開きが 014 に）
+ */
+const HAND_MAX_STILL = 0.976;
+/** 見た目の距離。同じページに手が入っただけの組は 0.21〜0.36 */
+const HAND_MAX_VISION = 0.4;
+/** 画素の差。手の位置が変わると 7〜23%、ページが変わると 15% 以上（Vision と文字で分ける） */
+const HAND_MAX_DIFF = 0.25;
+/** 色の分布の一致。読み取れたラベルが共通しているなら緩く（手が大きく入った画像は 0.79 まで下がる: 4 章の 077/078）、文字の根拠がなければ厳しく */
+const HAND_MIN_COLOR = 0.75;
+const HAND_MIN_COLOR_WITHOUT_TEXT = 0.85;
+/** 両方にラベルらしい行があるとき、共通する行の割合。手で隠れる行が変わるので 2 割まで下げる（別のページは 0） */
+const HAND_MIN_SHARED_LINES = 0.2;
+/** 行が同じ印刷物の同じ行とみなせる共通部分の長さ。手や画面の端で切れた行も 5 文字は続けて読める（「サクラブチケン（コンタク」と「サクラブチケア（コンタク▶レンズ量28）…」） */
+const HAND_MIN_COMMON_RUN = 5;
+
+/**
+ * 撮影した物の上で何かが動いている画面か（5d の入口）。自動保存で、静止部分が半分以上（映像ではない）かつ 0.976 未満
+ * （スライドや Illustrator の画面ではない）で、切り替えの瞬間の変化が小さい（手が動いた: 0.03〜0.18。被写体が大きく動いた映像、
+ * 14 章 自然の蝶は 0.36〜0.49 で、静止部分が同じ帯でも写真同士の規則に任せる）。
+ * 比べる 2 枚のどちらかがこれなら、その比較は撮影された紙面として扱う（ページをめくった瞬間の画像は変化が大きくてこの条件を
+ * 外れるが、基準の画像がこれなら同じ紙面の続きなので、写真同士の緩い規則で別のページを吸わせない。4 章 GD I-2 の 021→023）
+ */
+function isFilmed(slide: SlideEntry): boolean {
+  const cut = slide.trigger?.diffPrev;
+  return isFilmedStill(slide) && typeof cut === 'number' && cut < SHOT_CUT_DIFF;
+}
+
+/** 撮影された物の画面か（静止部分が半分以上 0.976 未満の自動保存）。切り替えの変化は問わないので、ページをめくった瞬間の画像も入る */
+function isFilmedStill(slide: SlideEntry): boolean {
+  if (slide.reason !== 'change') return false;
+  const still = slide.trigger?.stillFraction;
+  return typeof still === 'number' && still >= FOOTAGE_MAX_STILL && still < HAND_MAX_STILL;
+}
+
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
 export async function readThumbnail(ffmpegBin: string, file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
   try {
@@ -547,6 +590,37 @@ export function sharedLineRatio(a: string, b: string): number | undefined {
   return hit / short.length;
 }
 
+/**
+ * ラベルらしい行（labelText が残す行）のうち、相手にもある行の割合。少ない方の行数を分母にする。行が 1 つもない側があれば undefined。
+ * 行の一致は sharedLineRatio と同じ編集距離のほか、HAND_MIN_COMMON_RUN 文字以上続けて同じ部分があれば認める
+ * （同じ印刷物の同じ行は、手や画面の端で切れる位置と読み違いが毎回違う。4 章 GD I-2 の同じページは 0.33〜1、別のページは 0）
+ */
+export function sharedLabelLines(a: string, b: string): number | undefined {
+  const x = labelText(a).split('\n').filter((line) => line.length > 0).map((line) => [...line]);
+  const y = labelText(b).split('\n').filter((line) => line.length > 0).map((line) => [...line]);
+  if (x.length === 0 || y.length === 0) return undefined;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  let hit = 0;
+  for (const s of short) if (long.some((l) => charSimilarity(s, l) >= SCROLL_LINE_SIM || commonRun(s, l) >= HAND_MIN_COMMON_RUN)) hit++;
+  return hit / short.length;
+}
+
+/** 2 つの行に続けて同じ部分がある最大の長さ（最長共通部分文字列） */
+function commonRun(a: readonly string[], b: readonly string[]): number {
+  let best = 0;
+  let prev = new Uint16Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = new Uint16Array(b.length + 1);
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] !== b[j - 1]) continue;
+      cur[j] = prev[j - 1]! + 1;
+      if (cur[j]! > best) best = cur[j]!;
+    }
+    prev = cur;
+  }
+  return best;
+}
+
 /** macOS の Vision で測った「見た目の距離」と「写っている文字」を使うときの設定 */
 export type VisionOptions = {
   /** 画像の並び順（index）で距離を返す。測れない組は undefined */
@@ -567,6 +641,7 @@ export type SceneReason =
   | 'grown'
   | 'panned'
   | 'scrolled'
+  | 'hand'
   | 'same-scene'
   | 'revisit'
   | 'superseded';
@@ -579,8 +654,8 @@ export type SceneDecision = {
   sameSceneAs?: string;
   /**
    * 外した理由: ほぼ一色（真っ黒など。sameSceneAs は付かない） / 中身が同じ / 見た目が同じ（Vision） / 文字が同じで見た目も近い /
-   * 同じスライドの途中の状態 / 少しスクロール・パンしただけ / 大きくスクロールしただけ / 同じ場面（色の分布） /
-   * 前の画面に短く戻っただけ / 同じ場面の最後の 1 枚に譲った
+   * 同じスライドの途中の状態 / 少しスクロール・パンしただけ / 大きくスクロールしただけ / 撮影した紙面の上で手が動いただけ /
+   * 同じ場面（色の分布） / 前の画面に短く戻っただけ / 同じ場面の最後の 1 枚に譲った
    */
   reason?: SceneReason;
   /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
@@ -715,6 +790,21 @@ export function pickShownSlides(
      */
     const differentLabels = anchorTextStable && bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
     /**
+     * 撮影した物の上で何かが動いている画面（静止部分が半分以上 0.92 未満。本のページを指さす手など。5d）。
+     * この画面では、写真同士の規則（距離 0.55 まで）は緩すぎる: 同じ本の別のページが 0.35〜0.5 で、手が動いただけの組（0.21〜0.36）と
+     * 重なる。しかも手が入ると文字の読み取りが毎回変わるので「読み取りが安定しない」扱いになり、別のラベルの歯止めが外れて、
+     * 別のページまで写真同士の規則でまとまっていた（4 章 GD I-2 の 045〜051、066〜071）。そこでこの画面では 5d に任せ、
+     * 同じショットの規則（6）でも歯止めを外さない
+     */
+    const filmed = isFilmed(slide) || isFilmed(other);
+    /**
+     * 5d は、この画像が手の動いた紙面（isFilmed）で、基準も撮影された物（isFilmedStill。めくった瞬間の画像は変化が大きいが、
+     * そのあと手が動いた画像の基準になる: 4 章の 079→082）のときだけ。この画像の側を見ないと、雑音で静止部分が 0.976 に届かない
+     * スライド（12 章 自然の 008、0.972）を基準に、同じ型で本文だけ違う次のスライド（見出しの 1 行が共通）を「手が動いただけ」と吸ってしまう
+     */
+    const handPair = isFilmed(slide) && isFilmedStill(other);
+    const differentLabelsStrict = bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
+    /**
      * スクロールの規則（5c）用: 雑音（時計、ファイル名の断片、ピクトグラムの誤読）を除いた本物のラベルだけで見る。
      * 5c には行と列の並びという強い根拠があるので、雑音で止めない（5 章 GD のピクトグラムの一覧、11 章 GD のキャンバスを送った組）
      */
@@ -740,9 +830,10 @@ export function pickShownSlides(
         // 使うと、少しずつ違う無地の画像が数珠つなぎになり、基準の画像からいくらでも離れてしまう
         const sameText = textSim === undefined ? !strongOnly : textSim >= SAME_TEXT_SIM || contained;
         if (hasText && sameText) return { reason: 'text', metrics };
-        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。ただし別のラベルが付いた別の写真はまとめない
+        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。ただし別のラベルが付いた別の写真はまとめない。
+        //    撮影した物の上で手が動く画面（filmed）では緩すぎるので使わず、5d に任せる
         const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
-        if (!strongOnly && bothPhoto && !differentLabels) return { reason: 'vision', metrics };
+        if (!strongOnly && bothPhoto && !differentLabels && !filmed) return { reason: 'vision', metrics };
       }
     }
     if (tightOnly) return { metrics };
@@ -785,6 +876,19 @@ export function pickShownSlides(
         }
       }
     }
+    // 5d. 撮影した紙面の上で手（指）が動いただけ。この画像が isFilmed（静止部分が半分以上 0.976 未満: 何かが動き続けているが
+    //     映像ではない、切り替えの変化が小さい自動保存）で基準も撮影された物なら、見た目・画素・色が近く、読み取れたラベルの行が
+    //     共通していれば同じページ。基準の画像とだけ比べる。ページをめくった組は行が 1 つも共通しない。
+    //     ラベルらしい行がどちらかにまったくなければ、別のラベルが付いていないことと、色の分布（厳しめ）で見る
+    if (handPair && vision && d !== undefined && vision.photo > 0 && d <= Math.min(HAND_MAX_VISION, vision.photo) && diff <= HAND_MAX_DIFF) {
+      const match = colorMatch(thumb, otherThumb);
+      metrics.colorMatch = round(match);
+      // 基準の画像とだけ比べるので、基準で手に隠れていた行は読めていない。ラベルらしい行が 1 行ずつでもあれば共通する割合で見る
+      const shared = hasText ? sharedLabelLines(text, otherText) : undefined;
+      if (shared !== undefined) metrics.sharedLines = round(shared);
+      const sameText = shared !== undefined ? shared >= HAND_MIN_SHARED_LINES : !differentRealLabels;
+      if (sameText && match >= (shared !== undefined ? HAND_MIN_COLOR : HAND_MIN_COLOR_WITHOUT_TEXT)) return { reason: 'hand', metrics };
+    }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面。
     //    写真・映像らしい画面（色の多様さ）で、自動の保存の切り替えの瞬間の変化が小さかった（カットではなく、同じショットの
     //    中でカメラや被写体が動いた・字幕が出た）画像も、色の分布で見る。ただし別のラベルが付いていれば別の場面。
@@ -798,7 +902,7 @@ export function pickShownSlides(
       cutDiff < SHOT_CUT_DIFF &&
       entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS &&
       entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS &&
-      !differentLabels;
+      !(filmed ? differentLabelsStrict : differentLabels);
     if (threshold > 0 && (footage || sameShot)) {
       const match = colorMatch(thumb, otherThumb);
       metrics.colorMatch = round(match);

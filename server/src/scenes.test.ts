@@ -15,6 +15,7 @@ import {
   readThumbnail,
   rowProfile,
   rowScroll,
+  sharedLabelLines,
   sharedLineRatio,
   shownSlides,
   textContained,
@@ -1002,5 +1003,124 @@ describe('同じショットの続き（切り替えの瞬間の変化が小さ�
     expect(pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(2, PALETTE_A), vision(labels)).map((x) => x.shown)).toEqual([true, true]);
     const caption = () => '観察してその結果をまとめる';
     expect(pick([shot(1, 0.9), shot(2, 0.2)], photo(1, PALETTE_A), photo(2, PALETTE_A), vision(caption)).map((x) => x.reason)).toEqual([undefined, 'same-scene']);
+  });
+});
+
+describe('撮影した紙面の上で手（指）が動いただけの組（2026-09-24）', () => {
+  const PALETTE = [[200, 30, 30], [30, 160, 60], [40, 80, 220], [240, 200, 20], [120, 60, 160], [20, 200, 200], [250, 140, 40], [90, 90, 90], [230, 230, 230], [10, 10, 10]];
+  /** カメラで撮った色とりどりの紙面（色の多様さは 3 ビット超）。seed で中身が変わる */
+  const page = (seed: number, palette = PALETTE) => {
+    const f = new Uint8Array(PIXELS * 4);
+    let r = seed;
+    for (let p = 0; p < PIXELS; p++) {
+      r = (r * 1103515245 + 12345) & 0x7fffffff;
+      f.set([...palette[(r >> 16) % palette.length]!, 255], p * 4);
+    }
+    return f;
+  };
+  /** 白地に黒と赤だけの紙面（色の多様さは 3 ビット未満。写真同士・同じショットの規則は使われない） */
+  const FLAT = [[230, 230, 230], [230, 230, 230], [40, 40, 40], [200, 30, 30]];
+  /** 紙面の (x, y) から w×h 画素を手（肌色）が隠した画面。40×30 なら全体の 8% */
+  const withHand = (base: Uint8Array, x: number, y: number, w = 40, h = 30) => {
+    const f = new Uint8Array(base);
+    for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) f.set([210, 160, 120, 255], (yy * THUMB_WIDTH + xx) * 4);
+    return f;
+  };
+  /** 撮影された紙面として記録された画像（静止部分が半分以上 0.976 未満、自動保存）。diffPrev は切り替えの瞬間の変化 */
+  const filmed = (n: number, stillFraction = 0.85, diffPrev = 0.05, reason = 'change'): SlideEntry => ({
+    filename: `slide_${String(n).padStart(3, '0')}.png`,
+    seq: n,
+    videoTime: n * 10,
+    reason,
+    trigger: { stillFraction, diffPrev },
+  });
+  const vision = (d: number | ((a: number, b: number) => number), text?: (i: number) => string | undefined) => ({
+    distance: typeof d === 'number' ? () => d : d,
+    tight: 0.2,
+    photo: 0.55,
+    ...(text ? { text } : {}),
+  });
+  const texts = (...lines: string[][]) => (i: number) => lines[i]?.join('\n');
+  const pick = (slides: SlideEntry[], thumbs: Uint8Array[], v: ReturnType<typeof vision>) =>
+    pickShownSlides(slides, new Map(thumbs.map((t, i) => [slides[i]!.filename, t])), 0.65, v, 'first');
+  /** 同じページを、手が左を隠した画面と右を隠した画面で読んだ文字（隠れる行と読み違いが変わる） */
+  const LEFT = ['岡田税理士事務所', '関', '税理士事務所', '信人命け国價'];
+  const RIGHT = ['岡田税理士事ム所', '鑑服', '関税理士事務所', '信人会け区供（営業品）'];
+  /** 別のページ */
+  const OTHER = ['那須ロコ', '丸浜みかん', '岡林農園'];
+  const handA = withHand(page(1), 20, 30);
+  const handB = withHand(page(1), 100, 30);
+
+  it('sharedLabelLines は、ラベルらしい行のうち相手にもある行の割合。1 行ずつでも測り、5 文字以上続けて同じなら切れ方が違っても同じ行', () => {
+    expect(sharedLabelLines('サクラブチケン（コンタク', 'サクラブチケア（コンタク▶レンズ量28）CURE')).toBe(1);
+    expect(sharedLabelLines(LEFT.join('\n'), RIGHT.join('\n'))).toBeCloseTo(2 / 3);
+    // 手で隠れて 2 行しか読めなかった側があっても測る（sharedLineRatio は 3 行に満たないと判断しない）
+    expect(sharedLineRatio('岡田税理士事務所\n部', RIGHT.join('\n'))).toBeUndefined();
+    expect(sharedLabelLines('岡田税理士事務所\n部', RIGHT.join('\n'))).toBe(1);
+    expect(sharedLabelLines(LEFT.join('\n'), OTHER.join('\n'))).toBe(0);
+    // 数字や記号だけ・3 文字未満の行は数えないので、それしかない側があれば判断しない
+    expect(sharedLabelLines('16:42\n山', 'nico')).toBeUndefined();
+  });
+
+  it('手の位置だけが違う（見た目・画素・色が近く、読み取れたラベルが共通する）なら外す', () => {
+    const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, texts(LEFT, RIGHT)));
+    expect(d[1]!.reason).toBe('hand');
+    expect(d[1]!.sharedLines).toBeCloseTo(2 / 3);
+    expect(pixelDiff(handA, handB)).toBeLessThan(0.25);
+  });
+
+  it('見た目が同じくらい近くても、ラベルが 1 行も共通しなければ別のページとして残す', () => {
+    const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, texts(LEFT, OTHER)));
+    expect(d.map((x) => x.shown)).toEqual([true, true]);
+    expect(d[1]!.sharedLines).toBe(0);
+  });
+
+  it('静止部分が 0.976 以上（スライド）の画像や、切り替えの変化が大きい画像には使わない。基準がスライドでも使わない', () => {
+    const v = vision(0.3, texts(LEFT, RIGHT));
+    expect(pick([filmed(1), filmed(2, 0.98)], [handA, handB], v).map((x) => x.shown)).toEqual([true, true]);
+    expect(pick([filmed(1), filmed(2, 0.85, 0.6)], [handA, handB], v).map((x) => x.shown)).toEqual([true, true]);
+    expect(pick([filmed(1, 0.98), filmed(2)], [handA, handB], v).map((x) => x.shown)).toEqual([true, true]);
+    // 記録のない画像（古いセッション）にも使わない
+    expect(pick([slide(1), slide(2)], [handA, handB], v).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('基準がページをめくった瞬間の画像（変化が大きい）でも、そのあと手が動いた画像はまとめる', () => {
+    const d = pick([filmed(1, 0.85, 0.6), filmed(2)], [handA, handB], vision(0.3, texts(LEFT, RIGHT)));
+    expect(d[1]!.reason).toBe('hand');
+  });
+
+  it('ラベルが読めない紙面は、色の分布で見る（読めるときより厳しく）', () => {
+    // 手が小さければ色の分布はほとんど変わらない
+    expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3))[1]!.reason).toBe('hand');
+    // 手が大きく入ると（全体の 22%）色の分布が 0.8 前後まで下がる。ラベルが共通していれば許し、読めなければ残す
+    // （色とりどりの紙面だと同じショットの規則（色の一致 0.65）が引き取るので、白地の紙面で見る）
+    const flat = page(1, FLAT);
+    const bigHand = withHand(flat, 40, 20, 80, 40);
+    expect(colorEntropy(flat)).toBeLessThan(3);
+    const match = colorMatch(flat, bigHand);
+    expect(match).toBeGreaterThan(0.75);
+    expect(match).toBeLessThan(0.85);
+    expect(pick([filmed(1), filmed(2)], [flat, bigHand], vision(0.3, texts(LEFT, RIGHT)))[1]!.reason).toBe('hand');
+    expect(pick([filmed(1), filmed(2)], [flat, bigHand], vision(0.3)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('撮影された紙面の帯では、写真同士の緩い規則（0.55 まで）で別のページを吸わない', () => {
+    // 1 → 2 は見た目がごく近く（手が少し動いた）まとまるが、文字の読み取りが食い違うので「読み取りが安定しない」扱いになり、
+    // 別のラベルの歯止めが外れる。3 はめくった別のページ（Vision 0.5、ラベルは共通しない）
+    const distance = (a: number, b: number) => (a + b === 1 ? 0.15 : 0.5);
+    const slides = [filmed(1), filmed(2), filmed(3, 0.85, 0.6)];
+    const thumbs = [handA, handB, withHand(page(2), 60, 30)];
+    expect(colorEntropy(thumbs[2]!)).toBeGreaterThan(3);
+    const d = pick(slides, thumbs, vision(distance, texts(LEFT, RIGHT, OTHER)));
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'vision'], [true, undefined]]);
+    // 同じ 3 枚でも、静止部分がスライドの帯（0.98）なら従来どおり写真同士の規則が別のページを吸う（4 章で 6 見開きが消えた形）
+    const asSlides = slides.map((s) => ({ ...s, trigger: { ...s.trigger, stillFraction: 0.98 } }));
+    expect(pick(asSlides, thumbs, vision(distance, texts(LEFT, RIGHT, OTHER))).map((x) => x.reason)).toEqual([undefined, 'vision', 'vision']);
+  });
+
+  it('静止部分が帯の中でも、切り替えの瞬間に被写体が大きく動いた映像（0.3 以上）は写真同士の規則に任せる', () => {
+    const moved = [filmed(1, 0.9, 0.4), filmed(2, 0.9, 0.45)];
+    const d = pick(moved, [page(1), page(2)], vision(0.5));
+    expect(d[1]!.reason).toBe('vision');
   });
 });
