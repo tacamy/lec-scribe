@@ -9,7 +9,7 @@ LecScribe is a Chrome extension for taking notes while watching a video, paired 
 | Data | What it is | Where it is stored |
 |---|---|---|
 | Tab audio | A recording of the audio playing in the tab where the user pressed Start | Inside the extension's private storage (OPFS) while recording; after Stop it is handed to the server on the same Mac and saved under `~/LecScribe/` |
-| Video frames | Images of the video area, captured only when the picture changes | Same as above |
+| Video frames | Images of the video area, captured when the picture changes or when the user presses "save the current frame" | Same as above |
 | Page title and URL | To record which video the notes belong to | Same as above (`session.json`; the title is used in the folder name) |
 | Transcript and notes | Produced by WhisperKit on the Mac and laid out as notes | `~/LecScribe/` |
 | Settings and the pairing token | Extension settings and the token used to talk to the local server | Chrome extension storage (`chrome.storage.local`); the token is only ever used on the same Mac |
@@ -20,15 +20,16 @@ This data stays on the Mac until the user deletes it. "Delete" in the session li
 
 - **The Chrome extension only communicates with the server on the same Mac (`127.0.0.1`).**
 - The local server connects to the internet only in these cases:
-  1. On install and on start-up it checks GitHub for a newer version and fetches it (a plain HTTP request; no user data is included)
-  2. On the first transcription, `whisperkit-cli` downloads its speech model from its distributor (Hugging Face)
-  3. **Only if the user enables "polish notes"**, the transcript text is sent to the ChatGPT account (via Codex CLI) or OpenAI API that the user configured themselves. Audio, images and page URLs are never sent. With local Ollama nothing leaves the Mac
+  1. On install it fetches Homebrew and its packages (ffmpeg, whisperkit-cli, Node.js, git; Codex CLI if note polishing is enabled) from Homebrew's distribution servers
+  2. On install and on start-up it checks GitHub for a newer version and fetches it (a `git fetch` over HTTPS; no user data is included)
+  3. On the first transcription, `whisperkit-cli` downloads its speech model from its distributor (Hugging Face)
+  4. **Only if the user enables "polish notes"**, the transcript text is sent to the ChatGPT account (via Codex CLI) or OpenAI API that the user configured themselves. Audio, images and page URLs are never sent. With local Ollama nothing leaves the Mac
 - No data is sent to the developer.
 
 ## Third parties
 
 - Distribution: Google (Chrome Web Store), subject to Google's policies
-- Updates: GitHub
+- Server and dependencies: Homebrew, GitHub
 - Optional note polishing: OpenAI (ChatGPT / OpenAI API), subject to OpenAI's policies for the transcript text sent there
 
 ## The user's responsibility

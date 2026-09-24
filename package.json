@@ -14,7 +14,8 @@
     "test": "pnpm -r test",
     "lint": "oxlint extension/src extension/entrypoints server/src server/scripts scripts fixtures",
     "fixtures:make": "node fixtures/make-slides.mjs",
-    "fixtures:serve": "node fixtures/serve.mjs"
+    "fixtures:serve": "node fixtures/serve.mjs",
+    "icons:make": "node scripts/make-icons.mjs"
   },
   "devDependencies": {
     "oxlint": "^1.82.0",

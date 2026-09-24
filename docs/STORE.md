@@ -4,14 +4,14 @@
 
 - ダッシュボード: https://chrome.google.com/webstore/devconsole （以前に拡張を公開した Google アカウントでログイン。2 段階認証が必須）
 - 最初は **限定公開（Unlisted）** で出す。検索には出ず、リンクを知っている人だけが入れられる。「公開設定」で選ぶ
-- 提出するのは `pnpm build` の `extension/dist/chrome-mv3` を zip にしたもの（`cd extension/dist && zip -r ../../lecscribe.zip chrome-mv3`）
+- 提出するのは `pnpm --filter @lec-scribe/extension zip` が作る zip（`extension/dist/` に `lecscribe-<版>-chrome.zip` ができる。`manifest.json` が zip の直下に来る形。手で `zip -r` するとフォルダが 1 段かぶって、ストアが manifest を見つけられない）
 
 ## 基本情報
 
 | 項目 | 値 |
 |---|---|
 | 名前 | LecScribe |
-| 概要（132 字以内） | 動画を見ながらノートを取る。タブの音声を録音し、画面が変わったときだけ保存、Mac の WhisperKit で文字起こし。すべて Mac の中で処理。個人の学習用 |
+| 概要（132 字以内） | ダッシュボードには欄がなく、manifest の `description`（`extension/wxt.config.ts`）がそのまま出る。日本語の文にしてあり、「利用するサイトの規約に従う」を含む（SPEC §3.0） |
 | カテゴリ | 仕事効率化（Productivity） |
 | 言語 | 日本語 |
 | プライバシーポリシー URL | https://github.com/tacamy/lec-scribe/blob/main/docs/PRIVACY.md |
@@ -59,13 +59,12 @@ LecScribe は、動画を見ながらノートを取るための道具です。�
 | `offscreen` | Manifest V3 では録音（getUserMedia と MediaRecorder）を service worker で行えないため、offscreen document で録音します |
 | `sidePanel` | Start / Stop と進み具合、保存済みのノートの一覧を、ページを操作しても閉じないサイドパネルに表示します |
 | `storage` | 設定と、録音中の状態、Mac 上のサーバーとの接続用トークンを保存します（Mac の中でだけ使います） |
-| `downloads` | Mac 上のサーバーに送れないときの予備として、録音と画像を Downloads フォルダに書き出すために使います |
 | `alarms` | サーバーへの送信に失敗したとき、時間を置いて送り直すために使います（service worker は止まることがあるので setTimeout が使えません） |
 | ホスト権限 `http://127.0.0.1/*` | 同じ Mac 上のローカルサーバーに録音と画像を送り、進み具合を受け取るためです。ほかのホストには通信しません |
 
 ## データ利用の申告（ダッシュボードの質問票）
 
-- 収集・扱うデータの種類: **ウェブサイトのコンテンツ**（動画の画面の画像、ページのタイトルと URL）と **音声**（タブの音声。「個人的なやり取り」や「ユーザーアクティビティ」には当たらない）
+- 収集・扱うデータの種類（ストアの区分で答える）: **ウェブサイトのコンテンツ**（タブの音声と動画の画面の画像）と **ウェブ履歴**（ページのタイトル・URL・開始時刻を `session.json` に記録するため。ストアの定義「訪れたページの一覧と題名・時刻」に当たる）。「個人的なやり取り」「ユーザーアクティビティ」「個人を特定できる情報」には当たらない
 - 用途: 拡張の中核機能（ノート作成）のためだけ。利用者の Mac の中で処理し、開発者には送らない
 - 3 つの証明（第三者に売らない / 中核機能と無関係な目的に使わない / 信用力の判断や融資目的に使わない）: すべて該当（はい）
 
@@ -73,8 +72,8 @@ LecScribe は、動画を見ながらノートを取るための道具です。�
 
 | 画像 | サイズ | 用意 |
 |---|---|---|
-| 拡張のアイコン | 16 / 32 / 48 / 96 / 128 px | `extension/public/icon/` にある（`scripts/make-icons.mjs` で `extension/assets/icon.svg` から作る） |
-| ストアのアイコン | 128×128 | 同じ 128.png |
+| 拡張のアイコン | 16 / 32 / 48 / 96 / 128 px | `extension/public/icon/` にある（`pnpm icons:make` で `extension/assets/icon.svg` から作る） |
+| ストアのアイコン | 128×128（絵は中央の 96×96、周り 16px は透明。ストアの画像ガイドライン） | `docs/store/icon-128.png`（`pnpm icons:make` が一緒に作る） |
 | スクリーンショット | 1280×800 または 640×400、1〜5 枚 | Mac 実機で撮る（下の一覧） |
 | プロモーションタイル（任意） | 440×280 | 省略可 |
 
