@@ -39,20 +39,28 @@ const PHOTO_ENTROPY_BITS = 3.0;
 /**
  * 画素のこの割合以上が中央値の色から PIXEL_DIFF 以内なら「ほぼ一色」とみなして載せない（2026-09-22）。
  * 真っ黒（「はじめに」の 025。フェードの途中）、動画の先頭の灰色 1 枚、暗い画面に小さな点だけが動くコマ（7 章 GD の 060。99.7%）。
- * 白地に短い見出しだけのスライドは 28 セッションで最大 97.9%、読める文字のある暗い画面は 98.0% だったので、その上に線を引く
+ * 白地に短い見出しだけのスライドは 28 セッションで最大 97.9%、読める文字のある暗い画面は 98.0% だったので、その上に線を引く。
+ * 160×90 では残り 0.5% が 72 画素しかなく、細い罫線だけの区切りや淡い文字のタイトルも掛かりうるので、
+ * 文字認識が 1 文字でも読めた画像は一色とみなさない（本当の真っ黒からは何も読めない）
  */
 const BLANK_MIN_UNIFORM = 0.995;
 
-/** 画素の何割が、その画像の中央値の色から PIXEL_DIFF 以内にあるか（1 に近いほど一色） */
+/** 画素の何割が、その画像の中央値の色から PIXEL_DIFF 以内にあるか（1 に近いほど一色）。中央値は 256 段のヒストグラムで出す（並べ替えない） */
 export function uniformFraction(a: Uint8Array): number {
   const pixels = Math.floor(a.length / 4);
   if (pixels === 0) return 1;
   const median = new Uint8Array(3);
   for (let c = 0; c < 3; c++) {
-    const values = new Uint8Array(pixels);
-    for (let p = 0; p < pixels; p++) values[p] = a[p * 4 + c]!;
-    values.sort();
-    median[c] = values[Math.floor(pixels / 2)]!;
+    const histogram = new Uint32Array(256);
+    for (let p = 0; p < pixels; p++) histogram[a[p * 4 + c]!]!++;
+    let seen = 0;
+    for (let v = 0; v < 256; v++) {
+      seen += histogram[v]!;
+      if (seen > pixels / 2) {
+        median[c] = v;
+        break;
+      }
+    }
   }
   let near = 0;
   for (let p = 0; p < pixels; p++) if (!pixelDiffers(a, p * 4, median, 0)) near++;
@@ -168,7 +176,7 @@ const SCROLL_MAX_SHIFT_RATIO = 0.5;
  * カーソルが動いただけ・図が色から白黒に変わっただけの画面（12 章 GD の 005→006）は、ずれ 4 行前後で行が重なってしまう
  */
 const SCROLL_MIN_SHIFT = 8;
-/** 行の平均色の差（0〜255）がこれ以下なら同じ行とみなす。この差までは一致 1、超えるほど 0 に近づける */
+/** 行（列）の平均色の差（0〜255）がこれ以下なら同じ行（列）とみなす。この差までは一致 1、超えるほど 0 に近づける */
 const SCROLL_ROW_TOLERANCE = 16;
 /**
  * 行の並びに凹凸があること（その画像の行の中央値から 16 以上離れた行が、この割合以上。2 枚の少ない方で見る）。
@@ -177,62 +185,70 @@ const SCROLL_ROW_TOLERANCE = 16;
  * 2 章の 057→058 のような本物のスクロールが 0.5 を切って拾えなくなったので、数えるのは重なった行の全部にした
  */
 const SCROLL_MIN_STRUCTURE = 0.3;
-/** 重なった行のうち色が合う行の割合がこれ以上なら同じ画面（2 章の 057→058 は 0.65、058→059 は 0.76、5 章の 028→030 は 0.95） */
+/**
+ * 重なった行のうち色が合う行の割合がこれ以上なら同じ画面（2 章の 057→058 は 0.65、058→059 は 0.76、5 章の 028→030 は 0.95）。
+ * 見つかったずれで重ねたときの列（縦方向の平均色）の並びにも同じ線を使う
+ */
 const SCROLL_MIN_MATCH = 0.6;
 /**
  * 見た目の距離がこれ以下の組だけ調べる（スクロールした組は 0.24〜0.34。図が増えた・白黒になった別の画面は 0.46 以上）。
  * 5b と同じく `--scene-vision-photo` を超えない
  */
 const SCROLL_MAX_VISION = 0.4;
-/** 両方に 3 行以上の文字があるとき、共通する行がこの割合を切れば別の画面（同じ配色の別のページ） */
+/** 両方に SCROLL_MIN_LINES 行以上の文字があるとき、共通する行がこの割合を切れば別の画面（同じ配色の別のページ） */
 const SCROLL_MIN_SHARED_LINES = 0.3;
+/** 共通する行を数えるのに要る行数。これに満たなければ判断しない（見出し 1〜2 行では偶然の一致と区別がつかない） */
+const SCROLL_MIN_LINES = 3;
+/** 行同士のそろい具合（編集距離）がこれ以上なら同じ行。SAME_TEXT_SIM（0.8）より緩いのは、1 行は短く 1 文字の読み違いが大きく響くため */
+const SCROLL_LINE_SIM = 0.7;
+
+/** 行ごとの平均色の並び（rows は行 × RGB）と、その凹凸（中央値から離れた行の割合）。画像ごとに 1 回作って使い回す */
+export type RowProfile = { rows: Float64Array; height: number; structure: number };
+
+const rowDiff = (p: Float64Array, y: number, q: Float64Array, y2: number) =>
+  (Math.abs(p[y * 3]! - q[y2 * 3]!) + Math.abs(p[y * 3 + 1]! - q[y2 * 3 + 1]!) + Math.abs(p[y * 3 + 2]! - q[y2 * 3 + 2]!)) / 3;
+
+export function rowProfile(px: Uint8Array): RowProfile {
+  const W = THUMB_WIDTH;
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(px.length / 4));
+  const H = Math.floor(pixels / W);
+  const rows = new Float64Array(H * 3);
+  for (let y = 0; y < H; y++) {
+    let r = 0;
+    let g = 0;
+    let bl = 0;
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      r += px[i]!;
+      g += px[i + 1]!;
+      bl += px[i + 2]!;
+    }
+    rows[y * 3] = r / W;
+    rows[y * 3 + 1] = g / W;
+    rows[y * 3 + 2] = bl / W;
+  }
+  // 凹凸: 行の中央値から離れた行の割合
+  const median = new Float64Array(3);
+  for (let c = 0; c < 3; c++) {
+    const values = Array.from({ length: H }, (_, y) => rows[y * 3 + c]!).sort((x, y) => x - y);
+    median[c] = values[Math.floor(H / 2)] ?? 0;
+  }
+  let away = 0;
+  for (let y = 0; y < H; y++) if (rowDiff(rows, y, median, 0) > SCROLL_ROW_TOLERANCE) away++;
+  return { rows, height: H, structure: H === 0 ? 0 : away / H };
+}
 
 /**
  * 2 枚を縦にずらして重ねたとき、行ごとの平均色がどれだけ合うか。
- * dy は a の行 y を b の行 y + dy に重ねるずれ（行）、match は重なった行のうち色が合う行の割合（差に応じて 0〜1）、
- * structure は 2 枚のうち凹凸の少ない方の、行の並びの凹凸（中央値から離れた行の割合）
+ * dy は a の行 y を b の行 y + dy に重ねるずれ（行）。match は重なった行のうち色が合う行の割合（差に応じて 0〜1）で、
+ * 同じ一致なら小さいずれを取る（周期的な並びで、最も遠いずれが選ばれないように）。structure は 2 枚のうち凹凸の少ない方。
+ * 重ねられる行がなかったときは dy が undefined
  */
-export function rowScroll(a: Uint8Array, b: Uint8Array): { dy: number; match: number; structure: number } {
-  const W = THUMB_WIDTH;
-  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
-  const H = Math.floor(pixels / W);
-  if (H === 0) return { dy: 0, match: 0, structure: 0 };
-  const profile = (px: Uint8Array): Float64Array => {
-    const out = new Float64Array(H * 3);
-    for (let y = 0; y < H; y++) {
-      let r = 0;
-      let g = 0;
-      let bl = 0;
-      for (let x = 0; x < W; x++) {
-        const i = (y * W + x) * 4;
-        r += px[i]!;
-        g += px[i + 1]!;
-        bl += px[i + 2]!;
-      }
-      out[y * 3] = r / W;
-      out[y * 3 + 1] = g / W;
-      out[y * 3 + 2] = bl / W;
-    }
-    return out;
-  };
-  const rowDiff = (p: Float64Array, y: number, q: Float64Array, y2: number) =>
-    (Math.abs(p[y * 3]! - q[y2 * 3]!) + Math.abs(p[y * 3 + 1]! - q[y2 * 3 + 1]!) + Math.abs(p[y * 3 + 2]! - q[y2 * 3 + 2]!)) / 3;
-  /** 行の並びの凹凸: 行の中央値から離れた行の割合 */
-  const structureOf = (p: Float64Array): number => {
-    const median = new Float64Array(3);
-    for (let c = 0; c < 3; c++) {
-      const values = Array.from({ length: H }, (_, y) => p[y * 3 + c]!).sort((x, y) => x - y);
-      median[c] = values[Math.floor(H / 2)]!;
-    }
-    let away = 0;
-    for (let y = 0; y < H; y++) if (rowDiff(p, y, median, 0) > SCROLL_ROW_TOLERANCE) away++;
-    return away / H;
-  };
-  const pa = profile(a);
-  const pb = profile(b);
-  const structure = Math.min(structureOf(pa), structureOf(pb));
+export function rowScroll(a: RowProfile, b: RowProfile): { dy: number | undefined; match: number; structure: number } {
+  const H = Math.min(a.height, b.height);
+  const structure = Math.min(a.structure, b.structure);
   const maxShift = Math.floor(H * SCROLL_MAX_SHIFT_RATIO);
-  let best = { dy: 0, match: 0 };
+  let best: { dy: number; match: number } | null = null;
   for (let dy = -maxShift; dy <= maxShift; dy++) {
     if (Math.abs(dy) < SCROLL_MIN_SHIFT) continue;
     let sum = 0;
@@ -240,22 +256,77 @@ export function rowScroll(a: Uint8Array, b: Uint8Array): { dy: number; match: nu
     for (let y = 0; y < H; y++) {
       const y2 = y + dy;
       if (y2 < 0 || y2 >= H) continue;
-      sum += Math.max(0, 1 - rowDiff(pa, y, pb, y2) / SCROLL_ROW_TOLERANCE);
+      sum += Math.max(0, 1 - rowDiff(a.rows, y, b.rows, y2) / SCROLL_ROW_TOLERANCE);
       n++;
     }
-    const match = n > 0 ? sum / n : 0;
-    if (match > best.match) best = { dy, match };
+    if (n === 0) continue;
+    const match = sum / n;
+    if (!best || match > best.match || (match === best.match && Math.abs(dy) < Math.abs(best.dy))) best = { dy, match };
   }
-  return { ...best, structure };
+  return { dy: best?.dy, match: best?.match ?? 0, structure };
+}
+
+/**
+ * a の行 y と b の行 y + dy を重ねたとき、重なった部分の列ごとの平均色がどれだけ合うか（0〜1）。
+ * 行の平均色は横の並びを見ないので、周期的なリストや表では中身の並びが違うページでも行だけは重なってしまう。
+ * 同じページを送っただけなら列の並びも合い、別の中身なら合わない。
+ * 数えるのは行の平均色が合っている行だけ（動かないヘッダーが相手の本文と重なる行を混ぜると、列の平均が全部ずれる）
+ */
+export function columnMatch(a: Uint8Array, b: Uint8Array, dy: number): number {
+  const W = THUMB_WIDTH;
+  const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
+  const H = Math.floor(pixels / W);
+  const colA = new Float64Array(W * 3);
+  const colB = new Float64Array(W * 3);
+  const rowA = new Float64Array(3);
+  const rowB = new Float64Array(3);
+  let rows = 0;
+  for (let y = 0; y < H; y++) {
+    const y2 = y + dy;
+    if (y2 < 0 || y2 >= H) continue;
+    rowA.fill(0);
+    rowB.fill(0);
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const j = (y2 * W + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        rowA[c]! += a[i + c]!;
+        rowB[c]! += b[j + c]!;
+      }
+    }
+    if ((Math.abs(rowA[0]! - rowB[0]!) + Math.abs(rowA[1]! - rowB[1]!) + Math.abs(rowA[2]! - rowB[2]!)) / 3 / W > SCROLL_ROW_TOLERANCE) continue;
+    rows++;
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const j = (y2 * W + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        colA[x * 3 + c]! += a[i + c]!;
+        colB[x * 3 + c]! += b[j + c]!;
+      }
+    }
+  }
+  if (rows === 0) return 0;
+  let sum = 0;
+  for (let x = 0; x < W; x++) {
+    const diff = (Math.abs(colA[x * 3]! - colB[x * 3]!) + Math.abs(colA[x * 3 + 1]! - colB[x * 3 + 1]!) + Math.abs(colA[x * 3 + 2]! - colB[x * 3 + 2]!)) / 3 / rows;
+    sum += Math.max(0, 1 - diff / SCROLL_ROW_TOLERANCE);
+  }
+  return sum / W;
 }
 
 /**
  * 同じ場面の続きを、切り替えの瞬間の変化の大きさで見分けるための値（2026-09-22）。
- * 拡張は保存した画像ごとに、切り替えを検知した瞬間の画素の変化率（trigger.diffPrev）を残す。写真・映像の画面で
+ * 拡張は自動で保存した画像ごとに、切り替えを検知した瞬間の画素の変化率（trigger.diffPrev）を残す。写真・映像の画面で
  * この値が小さければ、カット（別の写真・別のショットへの切り替え）ではなく、同じショットの中でカメラや被写体が
  * 動いた・字幕が出た、ということ。色の分布の規則（同じ場面）は静止部分が半分未満の画像＝映像らしい画面にだけ
- * 効かせているが、ゆっくり動くカメラが静物を写していると静止部分が多く測られて外れる（「はじめに」の 014〜016。
- * 0.51〜0.83）。そこでこの値も入口にする。拡張の cutThreshold（0.3）と同じ線
+ * 効かせているが、ゆっくり動くカメラが静物を写していると静止部分が多く測られて外れる（「はじめに」の 014〜016。0.51〜0.83）。
+ * そこでこの値も入口にする。
+ *
+ * 0.3 は手元の 28 セッションの谷から取った値: まとめたい組（同じショットに字幕が出た、手元が動いた）は 0.15〜0.27、
+ * 残したい組（別の写真へのカット）は 0.45 以上。拡張の cutThreshold も 0.3 だが、あちらが効くのは映像らしい画面だけで、
+ * この規則が狙うスライドと測られた画面の保存の線は changeThreshold（0.025）なので、0.3 未満＝ごく小さな変化ではない。
+ * だから入口はこの値だけでなく、両方が写真らしいこと（色の多様さ）と、自動で保存された画像であること（手動・開始時の
+ * 保存は切り替えの瞬間の値を持たず、安定後の値 ≒ 0 が入る）も要る
  */
 const SHOT_CUT_DIFF = 0.3;
 
@@ -372,26 +443,30 @@ export function textContained(a: string, b: string): boolean {
   return i / short.length >= CONTAINED_MIN;
 }
 
+/** 文字認識の結果を行に分ける（空白を除き、短すぎる行は捨てる）。normalizeText と同じ分け方だが、行の区切りは残す */
+function textLines(text: string): string[][] {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ''))
+    .filter((line) => line.length >= SCROLL_MIN_LINES)
+    .map((line) => [...line]);
+}
+
+/** 2 つの文字列のそろい具合（0〜1）。textSimilarity と同じ式（編集距離）を、行 1 本ずつに使う */
+const charSimilarity = (a: readonly string[], b: readonly string[]) => 1 - editDistance(a, b) / Math.max(a.length, b.length);
+
 /**
- * 読み取れた行のうち、相手にも（読み違いを許して 7 割合う形で）ある行の割合。少ない方の行数を分母にする。
+ * 読み取れた行のうち、相手にも（SCROLL_LINE_SIM 以上そろう形で）ある行の割合。少ない方の行数を分母にする。
  * スクロールした同じページは行の多くが共通し、同じ配色の別のページは見出しくらいしか共通しない。
- * どちらかの行が 3 行に満たなければ判断できないので undefined
+ * どちらかの行が SCROLL_MIN_LINES 行に満たなければ判断できないので undefined
  */
 export function sharedLineRatio(a: string, b: string): number | undefined {
-  const lines = (text: string) =>
-    text
-      .split('\n')
-      .map((line) => line.replace(/\s+/g, ''))
-      .filter((line) => line.length >= 3)
-      .map((line) => [...line]);
-  const x = lines(a);
-  const y = lines(b);
-  if (x.length < 3 || y.length < 3) return undefined;
+  const x = textLines(a);
+  const y = textLines(b);
+  if (x.length < SCROLL_MIN_LINES || y.length < SCROLL_MIN_LINES) return undefined;
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
   let hit = 0;
-  for (const s of short) {
-    if (long.some((l) => 1 - editDistance(s, l) / Math.max(s.length, l.length) >= 0.7)) hit++;
-  }
+  for (const s of short) if (long.some((l) => charSimilarity(s, l) >= SCROLL_LINE_SIM)) hit++;
   return hit / short.length;
 }
 
@@ -485,6 +560,27 @@ export function pickShownSlides(
     }
     return e;
   };
+  /** 行ごとの平均色の並びも画像ごとに 1 回だけ作る（基準の画像はまとまりの全員と比べられる） */
+  const profileOf = new Map<string, RowProfile>();
+  const profile = (filename: string, thumb: Uint8Array) => {
+    let p = profileOf.get(filename);
+    if (p === undefined) {
+      p = rowProfile(thumb);
+      profileOf.set(filename, p);
+    }
+    return p;
+  };
+  /**
+   * ほぼ一色の画像（真っ黒、フェードの途中、動画の先頭の灰色）。載せず、比較の相手にもしない（基準にも、直前の画像にも、
+   * 「この画面が続いた時間」の区切りにも）。文字認識が何か読めた画像は、淡い文字のタイトルや細い罫線だけの区切りかもしれないので除く
+   */
+  const blank = new Set<number>();
+  slides.forEach((slide, index) => {
+    const thumb = thumbs.get(slide.filename);
+    if (!thumb || uniformFraction(thumb) < BLANK_MIN_UNIFORM) return;
+    if (normalizeText(vision?.text?.(index) ?? '').length > 0) return;
+    blank.add(index);
+  });
   /**
    * 基準の画像の文字が、まとまりの中で安定して読めているか。手書きの板書は読み取りが毎回変わり
    * （同じ板書が BAsceT / EAsckET / 54SsceT と読まれた）、そのたびに「別のラベルの別の写真」と
@@ -529,6 +625,14 @@ export function pickShownSlides(
     const hasText = text !== undefined && otherText !== undefined;
     const textSim = hasText ? textSimilarity(text, otherText) : undefined;
     const metrics: Metrics = { pixelDiff: round(diff), ...(d !== undefined ? { vision: round(d) } : {}), ...(textSim !== undefined ? { textSim: round(textSim) } : {}) };
+    // 両方に VETO_MIN_CHARS 以上の文字があるか。「含まれる」は短い読み取り（「図1」など）だと偶然当たるので、このときだけ認める
+    const bothLabeled = hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS;
+    const contained = bothLabeled && textContained(text, otherText);
+    /**
+     * 別のラベルが付いている（両方に文字があって、そろわず、一方が他方に含まれもしない）。写真同士・スクロール・同じショットの
+     * 規則が「別の写真」とみなしてまとめない根拠。文字の読み取りが安定しない場面（手書きの板書）では根拠にしない
+     */
+    const differentLabels = anchorTextStable && bothLabeled && textSim! < SAME_TEXT_SIM && !contained;
     // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
     if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
     if (vision && d !== undefined) {
@@ -538,21 +642,13 @@ export function pickShownSlides(
       if (vision.photo > 0 && d <= vision.photo) {
         // 3. 字幕や見出しの文字が同じ（両方に文字がない場合や、一方が他方に含まれる場合も）で見た目も近ければ、同じ場面。
         //    同じテンプレートで文字だけ違うスライドはここで残る
-        // 「含まれる」は短い読み取り（「図1」など）だと偶然当たるので、両方に VETO_MIN_CHARS 以上あるときだけ認める
-        const contained =
-          hasText &&
-          normalizeText(text).length >= VETO_MIN_CHARS &&
-          normalizeText(otherText).length >= VETO_MIN_CHARS &&
-          textContained(text, otherText);
         // 両方に文字がない（textSim が undefined）だけの一致は弱い根拠なので、直前の画像との比較には使わない。
         // 使うと、少しずつ違う無地の画像が数珠つなぎになり、基準の画像からいくらでも離れてしまう
         const sameText = textSim === undefined ? !strongOnly : textSim >= SAME_TEXT_SIM || contained;
         if (hasText && sameText) return { reason: 'text', metrics };
-        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。
-        //    ただし両方に文字があって中身が違うなら、別のラベルが付いた別の写真なのでまとめない
+        // 4. 写真や映像なら、被写体が動いた程度までを同じ場面とみなす。ただし別のラベルが付いた別の写真はまとめない
         const bothPhoto = entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS && entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS;
-        const differentText = anchorTextStable && hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && !contained;
-        if (!strongOnly && bothPhoto && !differentText) return { reason: 'vision', metrics };
+        if (!strongOnly && bothPhoto && !differentLabels) return { reason: 'vision', metrics };
       }
     }
     if (tightOnly) return { metrics };
@@ -574,31 +670,36 @@ export function pickShownSlides(
     }
     // 5c. 大きく縦にスクロールしただけ（行ごとの色の並びが、ずれた位置で重なる）。基準の画像とだけ比べる（5b と同じ理由）。
     //     白地に文字だけの画面は行に凹凸がなく判断できないので対象外。
-    //     両方に読める文字が 3 行以上あって共通する行が少なければ、同じ配色の別のページなので残す
-    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
-      const shared = hasText ? sharedLineRatio(text, otherText) : undefined;
-      if (shared !== undefined) metrics.sharedLines = round(shared);
-      if (shared === undefined || shared >= SCROLL_MIN_SHARED_LINES) {
-        const scroll = rowScroll(thumb, otherThumb);
-        if (scroll.structure >= SCROLL_MIN_STRUCTURE) {
-          metrics.scrollShift = scroll.dy;
-          metrics.scrollMatch = round(scroll.match);
-          if (scroll.match >= SCROLL_MIN_MATCH) return { reason: 'scrolled', metrics };
+    //     文字の歯止めは 2 段: 文字が少ない（ラベル・字幕）なら、別のラベルが付いた別の写真はまとめない（写真同士の規則と同じ）。
+    //     文字が多い（本文が SCROLL_MIN_LINES 行以上）なら、送れば文字が入れ替わるのが当たり前なので、代わりに共通する行で見る。
+    //     安い順に見る: 行の並び → 見つかったずれでの列の並び（周期的なリストの別の中身を除く）→ 文字（重い）
+    const fewLines = !hasText || textLines(text).length < SCROLL_MIN_LINES || textLines(otherText).length < SCROLL_MIN_LINES;
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF && !(differentLabels && fewLines)) {
+      const scroll = rowScroll(profile(slide.filename, thumb), profile(other.filename, otherThumb));
+      if (scroll.structure >= SCROLL_MIN_STRUCTURE && scroll.dy !== undefined) {
+        metrics.scrollShift = scroll.dy;
+        metrics.scrollMatch = round(scroll.match);
+        if (scroll.match >= SCROLL_MIN_MATCH && columnMatch(thumb, otherThumb, scroll.dy) >= SCROLL_MIN_MATCH) {
+          const shared = hasText ? sharedLineRatio(text, otherText) : undefined;
+          if (shared !== undefined) metrics.sharedLines = round(shared);
+          if (shared === undefined || shared >= SCROLL_MIN_SHARED_LINES) return { reason: 'scrolled', metrics };
         }
       }
     }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面。
-    //    写真・映像らしい画面（色の多様さ）で、切り替えの瞬間の変化が小さかった（カットではなく、同じショットの中で
-    //    カメラや被写体が動いた・字幕が出た）画像も、色の分布で見る。ただし両方に文字があって中身が違えば別の場面
+    //    写真・映像らしい画面（色の多様さ）で、自動の保存の切り替えの瞬間の変化が小さかった（カットではなく、同じショットの
+    //    中でカメラや被写体が動いた・字幕が出た）画像も、色の分布で見る。ただし別のラベルが付いていれば別の場面。
+    //    手動・開始時の保存は切り替えの瞬間の値を持たない（安定後の ≒ 0 が入る）ので、利用者がわざわざ撮った写真は見ない
     const stillFraction = slide.trigger?.stillFraction;
     const footage = typeof stillFraction === 'number' && stillFraction < FOOTAGE_MAX_STILL;
     const cutDiff = slide.trigger?.diffPrev;
     const sameShot =
+      slide.reason === 'change' &&
       typeof cutDiff === 'number' &&
       cutDiff < SHOT_CUT_DIFF &&
       entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS &&
       entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS &&
-      !(hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS && textSim! < SAME_TEXT_SIM && !textContained(text, otherText));
+      !differentLabels;
     if (threshold > 0 && (footage || sameShot)) {
       const match = colorMatch(thumb, otherThumb);
       metrics.colorMatch = round(match);
@@ -614,6 +715,8 @@ export function pickShownSlides(
    */
   const sceneSeconds = (index: number): number | undefined => {
     for (let j = index + 1; j < slides.length; j++) {
+      // フェードのコマは画面が変わったことにしない（挟まると、長い戻りが短い戻りに見えてしまう）
+      if (blank.has(j)) continue;
       const v = compare(j, index, true, true);
       // サムネイルが読めない画像は「同じ」とも「違う」とも言えない。そこで測るのをやめる（載せる側に倒す）
       if (v === null) return undefined;
@@ -643,11 +746,9 @@ export function pickShownSlides(
     return seconds !== undefined && seconds < REVISIT_MAX_SECONDS ? match : null;
   };
   slides.forEach((slide, index) => {
-    // 0. ほぼ一色の画像（真っ黒、フェードの途中、動画の先頭の灰色）は載せない。比較の基準にもしないので、
-    //    直前の画面のまとまりは切れず、間の発話は今載っている画像の下に入る
-    const thumb = thumbs.get(slide.filename);
-    if (thumb && uniformFraction(thumb) >= BLANK_MIN_UNIFORM) {
-      decisions.push({ filename: slide.filename, shown: false, reason: 'blank' });
+    // 0. ほぼ一色の画像は載せない。今載っている画像を sameSceneAs に残す（間の発話はその下に入る。scenes.json から辿れるように）
+    if (blank.has(index)) {
+      decisions.push({ filename: slide.filename, shown: false, reason: 'blank', ...(lastShown ? { sameSceneAs: lastShown.slide.filename } : {}) });
       return;
     }
     if (lastShown) {
@@ -658,6 +759,8 @@ export function pickShownSlides(
       if (verdict && !verdict.reason) {
         // 基準と同じでなければ、まとまりに入れた画像（直前から順に前へ）とも比べる
         for (let j = index - 1; j > last.index; j--) {
+          // ほぼ一色の画像は比較の相手にしない（真っ黒と「暗い背景に字幕だけ」は画素差 3% で「中身が同じ」になってしまう）
+          if (blank.has(j)) continue;
           // 短く戻っただけの画像（revisits）は今のまとまりの画面ではない。直前の 1 枚のときだけ、戻っている間の続きかを
           // 文字を使わない規則で見る（戻った先で操作して変わった画面は、新しい画面として残す）。それより前の戻りは飛ばす
           // （あとでもう一度、今度は長く戻ったときに、前の短い戻りに引きずられて外れないように）
@@ -730,8 +833,8 @@ function preferLast(decisions: SceneDecision[]): SceneDecision[] {
   const byName = new Map(decisions.map((d) => [d.filename, d]));
   const lastMember = new Map<string, SceneDecision>();
   for (const d of decisions) {
-    // 前の画面に短く戻っただけの画像は別の画面なので、まとまりの最後の 1 枚には選ばない
-    if (!d.shown && d.reason !== 'revisit' && d.sameSceneAs && byName.get(d.sameSceneAs)?.shown) lastMember.set(d.sameSceneAs, d);
+    // 前の画面に短く戻っただけの画像は別の画面、ほぼ一色の画像は中身がないので、まとまりの最後の 1 枚には選ばない
+    if (!d.shown && d.reason !== 'revisit' && d.reason !== 'blank' && d.sameSceneAs && byName.get(d.sameSceneAs)?.shown) lastMember.set(d.sameSceneAs, d);
   }
   for (const [anchorName, last] of lastMember) {
     const anchor = byName.get(anchorName)!;
