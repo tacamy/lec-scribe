@@ -266,13 +266,18 @@ export function rowScroll(a: RowProfile, b: RowProfile): { dy: number | undefine
   return { dy: best?.dy, match: best?.match ?? 0, structure };
 }
 
+/** 列の並びを重ねるときに探す横のずれ（画素）。斜めに送った画面（Illustrator のキャンバスをドラッグした）も拾うため */
+const SCROLL_MAX_DX = 40;
+
 /**
- * a の行 y と b の行 y + dy を重ねたとき、重なった部分の列ごとの平均色がどれだけ合うか（0〜1）。
+ * a の行 y と b の行 y + dy を重ねたとき、重なった部分の列ごとの平均色がどれだけ合うか（0〜1）と、そのときの横のずれ dx
+ * （a の列 x と b の列 x + dx を重ねる。同じ一致なら小さいずれ）。
  * 行の平均色は横の並びを見ないので、周期的なリストや表では中身の並びが違うページでも行だけは重なってしまう。
- * 同じページを送っただけなら列の並びも合い、別の中身なら合わない。
- * 数えるのは行の平均色が合っている行だけ（動かないヘッダーが相手の本文と重なる行を混ぜると、列の平均が全部ずれる）
+ * 同じページを送っただけなら列の並びも合い、別の中身なら合わない。斜めに送った画面は列が横にずれているので、dx も探す。
+ * 数えるのは行の平均色が合っている行だけ（動かないヘッダーが相手の本文と重なる行を混ぜると、列の平均が全部ずれる）。
+ * 列に凹凸がなく判断できない（横いっぱいの帯や本文の行だけ）ときは informative が false
  */
-export function columnMatch(a: Uint8Array, b: Uint8Array, dy: number): number {
+export function columnMatch(a: Uint8Array, b: Uint8Array, dy: number): { match: number; dx: number; informative: boolean } {
   const W = THUMB_WIDTH;
   const pixels = Math.min(W * THUMB_HEIGHT, Math.floor(Math.min(a.length, b.length) / 4));
   const H = Math.floor(pixels / W);
@@ -305,13 +310,39 @@ export function columnMatch(a: Uint8Array, b: Uint8Array, dy: number): number {
       }
     }
   }
-  if (rows === 0) return 0;
-  let sum = 0;
-  for (let x = 0; x < W; x++) {
-    const diff = (Math.abs(colA[x * 3]! - colB[x * 3]!) + Math.abs(colA[x * 3 + 1]! - colB[x * 3 + 1]!) + Math.abs(colA[x * 3 + 2]! - colB[x * 3 + 2]!)) / 3 / rows;
-    sum += Math.max(0, 1 - diff / SCROLL_ROW_TOLERANCE);
+  if (rows === 0) return { match: 0, dx: 0, informative: false };
+  for (let i = 0; i < W * 3; i++) {
+    colA[i]! /= rows;
+    colB[i]! /= rows;
   }
-  return sum / W;
+  // 数えるのは、どちらかが地の色（列の中央値）から離れている列だけ。横にずらすと中身のある列が重なりの外に出て、
+  // 余白同士だけが重なって「合った」ことになるため（周期的なリストを横にずらした場合）。数えられる列が少なすぎれば根拠なし
+  const away = (p: Float64Array): boolean[] => {
+    const median = new Float64Array(3);
+    for (let c = 0; c < 3; c++) {
+      const values = Array.from({ length: W }, (_, x) => p[x * 3 + c]!).sort((x, y) => x - y);
+      median[c] = values[Math.floor(W / 2)]!;
+    }
+    return Array.from({ length: W }, (_, x) => rowDiff(p, x, median, 0) > SCROLL_ROW_TOLERANCE);
+  };
+  const awayA = away(colA);
+  const awayB = away(colB);
+  let best: { match: number; dx: number } | null = null;
+  for (let dx = -SCROLL_MAX_DX; dx <= SCROLL_MAX_DX; dx++) {
+    let sum = 0;
+    let n = 0;
+    for (let x = 0; x < W; x++) {
+      const x2 = x + dx;
+      if (x2 < 0 || x2 >= W) continue;
+      if (!awayA[x] && !awayB[x2]) continue;
+      sum += Math.max(0, 1 - rowDiff(colA, x, colB, x2) / SCROLL_ROW_TOLERANCE);
+      n++;
+    }
+    if (n < W * SCROLL_MIN_STRUCTURE) continue;
+    const match = sum / n;
+    if (!best || match > best.match || (match === best.match && Math.abs(dx) < Math.abs(best.dx))) best = { match, dx };
+  }
+  return best ? { ...best, informative: true } : { match: 0, dx: 0, informative: false };
 }
 
 /**
@@ -452,6 +483,23 @@ function textLines(text: string): string[][] {
     .map((line) => [...line]);
 }
 
+/**
+ * ラベル・字幕として数える文字（2026-09-24）。数字と記号ばかりの行（アプリの時計「1月20日（月）16:42」、ファイル名の断片
+ * 「1125octracear047」、座標や倍率）と 3 文字未満の断片（ピクトグラムが「山」「炭」「35S」と読まれる）は文字認識の雑音で、
+ * 画面ごとに変わるので、これを「別のラベル」の根拠にすると、同じ画面を送っただけの組（5 章 GD のピクトグラムの一覧、
+ * 11 章 GD の Illustrator）がまとまらない。行の 6 割以上が文字（かな・漢字・ラテン文字など）で、文字が 3 つ以上ある行だけ残す
+ */
+export function labelText(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ''))
+    .filter((line) => {
+      const letters = (line.match(/\p{L}/gu) ?? []).length;
+      return letters >= 3 && letters >= line.length * 0.6;
+    })
+    .join('\n');
+}
+
 /** 2 つの文字列のそろい具合（0〜1）。textSimilarity と同じ式（編集距離）を、行 1 本ずつに使う */
 const charSimilarity = (a: readonly string[], b: readonly string[]) => 1 - editDistance(a, b) / Math.max(a.length, b.length);
 
@@ -524,13 +572,15 @@ export type SceneDecision = {
   /** 縦のスクロールを調べたとき: 比べた画像を何行ずらすと重なるか（下にスクロールした画面なら正）と、そのときの一致（0〜1） */
   scrollShift?: number;
   scrollMatch?: number;
+  /** 行の並びが合ったとき、列の並びを重ねるのに要った横のずれ（画素。斜めに送った画面なら 0 でない） */
+  scrollShiftX?: number;
   /** 両方に 3 行以上の文字があったとき、共通する行の割合 */
   sharedLines?: number;
 };
 
 type Metrics = Pick<
   SceneDecision,
-  'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift' | 'scrollShift' | 'scrollMatch' | 'sharedLines'
+  'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift' | 'scrollShift' | 'scrollMatch' | 'scrollShiftX' | 'sharedLines'
 >;
 type Verdict = { reason?: SceneReason; metrics: Metrics };
 
@@ -629,10 +679,25 @@ export function pickShownSlides(
     const bothLabeled = hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS;
     const contained = bothLabeled && textContained(text, otherText);
     /**
-     * 別のラベルが付いている（両方に文字があって、そろわず、一方が他方に含まれもしない）。写真同士・スクロール・同じショットの
-     * 規則が「別の写真」とみなしてまとめない根拠。文字の読み取りが安定しない場面（手書きの板書）では根拠にしない
+     * 別のラベルが付いている（両方に 4 文字以上の文字があって、そろわず、一方が他方に含まれもしない）。
+     * 写真同士・同じショットの規則が「別の写真」とみなしてまとめない根拠。文字の読み取りが安定しない場面（手書きの板書）では
+     * 根拠にしない。アプリの画面では時計やファイル名の断片も「文字」に入るので、同じアプリで別の作品を開いた画面も別と判定される
+     * （これを雑音として除くと、11 章 GD で別の作品の Illustrator 画面が写真同士の規則でまとまった。2026-09-24）
      */
-    const differentLabels = anchorTextStable && bothLabeled && textSim! < SAME_TEXT_SIM && !contained;
+    const differentLabels = anchorTextStable && bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
+    /**
+     * スクロールの規則（5c）用: 雑音（時計、ファイル名の断片、ピクトグラムの誤読）を除いた本物のラベルだけで見る。
+     * 5c には行と列の並びという強い根拠があるので、雑音で止めない（5 章 GD のピクトグラムの一覧、11 章 GD のキャンバスを送った組）
+     */
+    const realLabels = hasText ? labelText(text) : '';
+    const otherRealLabels = hasText ? labelText(otherText) : '';
+    const differentRealLabels =
+      anchorTextStable &&
+      hasText &&
+      normalizeText(realLabels).length >= VETO_MIN_CHARS &&
+      normalizeText(otherRealLabels).length >= VETO_MIN_CHARS &&
+      (textSimilarity(realLabels, otherRealLabels) ?? 1) < SAME_TEXT_SIM &&
+      !textContained(realLabels, otherRealLabels);
     // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
     if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
     if (vision && d !== undefined) {
@@ -674,12 +739,15 @@ export function pickShownSlides(
     //     文字が多い（本文が SCROLL_MIN_LINES 行以上）なら、送れば文字が入れ替わるのが当たり前なので、代わりに共通する行で見る。
     //     安い順に見る: 行の並び → 見つかったずれでの列の並び（周期的なリストの別の中身を除く）→ 文字（重い）
     const fewLines = !hasText || textLines(text).length < SCROLL_MIN_LINES || textLines(otherText).length < SCROLL_MIN_LINES;
-    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF && !(differentLabels && fewLines)) {
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF && !(differentRealLabels && fewLines)) {
       const scroll = rowScroll(profile(slide.filename, thumb), profile(other.filename, otherThumb));
       if (scroll.structure >= SCROLL_MIN_STRUCTURE && scroll.dy !== undefined) {
         metrics.scrollShift = scroll.dy;
         metrics.scrollMatch = round(scroll.match);
-        if (scroll.match >= SCROLL_MIN_MATCH && columnMatch(thumb, otherThumb, scroll.dy) >= SCROLL_MIN_MATCH) {
+        const column = scroll.match >= SCROLL_MIN_MATCH ? columnMatch(thumb, otherThumb, scroll.dy) : undefined;
+        if (column?.informative) metrics.scrollShiftX = column.dx;
+        // 列に凹凸がない画面（横いっぱいの帯や本文だけ）は列では判断できないので、行と文字に任せる
+        if (column && (!column.informative || column.match >= SCROLL_MIN_MATCH)) {
           const shared = hasText ? sharedLineRatio(text, otherText) : undefined;
           if (shared !== undefined) metrics.sharedLines = round(shared);
           if (shared === undefined || shared >= SCROLL_MIN_SHARED_LINES) return { reason: 'scrolled', metrics };

@@ -8,6 +8,7 @@ import {
   colorEntropy,
   colorMatch,
   columnMatch,
+  labelText,
   panResidual,
   pickShownSlides,
   pixelDiff,
@@ -772,14 +773,14 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     { y: 63, h: 3, x: 10, w: 80, color: ORANGE },
     { y: 72, h: 15, x: 30, w: 120, color: GREEN },
   ];
-  /** ページを sy 行だけ下にスクロールした画面 */
-  const page = (sy: number, bands = BANDS) => {
+  /** ページを sy 行だけ下に（sx 画素だけ右に）送った画面 */
+  const page = (sy: number, bands = BANDS, sx = 0) => {
     const f = new Uint8Array(PIXELS * 4).fill(255);
     for (let y = 0; y < THUMB_HEIGHT; y++) {
       const band = bands.find((b) => y + sy >= b.y && y + sy < b.y + b.h);
       if (!band) continue;
-      const x0 = band.x ?? 0;
-      const x1 = x0 + (band.w ?? THUMB_WIDTH);
+      const x0 = Math.max(0, (band.x ?? 0) - sx);
+      const x1 = Math.min(THUMB_WIDTH, (band.x ?? 0) + (band.w ?? THUMB_WIDTH) - sx);
       for (let x = x0; x < x1; x++) f.set([...band.color, 255], (y * THUMB_WIDTH + x) * 4);
     }
     return f;
@@ -789,6 +790,17 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     pickShownSlides([slide(1, 1), slide(2, 1)], new Map([['slide_001.png', a], ['slide_002.png', b]]), 0.65, v, 'first');
 
   const scroll = (a: Uint8Array, b: Uint8Array) => rowScroll(rowProfile(a), rowProfile(b));
+  /** カードが散らばる長いページ（位置も大きさもそろえない。列にも凹凸がある）。sy 行下に、sx 画素右に送った画面 */
+  const CARDS: Band[] = [
+    { y: 5, h: 12, x: 10, w: 40, color: DARK },
+    { y: 20, h: 9, x: 70, w: 50, color: BLUE },
+    { y: 38, h: 14, x: 20, w: 60, color: RED },
+    { y: 60, h: 10, x: 90, w: 45, color: DARK },
+    { y: 78, h: 8, x: 5, w: 35, color: BLUE },
+    { y: 96, h: 12, x: 60, w: 70, color: RED },
+    { y: 114, h: 9, x: 110, w: 40, color: DARK },
+  ];
+  const cards = (sy: number, sx = 0) => page(sy, CARDS, sx);
 
   it('rowScroll は、帯の並びが重なるずれと、そのときの一致を返す', () => {
     expect(colorEntropy(page(0))).toBeLessThan(3);
@@ -815,10 +827,36 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     const Q = list(120);
     const r = scroll(P, Q);
     expect(r.match).toBeGreaterThan(0.9); // 行だけ見れば「同じ」
-    expect(columnMatch(P, Q, r.dy!)).toBeLessThan(0.6); // 列を見れば別物
+    const col = columnMatch(P, Q, r.dy!);
+    expect(col.informative).toBe(true);
+    expect(col.match).toBeLessThan(0.6); // 列を見れば別物（横 40 画素まで探しても届かない）
     expect(pickPair(P, Q).map((x) => x.shown)).toEqual([true, true]);
-    // 本当にスクロールした同じリストなら列も合う
-    expect(columnMatch(page(0), page(20), scroll(page(20), page(0)).dy!)).toBeGreaterThan(0.9);
+    // 本当にスクロールした同じ一覧なら列も合う
+    const c = columnMatch(cards(20), cards(0), scroll(cards(20), cards(0)).dy!);
+    expect(c.informative).toBe(true);
+    expect(c.match).toBeGreaterThan(0.9);
+    // 横いっぱいの帯だけの画面は列に凹凸がなく、列では判断しない（行と文字に任せる）
+    const FULL = BANDS.map((b) => ({ ...b, x: 0, w: THUMB_WIDTH }));
+    expect(columnMatch(page(20, FULL), page(0, FULL), scroll(page(20, FULL), page(0, FULL)).dy!).informative).toBe(false);
+    expect(pickPair(page(0, FULL), page(20, FULL)).map((x) => x.reason)).toEqual([undefined, 'scrolled']);
+  });
+
+  it('斜めに送った画面（縦にも横にもずれた）も、列のずれを探してまとめる', () => {
+    const d = pickPair(cards(0), cards(20, 30));
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled']]);
+    expect(Math.abs(d[1]!.scrollShift! - 20)).toBeLessThanOrEqual(1);
+    expect(Math.abs(Math.abs(d[1]!.scrollShiftX!) - 30)).toBeLessThanOrEqual(1);
+    // 横 40 画素を超えて動いた画面は残す
+    expect(pickPair(cards(0), cards(20, 60)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('文字認識の雑音（時計・ファイル名の断片・記号）は「別のラベル」に数えない', () => {
+    expect(labelText('1月20日（月）16:42\n✕ 1125octracear047\n山\n35S\nカメラ本体')).toBe('カメラ本体');
+    expect(labelText('35S\n19\n炭')).toBe('');
+    // 時計とファイル名の断片だけが違うアプリの画面は、ラベルが違うとはみなさずまとめる（文字全体では 0.8 そろわないので文字の規則には掛からない）
+    const clock = (i: number) => (i === 0 ? 'ファイル\n1月20日（月）16:42\n✕ 1125octracear047' : 'ファイル\n1月20日（月）17:03\n✕ 9977pctra31');
+    expect(textSimilarity(clock(0), clock(1))).toBeLessThan(0.8);
+    expect(pickPair(page(0), page(20), vision(0.3, clock)).map((x) => x.reason)).toEqual([undefined, 'scrolled']);
   });
 
   it('平行移動の探索範囲（縦 12 画素）を超えてスクロールしても、行の並びが重なれば外す', () => {
