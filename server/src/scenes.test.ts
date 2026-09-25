@@ -1147,12 +1147,14 @@ describe('撮影した紙面の上で手（指）が動いただけの組（2026
   });
 
   it('ラベルが共通するなら、手が大きく動いて画素の 3 割が変わっても同じページ。文字の根拠がなければ 25% まで', () => {
-    const bigMove = withHand(page(1), 60, 20, 80, 40);
-    const diff = pixelDiff(handA, bigMove);
+    // 白地の紙面で見る（色とりどりの紙面だと、文字がない組は同じショットの規則が色の分布で引き取る）
+    const flatA = withHand(page(1, FLAT), 20, 30);
+    const flatBig = withHand(page(1, FLAT), 60, 20, 80, 40);
+    const diff = pixelDiff(flatA, flatBig);
     expect(diff).toBeGreaterThan(0.25);
     expect(diff).toBeLessThanOrEqual(0.35);
-    expect(pick([filmed(1), filmed(2)], [handA, bigMove], vision(0.3, texts(LEFT, RIGHT)))[1]!.reason).toBe('hand');
-    expect(pick([filmed(1), filmed(2)], [handA, bigMove], vision(0.3)).map((x) => x.shown)).toEqual([true, true]);
+    expect(pick([filmed(1), filmed(2)], [flatA, flatBig], vision(0.3, texts(LEFT, RIGHT)))[1]!.reason).toBe('hand');
+    expect(pick([filmed(1), filmed(2)], [flatA, flatBig], vision(0.3)).map((x) => x.shown)).toEqual([true, true]);
   });
 
   it('撮影された紙面の帯では、写真同士の緩い規則（0.55 まで）で別のページを吸わない', () => {
