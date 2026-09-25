@@ -11,7 +11,7 @@
 | 項目 | 値 |
 |---|---|
 | 名前 | LecScribe |
-| 概要（132 字以内） | ダッシュボードには欄がなく、manifest の `description`（`extension/wxt.config.ts`）がそのまま出る。日本語の文にしてあり、「利用するサイトの規約に従う」を含む（SPEC §3.0）。chrome://extensions のカードは 3 行（66 字ほど）で切れるので、その中に収める（61 字、2026-09-25）。詳しい説明は下の詳細説明に書く |
+| 概要（132 字以内） | ダッシュボードには欄がなく、manifest の `description`（`extension/wxt.config.ts`）がそのまま出る。日本語の文にしてあり、「利用するサイトの規約に従う」を含む（SPEC §3.0）。chrome://extensions のカードは 3 行（66 字ほど）で切れるので、その中に収める（63 字、2026-09-25）。詳しい説明は下の詳細説明に書く |
 | カテゴリ | 仕事効率化（Productivity） |
 | 言語 | 日本語 |
 | プライバシーポリシー URL | https://github.com/tacamy/lec-scribe/blob/main/docs/PRIVACY.md |
