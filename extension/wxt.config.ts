@@ -10,10 +10,11 @@ export default defineConfig({
   imports: false,
   manifest: {
     name: 'LecScribe',
-    // ストアの「概要」として出る説明（132 文字まで。ダッシュボードに別の欄はない）。特定のサイト向けではない汎用の
-    // ノート取りの道具で、個人の学習用。利用するサイトの規約に従うのは使う人の責任（README「使う前に」、SPEC §3.0）
-    description:
-      '動画を見ながらノートを取る道具。タブの音声を録音し、画面が変わったときだけ保存、Mac の WhisperKit で文字起こし。すべて Mac の中で処理。個人の学習用。利用するサイトの規約に従ってください',
+    // ストアの「概要」として出る説明（132 文字まで。ダッシュボードに別の欄はない）。何をする拡張かだけを書く。
+    // chrome://extensions のカードは 3 行（幅 288px・13px で全角 22 字 × 3、Playwright で測って 73 字前後まで）で切れて
+    // 続きが読めないので、その中に収める。個人の学習用・利用するサイトの規約に従うことは、ストアの詳細説明（docs/STORE.md）、
+    // README「使う前に」、未接続の画面（§15.1）に書く（SPEC §3.0、2026-09-25）。英数字の前後にスペースは入れない
+    description: '動画を再生しながらノートを自動で取ってくれる拡張です。スクリーンショットと文字起こしを並べたMarkdownを、すべてMacの中で作ります',
     permissions: [
       'tabCapture', // getMediaStreamId
       'offscreen', // offscreen document that owns the MediaStream
