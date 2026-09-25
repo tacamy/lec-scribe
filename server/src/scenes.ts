@@ -404,8 +404,14 @@ const SHOT_CUT_DIFF = 0.3;
 const HAND_MAX_STILL = 0.976;
 /** 見た目の距離。同じページに手が入っただけの組は 0.21〜0.36 */
 const HAND_MAX_VISION = 0.4;
-/** 画素の差。手の位置が変わると 7〜23%、ページが変わると 15% 以上（Vision と文字で分ける） */
+/** 画素の差。手の位置が変わると 7〜23%、ページが変わると 15% 以上（Vision と文字で分ける）。ラベルが共通するなら 35% まで（手が大きく動いた: 13 章 GD I-2 の 122→123 は 29%） */
 const HAND_MAX_DIFF = 0.25;
+const HAND_MAX_DIFF_WITH_TEXT = 0.35;
+/**
+ * ラベルらしい行がどちらかにないとき、生の文字のそろい具合がこれ以上なら同じページとみなす（本文の縦組みは読み違いだらけで
+ * ラベル行が残らないが、同じページなら半分はそろう: 13 章 GD I-2 の 071 は 0.56。時計しか読めなかった画面と本文のページは 0.1）
+ */
+const HAND_MIN_RAW_TEXT_SIM = 0.5;
 /** 色の分布の一致。読み取れたラベルが共通しているなら緩く（手が大きく入った画像は 0.79 まで下がる: 4 章の 077/078）、文字の根拠がなければ厳しく */
 const HAND_MIN_COLOR = 0.75;
 const HAND_MIN_COLOR_WITHOUT_TEXT = 0.85;
@@ -932,18 +938,21 @@ export function pickShownSlides(
     //     映像ではない、切り替えの変化が小さい自動保存）で基準も撮影された物なら、読み取れたラベルの行が共通し、見た目・画素・色が
     //     近ければ同じページ。基準の画像とだけ比べる。ページをめくった組は行が 1 つも共通しない。
     //     ラベルらしい行がどちらかにまったくなければ、生の文字で別のラベルが付いていないことと、色の分布（厳しめ）で見る
-    if (handPair && vision && d !== undefined && vision.photo > 0 && d <= Math.min(HAND_MAX_VISION, vision.photo) && diff <= HAND_MAX_DIFF) {
+    if (handPair && vision && d !== undefined && vision.photo > 0 && d <= Math.min(HAND_MAX_VISION, vision.photo) && diff <= HAND_MAX_DIFF_WITH_TEXT) {
       // 基準の画像とだけ比べるので、基準で手に隠れていた行は読めていない。ラベルらしい行が 1 行ずつでもあれば共通する割合で見る。
       // ラベルが多いページでは 1 行の一致（各ページ共通の柱・フッター）を根拠にしない
       const shared = hasText ? sharedLabelLines(realLabels, otherRealLabels) : undefined;
       if (shared !== undefined) metrics.sharedLines = round(shared.ratio);
       const minShared = shared !== undefined && shared.lines >= HAND_MANY_LINES ? Math.max(HAND_MIN_SHARED_LINES, HAND_MIN_SHARED_COUNT / shared.lines) : HAND_MIN_SHARED_LINES;
-      const sameText = shared !== undefined ? shared.ratio >= minShared : !differentLabelsStrict;
-      // 文字で同じページと言えるときだけ色の分布を測る（別のページの組にヒストグラムを取らない）
-      if (sameText) {
+      // ラベル行で言えないときは、生の文字が半分そろっているか、別のラベルが付いていない（読めない同士）こと
+      const sameByLabels = shared !== undefined && shared.ratio >= minShared;
+      const sameByRawText = shared === undefined && ((textSim ?? 0) >= HAND_MIN_RAW_TEXT_SIM || !differentLabelsStrict);
+      // 文字で同じページと言えるときだけ色の分布を測る（別のページの組にヒストグラムを取らない）。
+      // 文字の根拠がラベルの一致なら画素の差は 35% まで、それ以外は 25% まで
+      if ((sameByLabels && diff <= HAND_MAX_DIFF_WITH_TEXT) || (sameByRawText && diff <= HAND_MAX_DIFF)) {
         const match = colorMatch(thumb, otherThumb);
         metrics.colorMatch = round(match);
-        if (match >= (shared !== undefined ? HAND_MIN_COLOR : HAND_MIN_COLOR_WITHOUT_TEXT)) return { reason: 'hand', metrics };
+        if (match >= (sameByLabels ? HAND_MIN_COLOR : HAND_MIN_COLOR_WITHOUT_TEXT)) return { reason: 'hand', metrics };
       }
     }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面。

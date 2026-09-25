@@ -1134,6 +1134,27 @@ describe('撮影した紙面の上で手（指）が動いただけの組（2026
     expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, same))[1]!.reason).toBe('hand');
   });
 
+  it('ラベルらしい行が読めなくても、生の文字が半分そろっていれば同じページ（本文の縦組みは読み違いだらけでラベル行が残らない）', () => {
+    // 数字混じりの断片ばかりで、labelText には 1 行も残らない読み取り
+    const garbled = texts(['12:34', '56:78', 'あい1234', 'うえ5678', 'おか9012'], ['12:34', '99:78', 'あい1234', 'かき0000', 'おか9012']);
+    const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, garbled));
+    expect(d[1]!.textSim).toBeGreaterThanOrEqual(0.5);
+    expect(d[1]!.textSim).toBeLessThan(0.8);
+    expect(d[1]!.reason).toBe('hand');
+    // 半分もそろわなければ残す
+    const other = texts(['12:34', '56:78', 'あい1234', 'うえ5678', 'おか9012'], ['16:42', '山', 'さし3456', 'すせ7890', 'たち1111']);
+    expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, other)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('ラベルが共通するなら、手が大きく動いて画素の 3 割が変わっても同じページ。文字の根拠がなければ 25% まで', () => {
+    const bigMove = withHand(page(1), 60, 20, 80, 40);
+    const diff = pixelDiff(handA, bigMove);
+    expect(diff).toBeGreaterThan(0.25);
+    expect(diff).toBeLessThanOrEqual(0.35);
+    expect(pick([filmed(1), filmed(2)], [handA, bigMove], vision(0.3, texts(LEFT, RIGHT)))[1]!.reason).toBe('hand');
+    expect(pick([filmed(1), filmed(2)], [handA, bigMove], vision(0.3)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
   it('撮影された紙面の帯では、写真同士の緩い規則（0.55 まで）で別のページを吸わない', () => {
     // 1 → 2 は見た目がごく近く（手が少し動いた）まとまるが、文字の読み取りが食い違うので「読み取りが安定しない」扱いになり、
     // 別のラベルの歯止めが外れる。3 はめくった別のページ（Vision 0.5、ラベルは共通しない）
