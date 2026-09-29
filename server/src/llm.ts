@@ -200,6 +200,68 @@ export function createBackend(settings: LlmSettings): LlmBackend | null {
   }
 }
 
+/** 利用者の Codex の既定（普段使っているモデルと推論の強さ） */
+export type CodexDefaults = { model?: string; effort?: string };
+
+/**
+ * Codex の設定ファイル（config.toml）の中身から、既定のモデル（`model`）と推論の強さ（`model_reasoning_effort`）だけを読む。
+ * 表の外（最初の `[...]` より前）の行だけを見る。プロファイルなどで決まる値は追わない（そのときは Codex の既定になる）
+ */
+export function parseCodexDefaults(configText: string): CodexDefaults {
+  const out: CodexDefaults = {};
+  for (const line of configText.split('\n')) {
+    if (/^\s*\[/.test(line)) break;
+    const m = line.match(/^\s*(model|model_reasoning_effort)\s*=\s*(["'])([^"']*)\2\s*(?:#.*)?$/);
+    if (!m) continue;
+    if (m[1] === 'model') out.model = m[3];
+    // 推論の強さは -c の値（TOML）にそのまま埋めるので、英字だけのものに限る
+    else if (/^[a-z]+$/.test(m[3]!)) out.effort = m[3];
+  }
+  return out;
+}
+
+/** `$CODEX_HOME/config.toml`（既定は ~/.codex/config.toml）から既定を読む。読めなければ空 */
+async function readCodexDefaults(): Promise<CodexDefaults> {
+  const home = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
+  try {
+    return parseCodexDefaults(await readFile(path.join(home, 'config.toml'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `codex exec` に渡す引数。
+ * `--ignore-user-config` で利用者の設定ファイルを読まない（2026-09-29）。読むと、普段使いのプラグイン・MCP サーバー・通知のフックが
+ * ノート作成の呼び出しにも読み込まれ、道具の説明の分だけ毎回の入力が増えるうえ（小さな呼び出しで 15,093〜15,483 トークンが
+ * 13,571 に）、読み込む中身が呼ぶたびに変わってプロンプトのキャッシュが効かなかった（キャッシュが効いた分が 0 から 6,400〜11,520 に）。
+ * ノート作成は道具を使わない。ログインは設定ファイルとは別なので、そのまま使える。
+ * その代わり、モデルと推論の強さは明示する: モデルはサーバーの設定（`--llm-model`）を優先し、なければ利用者の既定を引き継ぐ。
+ * 推論の強さも利用者の既定を引き継ぐ。どちらも今までと同じ値で呼ぶので、ノートの出来は変わらない
+ */
+export function codexArgs(opts: { dir: string; schemaFile: string; outFile: string; prompt: string } & CodexDefaults): string[] {
+  const args = [
+    'exec',
+    '--skip-git-repo-check',
+    '--ephemeral',
+    '--ignore-user-config',
+    '--sandbox',
+    'read-only',
+    '--color',
+    'never',
+    '-C',
+    opts.dir,
+    '--output-schema',
+    opts.schemaFile,
+    '--output-last-message',
+    opts.outFile,
+  ];
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('-c', `model_reasoning_effort="${opts.effort}"`);
+  args.push(opts.prompt);
+  return args;
+}
+
 /** `codex exec` を非対話で呼ぶ。返答は --output-last-message のファイルから読む */
 function codexBackend(settings: LlmSettings): LlmBackend {
   return {
@@ -210,23 +272,8 @@ function codexBackend(settings: LlmSettings): LlmBackend {
         const schemaFile = path.join(tmp, 'schema.json');
         const outFile = path.join(tmp, 'last-message.txt');
         await writeFile(schemaFile, JSON.stringify(schema));
-        const args = [
-          'exec',
-          '--skip-git-repo-check',
-          '--ephemeral',
-          '--sandbox',
-          'read-only',
-          '--color',
-          'never',
-          '-C',
-          tmp,
-          '--output-schema',
-          schemaFile,
-          '--output-last-message',
-          outFile,
-        ];
-        if (settings.model) args.push('--model', settings.model);
-        args.push(prompt);
+        const defaults = await readCodexDefaults();
+        const args = codexArgs({ dir: tmp, schemaFile, outFile, prompt, model: settings.model || defaults.model, effort: defaults.effort });
         const r = await run(settings.codexBin, args, { signal: settings.signal });
         if (r.code !== 0) {
           throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
