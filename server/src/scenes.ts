@@ -696,7 +696,10 @@ export function sharedLineRatio(a: string, b: string): number | undefined {
   const x = textLines(a);
   const y = textLines(b);
   if (x.length < SCROLL_MIN_LINES || y.length < SCROLL_MIN_LINES) return undefined;
-  return sharedCount(x, y, sameLine).ratio;
+  // 相手のどれかの行と合えば 1 と数える（5d の sharedCount のような 1 対 1 の割り当てはしない。先着順の割り当ては共通行を少なく
+  // 数えることがあり、スクロールした一覧に同じ文言の行が並ぶ場合も数え方が変わる。2026-09-29 のレビュー）
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return short.filter((s) => long.some((l) => sameLine(s, l))).length / short.length;
 }
 
 /** labelText 済みの文字を行に分け、1 文字ずつにしたもの */
@@ -975,18 +978,13 @@ export function pickShownSlides(
     // 5b. 画面を少しスクロール・パンしただけ（違っている画素の大半が、同じ向きの平行移動で説明できる）。
     //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
     //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
-    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）。
-    //     凹凸の少ないページ（白地にロゴや数行だけ）で、両方に同じ本物のラベルがあれば、画素の差と説明できた画素の下限（1 割）は
-    //     使わない: 白地のページを数行送っただけの組は 8% ほどしか変わらず、どちらの下限にも届かない（2026-09-29 のレビュー。
-    //     5c は 8 行未満のずれを見ないので、ここで拾う）
-    const mode = scrollMode(profile(slide.filename, thumb), profile(other.filename, otherThumb));
-    const sparseLabeled = mode === 'sparse' && bothRealLabeled && !differentRealLabels;
-    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && (diff >= PAN_MIN_DIFF || sparseLabeled)) {
+    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
       const pan = panResidual(thumb, otherThumb);
       metrics.panLeft = round(pan.left);
       // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない
       if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
-      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && (pan.diff - pan.left >= PAN_MIN_EXPLAINED || sparseLabeled)) return { reason: 'panned', metrics };
+      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
     }
     // 5c. 縦にスクロールしただけ（行ごとの色の並びが、ずれた位置で重なる）。基準の画像とだけ比べる（5b と同じ理由）。
     //     凹凸の少ないページ（白地にロゴや数行だけ）では中身のある行だけで重ねる（rowScroll の sparse）。数える行が少なく
@@ -997,9 +995,13 @@ export function pickShownSlides(
     const fewLines = !hasText || textLines(text).length < SCROLL_MIN_LINES || textLines(otherText).length < SCROLL_MIN_LINES;
     // 画素の差の入口は、凹凸のあるページだけ 1 割（凹凸の少ないページは 6〜10% しか変わらない。5% 以下は規則 1 が外している）。
     // 行を重ねる前に、安い条件（重ね方・文字・画素の差）で入口を絞る
+    const rows = profile(slide.filename, thumb);
+    const otherRows = profile(other.filename, otherThumb);
+    const mode =
+      vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && !(differentRealLabels && fewLines) ? scrollMode(rows, otherRows) : undefined;
     const scrollable = mode === 'sparse' ? bothRealLabeled : mode === 'rows' && diff >= SCROLL_MIN_DIFF;
-    if (scrollable && vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && !(differentRealLabels && fewLines)) {
-      const scroll = rowScroll(profile(slide.filename, thumb), profile(other.filename, otherThumb));
+    if (scrollable) {
+      const scroll = rowScroll(rows, otherRows);
       if (scroll.dy !== undefined) {
         metrics.scrollShift = scroll.dy;
         metrics.scrollMatch = round(scroll.match);

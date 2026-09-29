@@ -973,7 +973,9 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled'], [true, undefined]]);
   });
 
-  it('凹凸の少ないページを数行（8 行未満）だけ送った組は、同じ本物のラベルがあれば平行移動としてまとめる', () => {
+  it('本物のスクロールでラベルが入れ替わったあとも、ラベルの違う白地の画面を平行移動として外さない', () => {
+    // 1 → 2 は 20 行送った（本文の行の多くは共通するが、ラベルは入れ替わる）。3 は 1 を 5 行ずらした形で、ラベルがまったく違う画面。
+    // 画素の差は 8% ほどで、平行移動の規則の入口（1 割）に届かないので残る
     const SMALL: Band[] = [
       { y: 12, h: 6, x: 20, w: 30, color: DARK },
       { y: 30, h: 3, x: 20, w: 60, color: DARK },
@@ -981,14 +983,12 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
       { y: 60, h: 6, x: 60, w: 30, color: BLUE },
       { y: 100, h: 4, x: 20, w: 100, color: DARK },
     ];
-    const site = (i: number) => (i === 0 ? '3331 ARTS CYD\n16:42' : '3331 ARTS CYD\n2024-06-01 09:07');
-    for (const sy of [3, 5, 7]) {
-      // 画素の差は 8% ほどで、平行移動の規則のふだんの入口（1 割）に届かない
-      expect(pixelDiff(page(0, SMALL), page(sy, SMALL))).toBeLessThan(0.1);
-      expect(pickPair(page(0, SMALL), page(sy, SMALL), vision(0.3, site)).map((x) => x.reason), `${sy} 行`).toEqual([undefined, 'panned']);
-      // 文字が読めない組は、ふだんの入口のまま（小さなパンは外さない）
-      expect(pickPair(page(0, SMALL), page(sy, SMALL)).map((x) => x.shown), `${sy} 行・文字なし`).toEqual([true, true]);
-    }
+    const labels = ['ARTS CYD\nEXHIBITION\nNEWS\nABOUT', 'EXHIBITION\nNEWS\nABOUT\nCONTACT\nACCESS', 'PRIVACY POLICY\nTERMS OF SERVICE'];
+    expect(pixelDiff(page(0, SMALL), page(5, SMALL))).toBeLessThan(0.1);
+    const slides = [slide(1, 1), slide(2, 1), slide(3, 1)];
+    const thumbs = new Map([['slide_001.png', page(0, SMALL)], ['slide_002.png', page(20, SMALL)], ['slide_003.png', page(5, SMALL)]]);
+    const d = pickShownSlides(slides, thumbs, 0.65, vision(0.3, (i) => labels[i]), 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled'], [true, undefined]]);
   });
 
   it('別のラベルが付いた写真は、行の並びが重なっても残す（写真同士の規則と同じ歯止め）', () => {
@@ -1027,6 +1027,11 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     const d = pickPair(page(0), page(20), vision(0.3, different));
     expect(d.map((x) => x.shown)).toEqual([true, true]);
     expect(d[1]!.sharedLines).toBe(0);
+  });
+
+  it('sharedLineRatio は、相手の行を 1 回しか使わない割り当てはせず、相手のどれかの行と合えば数える', () => {
+    // 短い方の 1 行目（切れた断片）と 2 行目（完全な行）が、長い方の同じ行に合う。どちらも共通として数える
+    expect(sharedLineRatio('作品一覧を見る\n作品一覧を見るページ\nお問い合わせ先', '作品一覧を見るページ\nお問い合わせ先\nまったく別の行\nさらに別の行')).toBe(1);
   });
 
   it('sharedLineRatio は少ない方の行のうち相手にもある割合。3 行に満たなければ判断しない', () => {
