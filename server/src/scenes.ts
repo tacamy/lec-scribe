@@ -200,6 +200,12 @@ const SCROLL_SPARSE_MIN_ROWS = 6;
  */
 const SCROLL_SPARSE_MIN_MATCH = 0.75;
 /**
+ * 凹凸の少ないページでは、両方の中身のある行のうち、この割合以上が重なりの範囲に入るずれだけを見る（2026-09-29 のレビュー）。
+ * 重なった範囲の行しか数えないので、大きくずらして 1 か所（同じロゴとナビ）だけ重ねると、範囲の外に出た中身（別のページの
+ * 大きな写真や本文）を無視して一致 1.0 になる。本当に送った画面は、端から出入りした分のほかは重なる
+ */
+const SCROLL_SPARSE_MIN_COVERAGE = 0.5;
+/**
  * 画素がこの割合以上違う組だけ調べる（平行移動の規則と同じ 1 割）。凹凸の少ないページ（rowScroll の sparse）はこの下限を使わない:
  * 白地のページを少し送った組は 6〜10% しか変わらず、「中身が同じ」（5% 以下）は規則 1 が先に外しているので、それ以上の下限は要らない
  */
@@ -226,7 +232,9 @@ export type RowProfile = {
   rows: Float64Array;
   height: number;
   structure: number;
-  /** 行ごとに、その画像の地の色（行の中央値）から離れているか。凹凸の少ないページで、中身のある行だけを数えるのに使う */
+  /** その画像の地の色（行ごとの平均色の中央値、RGB） */
+  ground: Float64Array;
+  /** 行ごとに、その画像の地の色から離れているか。凹凸の少ないページで、中身のある行だけを数えるのに使う */
   away: boolean[];
 };
 
@@ -260,35 +268,60 @@ export function rowProfile(px: Uint8Array): RowProfile {
   }
   const away = Array.from({ length: H }, (_, y) => rowDiff(rows, y, median, 0) > SCROLL_ROW_TOLERANCE);
   const count = away.filter(Boolean).length;
-  return { rows, height: H, structure: H === 0 ? 0 : count / H, away };
+  return { rows, height: H, structure: H === 0 ? 0 : count / H, ground: median, away };
+}
+
+/**
+ * 2 枚をどう重ねるか。両方に凹凸があれば全部の行で（'rows'）、両方とも凹凸が少なく地の色がそろっていれば中身のある行だけで
+ * （'sparse'）。片方だけ凹凸が少ない組や、地の色が違う組（白地のページと暗い画面）は重ねない（undefined）: 中身のある行の決め方が
+ * 2 枚で食い違い、白地の余白と暗い画面の白い隙間が「中身同士」として合ってしまう（2026-09-29 のレビュー）
+ */
+export function scrollMode(a: RowProfile, b: RowProfile): 'rows' | 'sparse' | undefined {
+  if (a.structure >= SCROLL_MIN_STRUCTURE && b.structure >= SCROLL_MIN_STRUCTURE) return 'rows';
+  if (a.structure < SCROLL_MIN_STRUCTURE && b.structure < SCROLL_MIN_STRUCTURE && rowDiff(a.ground, 0, b.ground, 0) <= SCROLL_ROW_TOLERANCE) return 'sparse';
+  return undefined;
 }
 
 /**
  * 2 枚を縦にずらして重ねたとき、行ごとの平均色がどれだけ合うか。
  * dy は a の行 y を b の行 y + dy に重ねるずれ（行）。match は重なった行のうち色が合う行の割合（差に応じて 0〜1）で、
  * 同じ一致なら小さいずれを取る（周期的な並びで、最も遠いずれが選ばれないように）。structure は 2 枚のうち凹凸の少ない方。
- * 重ねられる行がなかったときは dy が undefined
+ * 重ね方は scrollMode（sparse なら中身のある行だけを数え、両方の中身の半分以上が重なる範囲に入るずれだけを見る）。
+ * 重ねられないとき（重ね方が決まらない、重ねられる行がない）は dy が undefined
  */
 export function rowScroll(a: RowProfile, b: RowProfile): { dy: number | undefined; match: number; structure: number; sparse: boolean } {
   const H = Math.min(a.height, b.height);
   const structure = Math.min(a.structure, b.structure);
+  const mode = scrollMode(a, b);
+  const sparse = mode === 'sparse';
+  if (mode === undefined) return { dy: undefined, match: 0, structure, sparse };
   // 凹凸の少ないページ（白地が支配的で、中央値＝地の色）では、中身のある行だけを数える。全部の行で測ると、余白の白同士が
   // どんなずれでも合ってしまい判断できない（凹凸のあるページでは中央値が地の色にならないので、この数え方は使わない）
-  const sparse = structure < SCROLL_MIN_STRUCTURE;
+  let awayA = 0;
+  let awayB = 0;
+  for (let y = 0; y < H; y++) {
+    if (a.away[y]) awayA++;
+    if (b.away[y]) awayB++;
+  }
   const maxShift = Math.floor(H * SCROLL_MAX_SHIFT_RATIO);
   let best: { dy: number; match: number } | null = null;
   for (let dy = -maxShift; dy <= maxShift; dy++) {
     if (Math.abs(dy) < SCROLL_MIN_SHIFT) continue;
     let sum = 0;
     let n = 0;
+    let coveredA = 0;
+    let coveredB = 0;
     for (let y = 0; y < H; y++) {
       const y2 = y + dy;
       if (y2 < 0 || y2 >= H) continue;
+      if (a.away[y]) coveredA++;
+      if (b.away[y2]) coveredB++;
       if (sparse && !a.away[y] && !b.away[y2]) continue;
       sum += Math.max(0, 1 - rowDiff(a.rows, y, b.rows, y2) / SCROLL_ROW_TOLERANCE);
       n++;
     }
     if (n < (sparse ? SCROLL_SPARSE_MIN_ROWS : 1)) continue;
+    if (sparse && Math.min(coveredA / Math.max(awayA, 1), coveredB / Math.max(awayB, 1)) < SCROLL_SPARSE_MIN_COVERAGE) continue;
     const match = sum / n;
     if (!best || match > best.match || (match === best.match && Math.abs(dy) < Math.abs(best.dy))) best = { dy, match };
   }
@@ -418,19 +451,21 @@ const HAND_MIN_COLOR_WITHOUT_TEXT = 0.85;
 /** 両方にラベルらしい行があるとき、共通する行の割合。手で隠れる行が変わるので 2 割まで下げる（別のページは 0） */
 const HAND_MIN_SHARED_LINES = 0.2;
 /**
- * 少ない方に HAND_MANY_LINES 行以上のラベルがあるなら、共通する行は 2 行以上要る。各ページ共通の柱（章タイトル、フッター）が
- * 1 行あるだけの別のページ・別のスライドを、手が動いただけとみなさないため。同じページに手が入った組は 8 行中 2〜4 行が共通する
+ * どちらかに HAND_MANY_LINES 行以上のラベルがあるページでは、共通する行は 2 行以上要る。各ページ共通の柱（章タイトル、フッター）が
+ * 1 行あるだけの別のページ・別のスライドを、手が動いただけとみなさないため。多い方で数えるのは、手が片方の文字を隠して
+ * 柱ともう 1 行しか読めなかったときにも、柱 1 行で通さないため。同じページに手が入った組は 8 行中 2〜4 行が共通する
  */
 const HAND_MANY_LINES = 4;
 const HAND_MIN_SHARED_COUNT = 2;
 /**
- * 行が同じ印刷物の同じ行とみなせる共通部分の長さ。手や画面の端で切れた行も 5 文字は続けて読める（「サクラブチケン（コンタク」と
- * 「サクラブチケア（コンタク▶レンズ量28）…」）。短い方の行の 4 割以上で、両方の行末で終わる共通部分ではないこと
- * （長い 2 文が「することができる」のような決まり文句で終わるだけでは同じ行にしない。読み違いは行の途中や端に散るので、同じ行なら
- * 途中に続きが残る）
+ * 行が同じ印刷物の同じ行とみなせる、短い方の行を長い方に当てはめたときのそろい具合（fitSimilarity）と、そのために要る短い方の長さ。
+ * 同じ行は、手や画面の端で切れる位置と読み違いが毎回違う: 「サクラブチケン（コンタク」は 0.92、「3サクウブチケア（コンタクルレンスタ」は
+ * 0.72 で「サクラブチケア（コンタク▶レンズ量28）…」に当てはまる。決まり文句を共有するだけの別の文は、句点や末尾の読み違いがあっても
+ * 0.47〜0.59（「観察した結果を記録することができる。」と「仮説を立てて検証することができる」、「このように考えると分かりやすい」と
+ * 「このように考えるのは間違いだ」。2026-09-29 のレビュー）
  */
-const HAND_MIN_COMMON_RUN = 5;
-const HAND_MIN_COMMON_RUN_RATIO = 0.4;
+const HAND_MIN_FIT_SIM = 0.65;
+const HAND_MIN_FIT_CHARS = 5;
 
 /**
  * 撮影した物の上で何かが動いている画面か（5d の入口）。自動保存で、静止部分が半分以上（映像ではない）かつ 0.976 未満
@@ -449,6 +484,17 @@ function isFilmedStill(slide: SlideEntry): boolean {
   if (slide.reason !== 'change') return false;
   const still = slide.trigger?.stillFraction;
   return typeof still === 'number' && still >= FOOTAGE_MAX_STILL && still < HAND_MAX_STILL;
+}
+
+/**
+ * 5d の基準になれる画像か。撮影された物の自動保存（isFilmedStill）のほか、開始時・手動の保存も、静止部分の記録がないか帯の中なら
+ * なれる（開始時は記録がなく、手動は安定後の値しかない。本のページを手動で撮ったあとで手が動いた画像を、5d で見られるように。
+ * 5d には見た目・画素・文字・色の条件があるので、基準の側の記録が弱いことは効かない。2026-09-29 のレビュー）
+ */
+function mayBeFilmedAnchor(slide: SlideEntry): boolean {
+  if (slide.reason === 'change') return isFilmedStill(slide);
+  const still = slide.trigger?.stillFraction;
+  return typeof still !== 'number' || (still >= FOOTAGE_MAX_STILL && still < HAND_MAX_STILL);
 }
 
 /** ffmpeg で画像を 160×90 の RGBA に落とす。失敗したら null（判定を諦めるだけ） */
@@ -595,37 +641,51 @@ const charSimilarity = (a: readonly string[], b: readonly string[]) => 1 - editD
 
 type Chars = readonly string[];
 
-/** 少ない方の行のうち、相手にも（same で）ある行の割合 */
-function sharedRatio(x: readonly Chars[], y: readonly Chars[], same: (a: Chars, b: Chars) => boolean): number {
+/**
+ * 少ない方の行のうち、相手にも（same で）ある行の数と割合。相手の 1 行は 1 回しか使わない（長い柱 1 行に短い断片 2 本が当たって
+ * 「2 行共通」に数えられないように）
+ */
+function sharedCount(x: readonly Chars[], y: readonly Chars[], same: (a: Chars, b: Chars) => boolean): { ratio: number; hits: number; fewer: number; more: number } {
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
-  let hit = 0;
-  for (const s of short) if (long.some((l) => same(s, l))) hit++;
-  return hit / short.length;
+  const used = Array.from({ length: long.length }, () => false);
+  let hits = 0;
+  for (const s of short) {
+    const k = long.findIndex((l, i) => !used[i] && same(s, l));
+    if (k < 0) continue;
+    used[k] = true;
+    hits++;
+  }
+  return { ratio: short.length === 0 ? 0 : hits / short.length, hits, fewer: short.length, more: long.length };
 }
 
 /** 行同士のそろい具合（編集距離）が SCROLL_LINE_SIM 以上なら同じ行 */
 const sameLine = (a: Chars, b: Chars): boolean => charSimilarity(a, b) >= SCROLL_LINE_SIM;
 
 /**
- * ラベルの行同士: 編集距離のほか、短い方が長い方に丸ごと続けて入っているか、HAND_MIN_COMMON_RUN 文字以上・短い方の 4 割以上が
- * 続けて同じで、それが両方の行末で終わっていなければ同じ行
- * （同じ印刷物の同じ行は、手や画面の端で切れる位置と読み違いが毎回違う。行末だけの一致は、決まり文句で終わる別の文でも起きる）
+ * 短い方の行を長い方の行のどこかに当てはめたときのそろい具合（0〜1）。長い方は前後がはみ出してよい（手や画面の端で切れた行）。
+ * 1 − （当てはめた範囲との編集距離 ÷ 短い方の長さ）。editDistance と同じく 2 本のバッファを使い回す
  */
-const sameLabelLine = (a: Chars, b: Chars): boolean => {
-  if (sameLine(a, b)) return true;
-  const shorter = Math.min(a.length, b.length);
-  if (shorter < HAND_MIN_COMMON_RUN) return false;
-  const run = commonRun(a, b);
-  if (run >= shorter) return true;
-  if (run < HAND_MIN_COMMON_RUN || run < shorter * HAND_MIN_COMMON_RUN_RATIO) return false;
-  return !endsWithSameRun(a, b, run);
-};
-
-/** 2 つの行が、長さ run の同じ並びで終わっているか */
-function endsWithSameRun(a: Chars, b: Chars, run: number): boolean {
-  for (let k = 1; k <= run; k++) if (a[a.length - k] !== b[b.length - k]) return false;
-  return true;
+function fitSimilarity(a: Chars, b: Chars): number {
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (s.length === 0) return 0;
+  // prev[j]: 短い方の先頭 i 文字を、長い方の j 文字目で終わる範囲に当てはめたときの最小の編集距離（始まりはどこでもよいので 0 行目は 0）
+  let prev = new Uint16Array(l.length + 1);
+  let cur = new Uint16Array(l.length + 1);
+  for (let i = 1; i <= s.length; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= l.length; j++) {
+      cur[j] = Math.min(prev[j - 1]! + (s[i - 1] === l[j - 1] ? 0 : 1), prev[j]! + 1, cur[j - 1]! + 1);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  let best = s.length;
+  for (let j = 0; j <= l.length; j++) if (prev[j]! < best) best = prev[j]!;
+  return 1 - best / s.length;
 }
+
+/** ラベルの行同士: 編集距離でそろうか、短い方（HAND_MIN_FIT_CHARS 文字以上）が長い方に当てはまれば同じ行 */
+const sameLabelLine = (a: Chars, b: Chars): boolean =>
+  sameLine(a, b) || (Math.min(a.length, b.length) >= HAND_MIN_FIT_CHARS && fitSimilarity(a, b) >= HAND_MIN_FIT_SIM);
 
 /**
  * 読み取れた行のうち、相手にも（SCROLL_LINE_SIM 以上そろう形で）ある行の割合。少ない方の行数を分母にする。
@@ -636,43 +696,28 @@ export function sharedLineRatio(a: string, b: string): number | undefined {
   const x = textLines(a);
   const y = textLines(b);
   if (x.length < SCROLL_MIN_LINES || y.length < SCROLL_MIN_LINES) return undefined;
-  return sharedRatio(x, y, sameLine);
+  return sharedCount(x, y, sameLine).ratio;
 }
 
-/** ラベルらしい行（labelText が残す行）を 1 文字ずつに分けたもの */
-function labelLines(text: string): Chars[] {
-  return labelText(text)
+/** labelText 済みの文字を行に分け、1 文字ずつにしたもの */
+function splitLabelLines(labels: string): Chars[] {
+  return labels
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => [...line]);
 }
 
 /**
- * ラベルらしい行のうち、相手にもある行の割合（sameLabelLine）と、少ない方の行数。行が 1 つもない側があれば undefined
- * （4 章 GD I-2 の同じページは 0.33〜1、別のページは 0）
+ * ラベルらしい行（labelText が残す行）のうち、相手にもある行（sameLabelLine）の割合と数、少ない方と多い方の行数。
+ * 行が 1 つもない側があれば undefined（4 章 GD I-2 の同じページは 0.33〜1、別のページは 0）
  */
-export function sharedLabelLines(a: string, b: string): { ratio: number; lines: number } | undefined {
-  const x = labelLines(a);
-  const y = labelLines(b);
-  if (x.length === 0 || y.length === 0) return undefined;
-  return { ratio: sharedRatio(x, y, sameLabelLine), lines: Math.min(x.length, y.length) };
+export function sharedLabelLines(a: string, b: string): { ratio: number; hits: number; fewer: number; more: number } | undefined {
+  return sharedLabels(splitLabelLines(labelText(a)), splitLabelLines(labelText(b)));
 }
 
-/** 2 つの行に続けて同じ部分がある最大の長さ（最長共通部分文字列）。editDistance と同じく 2 本のバッファを使い回す */
-function commonRun(a: Chars, b: Chars): number {
-  let best = 0;
-  let prev = new Uint16Array(b.length + 1);
-  let cur = new Uint16Array(b.length + 1);
-  for (let i = 1; i <= a.length; i++) {
-    cur.fill(0);
-    for (let j = 1; j <= b.length; j++) {
-      if (a[i - 1] !== b[j - 1]) continue;
-      cur[j] = prev[j - 1]! + 1;
-      if (cur[j]! > best) best = cur[j]!;
-    }
-    [prev, cur] = [cur, prev];
-  }
-  return best;
+function sharedLabels(x: readonly Chars[], y: readonly Chars[]): { ratio: number; hits: number; fewer: number; more: number } | undefined {
+  if (x.length === 0 || y.length === 0) return undefined;
+  return sharedCount(x, y, sameLabelLine);
 }
 
 /** macOS の Vision で測った「見た目の距離」と「写っている文字」を使うときの設定 */
@@ -732,16 +777,28 @@ export type SceneDecision = {
   scrollMatch?: number;
   /** 行の並びが合ったとき、列の並びを重ねるのに要った横のずれ（画素。斜めに送った画面なら 0 でない） */
   scrollShiftX?: number;
-  /**
-   * 共通する行の割合。スクロール（5c）では両方に 3 行以上の文字があったときの全行の割合、手が動いただけの組（5d）では
-   * ラベルらしい行（1 行ずつでも）の割合で、5 文字以上の続きの一致も同じ行に数える（sharedLineRatio / sharedLabelLines）
-   */
+  /** スクロールを調べたとき（5c）、両方に 3 行以上の文字があれば、共通する行の割合（sharedLineRatio） */
   sharedLines?: number;
+  /**
+   * 手が動いただけかを調べたとき（5d）、両方にラベルらしい行があれば、共通する行の割合（sharedLabelLines。1 行ずつでも測り、
+   * 切れた行や読み違えた行も当てはまれば同じ行に数える）。5c の sharedLines とは数え方が違うので別に残す
+   */
+  sharedLabels?: number;
 };
 
 type Metrics = Pick<
   SceneDecision,
-  'vision' | 'colorMatch' | 'pixelDiff' | 'textSim' | 'panLeft' | 'panShift' | 'scrollShift' | 'scrollMatch' | 'scrollShiftX' | 'sharedLines'
+  | 'vision'
+  | 'colorMatch'
+  | 'pixelDiff'
+  | 'textSim'
+  | 'panLeft'
+  | 'panShift'
+  | 'scrollShift'
+  | 'scrollMatch'
+  | 'scrollShiftX'
+  | 'sharedLines'
+  | 'sharedLabels'
 >;
 type Verdict = { reason?: SceneReason; metrics: Metrics };
 
@@ -798,6 +855,18 @@ export function pickShownSlides(
    * 誤って残していた。まとまりに加えた画像の文字が基準と食い違ったら、その場面では文字を拒否の根拠にしない
    */
   let anchorTextStable = true;
+  /**
+   * 基準の画像の本物のラベル（labelText）が、まとまりの中で安定して読めているか。スクロールの規則（5c）の「別のラベル」の歯止めに使う。
+   * 生の文字で見ると、時計やファイル名の断片が変わっただけの同じ画面を 1 枚まとめたところで「読み取りが安定しない」扱いになり、
+   * 歯止めが外れて別のページまで入ってきた（2026-09-29 のレビュー）
+   */
+  let anchorLabelsStable = true;
+  /**
+   * 今のまとまりが撮影された紙面か（基準か、まとまりに加えた画像が isFilmed）。ページをめくった瞬間の画像は切り替えの変化が大きく
+   * isFilmed にならないので、めくった画像が基準のまとまりで手の動いた画像をまとめたあと、次にめくった画像を写真同士の規則で
+   * 吸っていた（2026-09-29 のレビュー）。紙面とわかったまとまりでは、帯の中の画像を撮影された紙面として比べる
+   */
+  let groupFilmed = false;
   /** 1 つ前のまとまり（基準の画像と、最後に加えた画像）。前の画面に短く戻っただけの画像を見分けるのに使う */
   let previousGroup: { first: number; last: number } | null = null;
   /** 今のまとまりに最後に加えた画像 */
@@ -839,28 +908,28 @@ export function pickShownSlides(
     // 両方に VETO_MIN_CHARS 以上の文字があるか。「含まれる」は短い読み取り（「図1」など）だと偶然当たるので、このときだけ認める
     const bothLabeled = hasText && normalizeText(text).length >= VETO_MIN_CHARS && normalizeText(otherText).length >= VETO_MIN_CHARS;
     const contained = bothLabeled && textContained(text, otherText);
+    /** 別のラベルが付いている（両方に 4 文字以上の文字があって、そろわず、一方が他方に含まれもしない） */
+    const differentLabelsStrict = bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
     /**
-     * 別のラベルが付いている（両方に 4 文字以上の文字があって、そろわず、一方が他方に含まれもしない）。
      * 写真同士・同じショットの規則が「別の写真」とみなしてまとめない根拠。文字の読み取りが安定しない場面（手書きの板書）では
      * 根拠にしない。アプリの画面では時計やファイル名の断片も「文字」に入るので、同じアプリで別の作品を開いた画面も別と判定される
      * （これを雑音として除くと、11 章 GD で別の作品の Illustrator 画面が写真同士の規則でまとまった。2026-09-24）
      */
-    const differentLabels = anchorTextStable && bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
+    const differentLabels = anchorTextStable && differentLabelsStrict;
     /**
      * 撮影した物の上で何かが動いている画面（静止部分が半分以上 HAND_MAX_STILL（0.976）未満。本のページを指さす手など。5d）。
      * この画面では、写真同士の規則（距離 0.55 まで）は緩すぎる: 同じ本の別のページが 0.35〜0.5 で、手が動いただけの組（0.21〜0.36）と
      * 重なる。しかも手が入ると文字の読み取りが毎回変わるので「読み取りが安定しない」扱いになり、別のラベルの歯止めが外れて、
      * 別のページまで写真同士の規則でまとまっていた（4 章 GD I-2 の 045〜051、066〜071）。そこでこの画面では 5d に任せ、
-     * 同じショットの規則（6）でも歯止めを外さない
+     * 同じショットの規則（6）でも歯止めを外さない。紙面とわかったまとまり（groupFilmed）では、めくった画像同士も帯の中ならこの画面
      */
-    const filmed = isFilmed(slide) || isFilmed(other);
+    const filmed = isFilmed(slide) || isFilmed(other) || (groupFilmed && isFilmedStill(slide));
     /**
-     * 5d は、この画像が手の動いた紙面（isFilmed）で、基準も撮影された物（isFilmedStill。めくった瞬間の画像は変化が大きいが、
+     * 5d は、この画像が手の動いた紙面（isFilmed）で、基準も撮影された物（mayBeFilmedAnchor。めくった瞬間の画像は変化が大きいが、
      * そのあと手が動いた画像の基準になる: 4 章の 079→082）のときだけ。この画像の側を見ないと、雑音で静止部分が 0.976 に届かない
      * スライド（12 章 自然の 008、0.972）を基準に、同じ型で本文だけ違う次のスライド（見出しの 1 行が共通）を「手が動いただけ」と吸ってしまう
      */
-    const handPair = isFilmed(slide) && isFilmedStill(other);
-    const differentLabelsStrict = bothLabeled && (textSim ?? 1) < SAME_TEXT_SIM && !contained;
+    const handPair = isFilmed(slide) && mayBeFilmedAnchor(other);
     /**
      * スクロールの規則（5c）用: 雑音（時計、ファイル名の断片、ピクトグラムの誤読）を除いた本物のラベルだけで見る。
      * 5c には行と列の並びという強い根拠があるので、雑音で止めない（5 章 GD のピクトグラムの一覧、11 章 GD のキャンバスを送った組）
@@ -870,7 +939,14 @@ export function pickShownSlides(
     /** 両方に 4 文字以上の本物のラベルがあるか */
     const bothRealLabeled = hasText && normalizeText(realLabels).length >= VETO_MIN_CHARS && normalizeText(otherRealLabels).length >= VETO_MIN_CHARS;
     const differentRealLabels =
-      anchorTextStable && bothRealLabeled && (textSimilarity(realLabels, otherRealLabels) ?? 1) < SAME_TEXT_SIM && !textContained(realLabels, otherRealLabels);
+      anchorLabelsStable && bothRealLabeled && (textSimilarity(realLabels, otherRealLabels) ?? 1) < SAME_TEXT_SIM && !textContained(realLabels, otherRealLabels);
+    /** 色の分布は 5d と規則 6 の両方で使うので、1 つの組で 1 回だけ測る */
+    let color: number | undefined;
+    const colorOf = (): number => {
+      color ??= colorMatch(thumb, otherThumb);
+      metrics.colorMatch = round(color);
+      return color;
+    };
     // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
     if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
     if (vision && d !== undefined) {
@@ -899,13 +975,18 @@ export function pickShownSlides(
     // 5b. 画面を少しスクロール・パンしただけ（違っている画素の大半が、同じ向きの平行移動で説明できる）。
     //     基準の画像とだけ比べる。直前の画像とも比べると、長いページを少しずつスクロールした全部が 1 枚にまとまり、
     //     最後の画面しか残らない。基準とだけなら、動いた量が探す範囲（横 15%、縦 13%）を超えたところで次の 1 枚が残る
-    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）
-    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && diff >= PAN_MIN_DIFF) {
+    //     見る範囲は `--scene-vision-photo` を超えない（利用者が閾値を下げた・0 にしたのに、この規則だけ広く見ないため）。
+    //     凹凸の少ないページ（白地にロゴや数行だけ）で、両方に同じ本物のラベルがあれば、画素の差と説明できた画素の下限（1 割）は
+    //     使わない: 白地のページを数行送っただけの組は 8% ほどしか変わらず、どちらの下限にも届かない（2026-09-29 のレビュー。
+    //     5c は 8 行未満のずれを見ないので、ここで拾う）
+    const mode = scrollMode(profile(slide.filename, thumb), profile(other.filename, otherThumb));
+    const sparseLabeled = mode === 'sparse' && bothRealLabeled && !differentRealLabels;
+    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(PAN_MAX_VISION, vision.photo) && (diff >= PAN_MIN_DIFF || sparseLabeled)) {
       const pan = panResidual(thumb, otherThumb);
       metrics.panLeft = round(pan.left);
       // どの移動でも 1 画素も説明できなかったときの (0, 0) は「見つかった移動」ではないので残さない
       if (pan.left < pan.diff) metrics.panShift = [pan.dx, pan.dy];
-      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && pan.diff - pan.left >= PAN_MIN_EXPLAINED) return { reason: 'panned', metrics };
+      if (pan.left <= pan.diff * PAN_MAX_LEFT_RATIO && (pan.diff - pan.left >= PAN_MIN_EXPLAINED || sparseLabeled)) return { reason: 'panned', metrics };
     }
     // 5c. 縦にスクロールしただけ（行ごとの色の並びが、ずれた位置で重なる）。基準の画像とだけ比べる（5b と同じ理由）。
     //     凹凸の少ないページ（白地にロゴや数行だけ）では中身のある行だけで重ねる（rowScroll の sparse）。数える行が少なく
@@ -914,11 +995,12 @@ export function pickShownSlides(
     //     文字が多い（本文が SCROLL_MIN_LINES 行以上）なら、送れば文字が入れ替わるのが当たり前なので、代わりに共通する行で見る。
     //     安い順に見る: 行の並び → 見つかったずれでの列の並び（周期的なリストの別の中身を除く）→ 文字（重い）
     const fewLines = !hasText || textLines(text).length < SCROLL_MIN_LINES || textLines(otherText).length < SCROLL_MIN_LINES;
-    if (vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && !(differentRealLabels && fewLines)) {
+    // 画素の差の入口は、凹凸のあるページだけ 1 割（凹凸の少ないページは 6〜10% しか変わらない。5% 以下は規則 1 が外している）。
+    // 行を重ねる前に、安い条件（重ね方・文字・画素の差）で入口を絞る
+    const scrollable = mode === 'sparse' ? bothRealLabeled : mode === 'rows' && diff >= SCROLL_MIN_DIFF;
+    if (scrollable && vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && !(differentRealLabels && fewLines)) {
       const scroll = rowScroll(profile(slide.filename, thumb), profile(other.filename, otherThumb));
-      // 画素の差の入口は、凹凸のあるページだけ 1 割（凹凸の少ないページは 6〜10% しか変わらない。5% 以下は規則 1 が外している）
-      const enough = scroll.sparse ? bothRealLabeled : diff >= SCROLL_MIN_DIFF;
-      if (scroll.dy !== undefined && enough) {
+      if (scroll.dy !== undefined) {
         metrics.scrollShift = scroll.dy;
         metrics.scrollMatch = round(scroll.match);
         if (scroll.match >= (scroll.sparse ? SCROLL_SPARSE_MIN_MATCH : SCROLL_MIN_MATCH)) {
@@ -935,25 +1017,20 @@ export function pickShownSlides(
       }
     }
     // 5d. 撮影した紙面の上で手（指）が動いただけ。この画像が isFilmed（静止部分が半分以上 0.976 未満: 何かが動き続けているが
-    //     映像ではない、切り替えの変化が小さい自動保存）で基準も撮影された物なら、読み取れたラベルの行が共通し、見た目・画素・色が
-    //     近ければ同じページ。基準の画像とだけ比べる。ページをめくった組は行が 1 つも共通しない。
-    //     ラベルらしい行がどちらかにまったくなければ、生の文字で別のラベルが付いていないことと、色の分布（厳しめ）で見る
+    //     映像ではない、切り替えの変化が小さい自動保存）で基準も撮影された物（mayBeFilmedAnchor）なら、読み取れたラベルの行が共通し、
+    //     見た目・画素・色が近ければ同じページ。基準の画像とだけ比べる。ページをめくった組は行が 1 つも共通しない。
+    //     ラベルらしい行がどちらかにまったくなければ、生の文字が半分そろっているか別のラベルが付いていないことと、色の分布（厳しめ）で見る
     if (handPair && vision && d !== undefined && vision.photo > 0 && d <= Math.min(HAND_MAX_VISION, vision.photo) && diff <= HAND_MAX_DIFF_WITH_TEXT) {
-      // 基準の画像とだけ比べるので、基準で手に隠れていた行は読めていない。ラベルらしい行が 1 行ずつでもあれば共通する割合で見る。
+      // 基準の画像とだけ比べるので、基準で手に隠れていた行は読めていない。ラベルらしい行が 1 行ずつでもあれば共通する行で見る。
       // ラベルが多いページでは 1 行の一致（各ページ共通の柱・フッター）を根拠にしない
-      const shared = hasText ? sharedLabelLines(realLabels, otherRealLabels) : undefined;
-      if (shared !== undefined) metrics.sharedLines = round(shared.ratio);
-      const minShared = shared !== undefined && shared.lines >= HAND_MANY_LINES ? Math.max(HAND_MIN_SHARED_LINES, HAND_MIN_SHARED_COUNT / shared.lines) : HAND_MIN_SHARED_LINES;
-      // ラベル行で言えないときは、生の文字が半分そろっているか、別のラベルが付いていない（読めない同士）こと
-      const sameByLabels = shared !== undefined && shared.ratio >= minShared;
-      const sameByRawText = shared === undefined && ((textSim ?? 0) >= HAND_MIN_RAW_TEXT_SIM || !differentLabelsStrict);
-      // 文字で同じページと言えるときだけ色の分布を測る（別のページの組にヒストグラムを取らない）。
-      // 文字の根拠がラベルの一致なら画素の差は 35% まで、それ以外は 25% まで
-      if ((sameByLabels && diff <= HAND_MAX_DIFF_WITH_TEXT) || (sameByRawText && diff <= HAND_MAX_DIFF)) {
-        const match = colorMatch(thumb, otherThumb);
-        metrics.colorMatch = round(match);
-        if (match >= (sameByLabels ? HAND_MIN_COLOR : HAND_MIN_COLOR_WITHOUT_TEXT)) return { reason: 'hand', metrics };
-      }
+      const shared = hasText ? sharedLabels(splitLabelLines(realLabels), splitLabelLines(otherRealLabels)) : undefined;
+      if (shared !== undefined) metrics.sharedLabels = round(shared.ratio);
+      const sameByLabels =
+        shared !== undefined && shared.hits >= (shared.more >= HAND_MANY_LINES ? HAND_MIN_SHARED_COUNT : 1) && shared.ratio >= HAND_MIN_SHARED_LINES;
+      // ラベル行で言えないときは、生の文字が半分そろっているか、別のラベルが付いていない（読めない同士）こと。画素の差は 25% まで
+      const sameByRawText = shared === undefined && diff <= HAND_MAX_DIFF && ((textSim ?? 0) >= HAND_MIN_RAW_TEXT_SIM || !differentLabelsStrict);
+      // 文字で同じページと言えるときだけ色の分布を測る（別のページの組にヒストグラムを取らない）
+      if ((sameByLabels || sameByRawText) && colorOf() >= (sameByLabels ? HAND_MIN_COLOR : HAND_MIN_COLOR_WITHOUT_TEXT)) return { reason: 'hand', metrics };
     }
     // 6. 映像中心の画面では、色の分布が同じなら同じ場面。
     //    写真・映像らしい画面（色の多様さ）で、自動の保存の切り替えの瞬間の変化が小さかった（カットではなく、同じショットの
@@ -969,11 +1046,10 @@ export function pickShownSlides(
       entropy(slide.filename, thumb) >= PHOTO_ENTROPY_BITS &&
       entropy(other.filename, otherThumb) >= PHOTO_ENTROPY_BITS &&
       !(filmed ? differentLabelsStrict : differentLabels);
-    if (threshold > 0 && (footage || sameShot)) {
-      const match = colorMatch(thumb, otherThumb);
-      metrics.colorMatch = round(match);
-      if (match >= threshold) return { reason: 'same-scene', metrics };
-    }
+    // 撮影された紙面でも、5d で外れた組をここで色の分布だけでまとめうる（文字の読めない本のページ同士。13 章 GD I-2 の 020→022 など）。
+    // 見た目の距離や色で止めると、同じショットに字幕が出ただけの映像（はじめに 014〜016、Vision 0.78〜0.84）も割れ、区別する手がかりが
+    // ないので止めていない（SPEC §13.4b）
+    if (threshold > 0 && (footage || sameShot) && colorOf() >= threshold) return { reason: 'same-scene', metrics };
     return { metrics };
   };
   /**
@@ -1070,10 +1146,18 @@ export function pickShownSlides(
       if (verdict?.reason) {
         lastInGroup = index;
         revisitStart = null;
+        if (isFilmed(slide)) groupFilmed = true;
         decisions.push({ filename: slide.filename, shown: false, sameSceneAs: last.slide.filename, reason: verdict.reason, ...(via ? { via } : {}), ...verdict.metrics });
-        const text = vision?.text?.(index);
-        const anchorText = vision?.text?.(last.index);
-        if (text && anchorText && (textSimilarity(text, anchorText) ?? 1) < SAME_TEXT_SIM && !textContained(text, anchorText)) anchorTextStable = false;
+        // 手が動いただけの組は、手に隠れた行が変わるので文字が食い違うのが当たり前（5d が共通する行を確かめている）。読み取りが
+        // 安定しない根拠にはしない（しないと別のラベルの歯止めが外れる）
+        if (verdict.reason !== 'hand') {
+          const text = vision?.text?.(index);
+          const anchorText = vision?.text?.(last.index);
+          if (text && anchorText && (textSimilarity(text, anchorText) ?? 1) < SAME_TEXT_SIM && !textContained(text, anchorText)) anchorTextStable = false;
+          const labels = labelText(text ?? '');
+          const anchorLabels = labelText(anchorText ?? '');
+          if (labels && anchorLabels && (textSimilarity(labels, anchorLabels) ?? 1) < SAME_TEXT_SIM && !textContained(labels, anchorLabels)) anchorLabelsStable = false;
+        }
         return;
       }
       decisions.push({ filename: slide.filename, shown: true, ...verdict?.metrics });
@@ -1084,11 +1168,14 @@ export function pickShownSlides(
         lastShown = { slide, index };
         lastInGroup = index;
         anchorTextStable = true;
+        anchorLabelsStable = true;
+        groupFilmed = isFilmed(slide);
       }
     } else {
       decisions.push({ filename: slide.filename, shown: true });
       lastShown = { slide, index };
       lastInGroup = index;
+      groupFilmed = isFilmed(slide);
     }
   });
   return keep === 'last' ? preferLast(decisions) : decisions;

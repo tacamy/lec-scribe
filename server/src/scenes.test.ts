@@ -15,6 +15,7 @@ import {
   readThumbnail,
   rowProfile,
   rowScroll,
+  scrollMode,
   sharedLabelLines,
   sharedLineRatio,
   shownSlides,
@@ -765,6 +766,14 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
     { y: 112, h: 6, x: 5, w: 110, color: BLUE },
   ];
   const GREEN = [20, 150, 80];
+  /** 白地に小さなロゴと数行の文字の Web ページ（凹凸の少ないページ） */
+  const SPARSE_SITE: Band[] = [
+    { y: 12, h: 8, x: 20, w: 40, color: DARK },
+    { y: 30, h: 3, x: 20, w: 90, color: DARK },
+    { y: 36, h: 3, x: 20, w: 70, color: DARK },
+    { y: 60, h: 10, x: 60, w: 50, color: BLUE },
+    { y: 100, h: 4, x: 20, w: 100, color: DARK },
+  ];
   const ORANGE = [240, 150, 30];
   /** 別のページ: 帯の色も位置も高さも違う（余白の白は同じ） */
   const OTHER_BANDS: Band[] = [
@@ -902,12 +911,84 @@ describe('画面を大きくスクロールした組（2026-09-22）', () => {
       { y: 70, h: 6, x: 30, w: 30, color: DARK },
     ];
     expect(scroll(page(0, OTHER_SPARSE), sparse(0)).match).toBeLessThan(0.6);
-    expect(pickPair(sparse(0), page(0, OTHER_SPARSE)).map((x) => x.shown)).toEqual([true, true]);
+    // 同じラベルが読めて凹凸の少ないページの経路に入っても、行が重ならないので残る
+    expect(pickPair(sparse(0), page(0, OTHER_SPARSE), vision(0.3, site)).map((x) => x.shown)).toEqual([true, true]);
     // 帯 1 本だけの画面（見出しの高さが違うだけの別のスライド）は、別のラベルが付いていれば残り、文字が読めなくても残る
     const banner = (y: number) => page(0, [{ y, h: 10, color: DARK }]);
     const labels = (i: number) => (i === 0 ? '第1章 導入' : '第2章 観察');
     expect(pickPair(banner(10), banner(40), vision(0.3, labels)).map((x) => x.shown)).toEqual([true, true]);
     expect(pickPair(banner(10), banner(40)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('凹凸の少ないページは、両方の中身の半分以上が重なるずれだけを見る（範囲の外に出た中身を無視して 1 か所だけ重ねない）', () => {
+    // 白地に小さなロゴと、下の方に写真。別のページは上の方に写真があり、同じロゴが 30 行下にある。
+    // ロゴの 8 行だけなら 30 行ずらして完全に重なるが、どちらも中身の 6 割（写真）は重なりの外にある
+    const LOGO_AND_PHOTO: Band[] = [
+      { y: 12, h: 8, x: 20, w: 40, color: DARK },
+      { y: 60, h: 14, x: 30, w: 100, color: BLUE },
+    ];
+    const PHOTO_AND_LOGO: Band[] = [
+      { y: 0, h: 14, x: 30, w: 100, color: GREEN },
+      { y: 42, h: 8, x: 20, w: 40, color: DARK },
+    ];
+    const r = scroll(page(0, PHOTO_AND_LOGO), page(0, LOGO_AND_PHOTO));
+    expect(r.sparse).toBe(true);
+    // ロゴだけが重なる 30 行のずれは選ばず、残ったずれでは行がそろわない
+    expect(r.dy).not.toBe(-30);
+    expect(r.match).toBeLessThan(0.75);
+    // 同じ本物のラベル（ロゴ）が読めても（時計と日付の雑音で生の文字はそろわない）、行では重ならないので残る
+    const labels = (i: number) => (i === 0 ? '3331 ARTS CYD\n16:42' : '3331 ARTS CYD\n2024-06-01 09:07');
+    expect(pickPair(page(0, LOGO_AND_PHOTO), page(0, PHOTO_AND_LOGO), vision(0.3, labels)).map((x) => x.shown)).toEqual([true, true]);
+    // 同じページを送っただけなら、端から出入りした分のほかは重なる
+    expect(scroll(page(20, SPARSE_SITE), page(0, SPARSE_SITE)).dy).toBe(20);
+  });
+
+  it('地の色が違う組（白地のページと暗い画面）や、片方だけ凹凸の少ない組は重ねない', () => {
+    // 白地に細い線 2 本と、暗い地に白い隙間がある画面。どちらも凹凸は少ないが、中身のある行の意味が逆
+    const white = page(0, [{ y: 10, h: 3, color: DARK }, { y: 50, h: 3, color: DARK }]);
+    const dark = page(0, [{ y: 0, h: 30, color: DARK }, { y: 40, h: 25, color: DARK }, { y: 75, h: 15, color: DARK }]);
+    expect(rowProfile(white).structure).toBeLessThan(0.3);
+    expect(rowProfile(dark).structure).toBeLessThan(0.3);
+    expect(scrollMode(rowProfile(white), rowProfile(dark))).toBeUndefined();
+    expect(scroll(white, dark).dy).toBeUndefined();
+    // 凹凸のあるページと少ないページも重ねない（中身のある行の決め方が 2 枚で食い違う）
+    expect(rowProfile(page(0)).structure).toBeGreaterThanOrEqual(0.3);
+    expect(scrollMode(rowProfile(page(0)), rowProfile(white))).toBeUndefined();
+    expect(scrollMode(rowProfile(page(0)), rowProfile(page(20)))).toBe('rows');
+  });
+
+  it('時計などの雑音だけが変わった組をまとめても、本物のラベルは安定しているとみなし、別のラベルの歯止めを外さない', () => {
+    const SITE: Band[] = [
+      { y: 12, h: 8, x: 20, w: 40, color: DARK },
+      { y: 30, h: 3, x: 20, w: 90, color: DARK },
+      { y: 36, h: 3, x: 20, w: 70, color: DARK },
+      { y: 60, h: 10, x: 60, w: 50, color: BLUE },
+      { y: 100, h: 4, x: 20, w: 100, color: DARK },
+    ];
+    // 1 → 2 は同じサイトを 20 行送った（生の文字は時計だけ違う）。3 は同じ並びをさらに送った位置に、別のラベルが付いた画面
+    const labels = ['3331 ARTS CYD\n16:42', '3331 ARTS CYD\n2024-06-01 09:07', 'EXHIBITION ARCHIVE\n16:44'];
+    const slides = [slide(1, 1), slide(2, 1), slide(3, 1)];
+    const thumbs = new Map([['slide_001.png', page(0, SITE)], ['slide_002.png', page(20, SITE)], ['slide_003.png', page(35, SITE)]]);
+    const d = pickShownSlides(slides, thumbs, 0.65, vision(0.3, (i) => labels[i]), 'first');
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'scrolled'], [true, undefined]]);
+  });
+
+  it('凹凸の少ないページを数行（8 行未満）だけ送った組は、同じ本物のラベルがあれば平行移動としてまとめる', () => {
+    const SMALL: Band[] = [
+      { y: 12, h: 6, x: 20, w: 30, color: DARK },
+      { y: 30, h: 3, x: 20, w: 60, color: DARK },
+      { y: 36, h: 3, x: 20, w: 70, color: DARK },
+      { y: 60, h: 6, x: 60, w: 30, color: BLUE },
+      { y: 100, h: 4, x: 20, w: 100, color: DARK },
+    ];
+    const site = (i: number) => (i === 0 ? '3331 ARTS CYD\n16:42' : '3331 ARTS CYD\n2024-06-01 09:07');
+    for (const sy of [3, 5, 7]) {
+      // 画素の差は 8% ほどで、平行移動の規則のふだんの入口（1 割）に届かない
+      expect(pixelDiff(page(0, SMALL), page(sy, SMALL))).toBeLessThan(0.1);
+      expect(pickPair(page(0, SMALL), page(sy, SMALL), vision(0.3, site)).map((x) => x.reason), `${sy} 行`).toEqual([undefined, 'panned']);
+      // 文字が読めない組は、ふだんの入口のまま（小さなパンは外さない）
+      expect(pickPair(page(0, SMALL), page(sy, SMALL)).map((x) => x.shown), `${sy} 行・文字なし`).toEqual([true, true]);
+    }
   });
 
   it('別のラベルが付いた写真は、行の並びが重なっても残す（写真同士の規則と同じ歯止め）', () => {
@@ -1057,33 +1138,44 @@ describe('撮影した紙面の上で手（指）が動いただけの組（2026
   const handA = withHand(page(1), 20, 30);
   const handB = withHand(page(1), 100, 30);
 
-  it('sharedLabelLines は、ラベルらしい行のうち相手にもある行の割合。1 行ずつでも測り、続きが同じなら切れ方や読み違いがあっても同じ行', () => {
+  it('sharedLabelLines は、ラベルらしい行のうち相手にもある行の割合。1 行ずつでも測り、切れた行や読み違えた行も当てはまれば同じ行', () => {
     const ratio = (a: string, b: string) => sharedLabelLines(a, b)?.ratio;
+    // 短い方を長い方のどこかに当てはめて見る（手や画面の端で切れた行）
     expect(ratio('サクラブチケン（コンタク', 'サクラブチケア（コンタク▶レンズ量28）CURE')).toBe(1);
-    // 読み違いが途中にあっても、4 割以上が続けて同じなら同じ行（4 章 GD I-2 の nico のページ）
+    // 読み違いが散っていても、当てはめて 0.65 以上そろえば同じ行（4 章 GD I-2 の nico のページ。0.72）
     expect(ratio('3サクウブチケア（コンタクルレンスタ', 'サクラブチケア（コンタク▶レンズ量28）CURE')).toBe(1);
     expect(ratio(LEFT.join('\n'), RIGHT.join('\n'))).toBeCloseTo(2 / 3);
-    // 手で隠れて 2 行しか読めなかった側があっても測る（sharedLineRatio は 3 行に満たないと判断しない）
+    // 手で隠れて 1 行しか読めなかった側があっても測る（sharedLineRatio は 3 行に満たないと判断しない）
     expect(sharedLineRatio('岡田税理士事務所\n部', RIGHT.join('\n'))).toBeUndefined();
-    expect(sharedLabelLines('岡田税理士事務所\n部', RIGHT.join('\n'))).toEqual({ ratio: 1, lines: 1 });
+    expect(sharedLabelLines('岡田税理士事務所\n部', RIGHT.join('\n'))).toEqual({ ratio: 1, hits: 1, fewer: 1, more: 3 });
     // 数字や記号だけ・3 文字未満の行は数えないので、それしかない側があれば判断しない
     expect(sharedLabelLines('16:42\n山', 'nico')).toBeUndefined();
-    // 行末だけが同じ（決まり文句で終わる別の文）は同じ行にしない
+    // 決まり文句を共有するだけの別の文は同じ行にしない（行末の句点や読み違いがあっても、先頭が同じでも）
     expect(ratio('観察した結果を記録することができる', '仮説を立てて検証することができる')).toBe(0);
     expect(ratio('観察した結果を記録することができる。', '仮説を立てて検証することができる。')).toBe(0);
+    expect(ratio('観察した結果を記録することができる。', '仮説を立てて検証することができる')).toBe(0);
+    expect(ratio('観察した結果を記録することができる', '仮説を立てて検証することができるー')).toBe(0);
+    expect(ratio('このように考えると分かりやすい', 'このように考えるのは間違いだ')).toBe(0);
+    // 相手の 1 行は 1 回しか使わない（長い柱 1 行に短い断片 2 本が当たっても 2 行共通にしない）
+    expect(sharedLabelLines('第3章レイアウト\nレイアウトの基本', '第3章レイアウトの基本と応用\n文字の大きさ\n行間の決め方\n書体の選び方\n版面率の考え方')).toEqual({
+      ratio: 0.5,
+      hits: 1,
+      fewer: 2,
+      more: 5,
+    });
   });
 
   it('手の位置だけが違う（見た目・画素・色が近く、読み取れたラベルが共通する）なら外す', () => {
     const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, texts(LEFT, RIGHT)));
     expect(d[1]!.reason).toBe('hand');
-    expect(d[1]!.sharedLines).toBeCloseTo(2 / 3);
+    expect(d[1]!.sharedLabels).toBeCloseTo(2 / 3);
     expect(pixelDiff(handA, handB)).toBeLessThan(0.25);
   });
 
   it('見た目が同じくらい近くても、ラベルが 1 行も共通しなければ別のページとして残す', () => {
     const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, texts(LEFT, OTHER)));
     expect(d.map((x) => x.shown)).toEqual([true, true]);
-    expect(d[1]!.sharedLines).toBe(0);
+    expect(d[1]!.sharedLabels).toBe(0);
   });
 
   it('静止部分が 0.976 以上（スライド）の画像や、切り替えの変化が大きい画像には使わない。基準がスライドでも使わない', () => {
@@ -1118,7 +1210,7 @@ describe('撮影した紙面の上で手（指）が動いただけの組（2026
   it('ラベルらしい行が片側にないときは、生の文字が食い違えば残す（時計しか読めなかった基準に、本文が読めた別のページを吸わない）', () => {
     const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, texts(['16:42', '山'], LEFT)));
     expect(d.map((x) => x.shown)).toEqual([true, true]);
-    expect(d[1]!.sharedLines).toBeUndefined();
+    expect(d[1]!.sharedLabels).toBeUndefined();
     expect(d[1]!.colorMatch).toBeUndefined();
   });
 
@@ -1128,10 +1220,35 @@ describe('撮影した紙面の上で手（指）が動いただけの組（2026
     const other = texts([chapter, '余白の取り方', 'グリッドの考え方', '版面率'], [chapter, '文字の大きさ', '行間の決め方', '書体の選び方']);
     const d = pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, other));
     expect(d.map((x) => x.shown)).toEqual([true, true]);
-    expect(d[1]!.sharedLines).toBeCloseTo(1 / 4);
+    expect(d[1]!.sharedLabels).toBeCloseTo(1 / 4);
     // 同じページに手が入った組は 2 行以上が共通する（読み違いがあっても）
     const same = texts([chapter, '余白の取り方', 'グリッドの考え方', '版面率'], [chapter, '余白の取リ方', '行間の決め方', '書体の選び方']);
     expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, same))[1]!.reason).toBe('hand');
+    // 手で隠れて柱ともう 1 行しか読めなくても、多い方が 4 行以上なら 2 行要る（柱 1 行では通さない）
+    const covered = texts([chapter, '余白の取り方', 'グリッドの考え方', '版面率', '行長の目安'], [chapter, '文字の大きさ']);
+    expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, covered)).map((x) => x.shown)).toEqual([true, true]);
+    // 長い柱 1 行に、短く切れた断片 2 本が当たっても 2 行にはならない
+    const fragments = texts([`${chapter}と応用`, '余白の取り方', 'グリッドの考え方', '版面率'], ['第3章レイアウト', 'レイアウトの基本']);
+    expect(pick([filmed(1), filmed(2)], [handA, handB], vision(0.3, fragments)).map((x) => x.shown)).toEqual([true, true]);
+  });
+
+  it('めくった瞬間の画像が基準のまとまりで手の動いた画像をまとめたあとも、次にめくった別のページは写真同士の規則で吸わない', () => {
+    // 1: めくった瞬間（変化が大きい）、2: 同じページで手が動いた、3: 次のページをめくった瞬間（Vision 0.5、ラベルは別）
+    const distance = (a: number, b: number) => (a + b === 1 ? 0.3 : 0.5);
+    const slides = [filmed(1, 0.85, 0.5), filmed(2), filmed(3, 0.85, 0.5)];
+    const thumbs = [handA, handB, withHand(page(2), 60, 30)];
+    const d = pick(slides, thumbs, vision(distance, texts(LEFT, RIGHT, OTHER)));
+    expect(d.map((x) => [x.shown, x.reason])).toEqual([[true, undefined], [false, 'hand'], [true, undefined]]);
+  });
+
+  it('手動・開始時に保存した紙面も、基準として手の動いた画像をまとめる（静止部分が帯の外と記録されたスライドは除く）', () => {
+    const v = vision(0.3, texts(LEFT, RIGHT));
+    const manual: SlideEntry = { ...filmed(1), reason: 'manual', trigger: { stillFraction: 0.85, diffPrev: 0.001 } };
+    expect(pick([manual, filmed(2)], [handA, handB], v)[1]!.reason).toBe('hand');
+    const initial: SlideEntry = { filename: 'slide_001.png', seq: 1, videoTime: 10, reason: 'initial' };
+    expect(pick([initial, filmed(2)], [handA, handB], v)[1]!.reason).toBe('hand');
+    const manualSlide: SlideEntry = { ...filmed(1), reason: 'manual', trigger: { stillFraction: 1, diffPrev: 0.001 } };
+    expect(pick([manualSlide, filmed(2)], [handA, handB], v).map((x) => x.shown)).toEqual([true, true]);
   });
 
   it('ラベルらしい行が読めなくても、生の文字が半分そろっていれば同じページ（本文の縦組みは読み違いだらけでラベル行が残らない）', () => {
