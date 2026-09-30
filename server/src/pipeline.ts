@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
+import { applyCorrections, check, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
@@ -464,7 +464,12 @@ export class Pipeline {
         notes = await step('polishing', async () => {
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
           // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
-          const cacheSettings = { kind: llmSettings.kind, model: llmSettings.model, charsPerCall: llmSettings.charsPerCall };
+          const cacheSettings = {
+            kind: llmSettings.kind,
+            model: llmSettings.model,
+            charsPerCall: llmSettings.charsPerCall,
+            ...(this.config.llmCheckModel ? { checkModel: this.config.llmCheckModel } : {}),
+          };
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
           // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
@@ -490,6 +495,8 @@ export class Pipeline {
             const todo = inputs.filter((s) => derived.unmatched.includes(s.id));
             polished = derived.polished;
             errors = [];
+            /** 校正で当てた直し（キャッシュに記録する） */
+            let corrections: Correction[] = [];
             if (todo.length > 0) {
               if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
               const result = await polish(todo, backend, llmSettings, this.log);
@@ -497,6 +504,27 @@ export class Pipeline {
               errors = result.errors;
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
+              // 校正（任意、§13.5）: 新しく整えた節だけを原文と突き合わせ、誤変換を直す。組み替えで使い回した節は前回すでに校正済み
+              const checkBackend = this.config.llmCheckModel ? createBackend({ ...llmSettings, model: this.config.llmCheckModel }) : null;
+              const checkInputs = checkBackend
+                ? todo.flatMap((s) => {
+                    const text = polished.get(s.id)?.text;
+                    return text ? [{ id: s.id, original: s.text, polished: text }] : [];
+                  })
+                : [];
+              if (checkBackend && checkInputs.length > 0) {
+                const checked = await check(checkInputs, checkBackend, llmSettings, this.log);
+                if (signal.aborted) throw new Error('cancelled');
+                if (notesStopped()) throw new Error('notes stopped');
+                errors.push(...checked.errors);
+                const applied = applyCorrections(new Map(checkInputs.map((s) => [s.id, polished.get(s.id)!.text])), checked.corrections);
+                for (const [id, text] of applied.texts) polished.set(id, { id, text });
+                corrections = applied.applied;
+                if (checked.corrections.length > 0) {
+                  const dropped = checked.corrections.length - corrections.length;
+                  this.log(`校正: ${corrections.length} 件の誤変換を直しました${dropped > 0 ? `（${dropped} 件は本文に見つからず捨てました）` : ''}`);
+                }
+              }
             }
             // 発話のある節が 1 つも整わなかったら失敗とする（空の節はキャッシュの組み替えでも埋まるため数に入れない）
             const hasText = inputs.some((i) => i.text !== '');
@@ -523,6 +551,7 @@ export class Pipeline {
               settings: cacheSettings,
               inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],
+              ...(corrections.length > 0 ? { corrections } : {}),
               ...(topics ? { outline: topics } : {}),
               ...(errors.length > 0 ? { errors } : {}),
             });

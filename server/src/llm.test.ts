@@ -3,13 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  applyCorrections,
   batchSections,
+  buildCheckPrompt,
   buildOutlinePrompt,
   buildPrompt,
+  check,
   codexArgs,
   createBackend,
   outline,
   parseCodexDefaults,
+  parseCorrections,
   parseOutline,
   parseResponse,
   polish,
@@ -217,5 +221,69 @@ describe('codex exec の呼び方（個人設定を読まない、2026-09-29）'
       if (previous === undefined) delete process.env['CODEX_HOME'];
       else process.env['CODEX_HOME'] = previous;
     }
+  });
+});
+
+describe('校正（誤変換の修正、2026-09-30）', () => {
+  const inputs = [
+    { id: 'slide_110', original: 'こっちの張り千本という文字は可愛さ、きっちゅさを出している', polished: 'こちらの「張り千本」という文字は、かわいさ、きっちりさを出しています。' },
+    { id: 'slide_156', original: 'ステンシルで作ったものを傾きをして印字をする', polished: 'ステンシルで作ったものを傾けて印字しています。' },
+  ];
+
+  it('buildCheckPrompt は各セクションに原文と整え済みを並べる', () => {
+    const p = buildCheckPrompt(inputs);
+    expect(p).toContain('<<<SECTION id="slide_110">>>\n[原文]\nこっちの張り千本という文字は可愛さ、きっちゅさを出している\n[整え済み]\nこちらの「張り千本」という文字は、かわいさ、きっちりさを出しています。\n<<<END>>>');
+    expect(p).toContain('誤変換');
+  });
+
+  it('parseCorrections は知らない id・空の文字列・直しになっていないものを捨てる', () => {
+    const raw = JSON.stringify({
+      corrections: [
+        { id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' },
+        { id: 'nope', wrong: 'a', right: 'b' },
+        { id: 'slide_110', wrong: '', right: 'x' },
+        { id: 'slide_110', wrong: 'y', right: '' },
+        { id: 'slide_156', wrong: '同じ', right: '同じ' },
+      ],
+    });
+    expect(parseCorrections(raw, ['slide_110', 'slide_156'])).toEqual([{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(parseCorrections('説明\n```json\n' + raw + '\n```', ['slide_110', 'slide_156'])).toHaveLength(1);
+    expect(parseCorrections('{"foo":1}', ['slide_110'])).toEqual([]);
+  });
+
+  it('applyCorrections は長い wrong から順に最初の 1 か所だけ置き換え、見つからない直しは捨てる', () => {
+    const texts = new Map([
+      ['slide_110', 'この「打足」という文字。打足は面白い。'],
+      ['slide_156', '傾けて印字しています。'],
+    ]);
+    const { texts: out, applied } = applyCorrections(texts, [
+      // 同じ箇所を違う長さで指した重複: 長い方が先に当たり、短い方は 2 つ目の「打足」に当たる
+      { id: 'slide_110', wrong: '打足', right: '蛇足' },
+      { id: 'slide_110', wrong: '「打足」', right: '「蛇足」' },
+      { id: 'slide_156', wrong: '本文にない', right: 'x' },
+      { id: 'slide_156', wrong: '傾けて印字', right: '型抜きして印字' },
+    ]);
+    expect(out.get('slide_110')).toBe('この「蛇足」という文字。蛇足は面白い。');
+    expect(out.get('slide_156')).toBe('型抜きして印字しています。');
+    expect(applied).toHaveLength(3);
+    // 知らない id は本文に触らない
+    expect(applyCorrections(new Map([['a', 'x']]), [{ id: 'b', wrong: 'x', right: 'y' }]).applied).toEqual([]);
+  });
+
+  it('check は原文＋整え済みの文字数でまとめて呼び、失敗したバッチだけ諦める', async () => {
+    const prompts: string[] = [];
+    const backend = {
+      name: 'fake',
+      async complete(prompt: string) {
+        prompts.push(prompt);
+        if (prompt.includes('id="slide_156"')) throw new Error('rate limited');
+        return JSON.stringify({ corrections: [{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }] });
+      },
+    };
+    // charsPerCall を小さくして 1 節ずつのバッチに分ける
+    const { corrections, errors } = await check(inputs, backend, { ...settings, charsPerCall: 10 });
+    expect(prompts).toHaveLength(2);
+    expect(corrections).toEqual([{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(errors).toEqual(['check 2/2: rate limited']);
   });
 });

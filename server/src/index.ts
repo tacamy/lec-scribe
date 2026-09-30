@@ -91,7 +91,9 @@ console.log(`LecScribe server v${VERSION}（api ${API_VERSION}${commit ? `, ${co
 console.log(`  listening : http://${config.host}:${config.port}`);
 console.log(`  output    : ${config.outDir}`);
 console.log(`  model     : ${config.model} (${config.language})`);
-console.log(`  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '')}`);
+console.log(
+  `  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '') + (config.llmCheckModel ? ` ＋校正 (${config.llmCheckModel})` : '')}`,
+);
 console.log(`  trusted   : ${trusted.entries.length} 件の接続を承認済み（${config.trustedFile}）`);
 console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
 console.log('');

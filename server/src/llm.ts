@@ -84,6 +84,31 @@ export const OUTLINE_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
+/** 校正（誤変換の修正）の入出力。original は文字起こしそのまま、polished は整えた本文 */
+export type CheckInput = { id: string; original: string; polished: string };
+export type Correction = { id: string; wrong: string; right: string };
+
+export const CHECK_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    corrections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          wrong: { type: 'string' },
+          right: { type: 'string' },
+        },
+        required: ['id', 'wrong', 'right'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['corrections'],
+  additionalProperties: false,
+};
+
 export function buildPrompt(sections: readonly PolishInput[]): string {
   const body = sections
     .map((s) => `<<<SECTION id="${s.id}" heading="${s.heading}">>>\n${s.text.trim() || '（発話なし）'}\n<<<END>>>`)
@@ -112,6 +137,23 @@ export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: s
    最初の topic の startId は最初の部分の id にしてください。話題は細かく割りすぎず、10 分の動画なら 2〜4 個、90 分なら 6〜15 個が目安です。「（発話なし）」の部分は前の話題に含めてください。
 
 出力は指定された JSON スキーマに従ってください。
+
+${body}`;
+}
+
+/** 整えた本文を原文（文字起こし）と突き合わせ、誤変換だけを直してもらうプロンプト（§13.5 の校正） */
+export function buildCheckPrompt(sections: readonly CheckInput[]): string {
+  const body = sections
+    .map((s) => `<<<SECTION id="${s.id}">>>\n[原文]\n${s.original.trim()}\n[整え済み]\n${s.polished.trim()}\n<<<END>>>`)
+    .join('\n\n');
+  return `あなたは文字起こしの校正者です。以下の各セクションには、動画音声の自動文字起こし（原文）と、それを読みやすい書き言葉に整えた本文（整え済み）があります。整え済みの本文に残っている、音声認識の誤変換に由来する誤った語（同音・類似音の別の語になっている、文脈で意味が通らない）だけを直してください。整える途中で原文と違う誤った語に置き換わってしまった箇所も、原文と文脈から正しい語に直してください。
+
+- 出力は corrections の配列。各要素は { id, wrong, right }
+- wrong はそのセクションの整え済み本文にそのまま現れる文字列を、置き換える場所が一意に定まる長さで書く
+- right は直したあとの文字列
+- 誤変換の修正だけを行う。文体や言い回しの変更、要約、語順の入れ替え、句読点だけの変更はしない
+- 確信が持てない固有名詞や専門用語は直さない
+- 直す箇所がなければ corrections は空配列にする
 
 ${body}`;
 }
@@ -162,7 +204,49 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
   return { overview: strings(parsed.overview), topics };
 }
 
-/** 本文の文字数が charsPerCall を超えないようにまとめる（1 セクションが超える場合はそれ単独） */
+/** 校正の返答を読む。知らない id、空の文字列、直しになっていないもの（wrong と right が同じ）は捨てる */
+export function parseCorrections(raw: string, ids: readonly string[]): Correction[] {
+  const parsed = extractJson(raw) as { corrections?: unknown };
+  const known = new Set(ids);
+  const out: Correction[] = [];
+  for (const item of Array.isArray(parsed.corrections) ? (parsed.corrections as Array<Record<string, unknown>>) : []) {
+    const id = String(item['id'] ?? '');
+    const wrong = String(item['wrong'] ?? '');
+    const right = String(item['right'] ?? '');
+    if (!known.has(id) || wrong.length === 0 || right.length === 0 || wrong === right) continue;
+    out.push({ id, wrong, right });
+  }
+  return out;
+}
+
+/**
+ * 校正の直しを本文に当てる。節ごとに長い wrong から順に、最初に見つかった 1 か所だけ置き換える
+ * （長い方を先にしないと、短い直しが長い直しの一部を先に壊す）。本文に見つからない直しは捨てる
+ * （同じ箇所を違う長さで指した重複は、先に当たった 1 つだけが残る）
+ */
+export function applyCorrections(texts: ReadonlyMap<string, string>, corrections: readonly Correction[]): { texts: Map<string, string>; applied: Correction[] } {
+  const out = new Map(texts);
+  const applied: Correction[] = [];
+  const byId = new Map<string, Correction[]>();
+  for (const c of corrections) {
+    if (!byId.has(c.id)) byId.set(c.id, []);
+    byId.get(c.id)!.push(c);
+  }
+  for (const [id, list] of byId) {
+    let text = out.get(id);
+    if (text === undefined) continue;
+    for (const c of [...list].sort((a, b) => b.wrong.length - a.wrong.length)) {
+      const at = text.indexOf(c.wrong);
+      if (at < 0) continue;
+      text = text.slice(0, at) + c.right + text.slice(at + c.wrong.length);
+      applied.push(c);
+    }
+    out.set(id, text);
+  }
+  return { texts: out, applied };
+}
+
+/** 本文の文字数が charsPerCall を超えないようにまとめる/** 本文の文字数が charsPerCall を超えないようにまとめる（1 セクションが超える場合はそれ単独） */
 export function batchSections(sections: readonly PolishInput[], charsPerCall: number): PolishInput[][] {
   const batches: PolishInput[][] = [];
   let current: PolishInput[] = [];
@@ -403,4 +487,48 @@ export async function outline(
   } catch (e) {
     return { error: `outline: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/**
+ * 校正: 整えた本文を原文と突き合わせ、誤変換だけの直しをもらう（§13.5、2026-09-30）。
+ * 1 回に入れる文字数（原文＋整え済み）は charsPerCall を目安にまとめる。1 バッチの失敗はそのバッチだけ諦める
+ * （直しが入らないだけで、本文はそのまま使える）
+ */
+export async function check(
+  sections: readonly CheckInput[],
+  backend: LlmBackend,
+  settings: LlmSettings,
+  log: (message: string) => void = () => undefined,
+): Promise<{ corrections: Correction[]; errors: string[] }> {
+  const corrections: Correction[] = [];
+  const errors: string[] = [];
+  const batches: CheckInput[][] = [];
+  let current: CheckInput[] = [];
+  let chars = 0;
+  for (const s of sections) {
+    const size = s.original.length + s.polished.length;
+    if (current.length > 0 && chars + size > settings.charsPerCall) {
+      batches.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(s);
+    chars += size;
+  }
+  if (current.length > 0) batches.push(current);
+  for (const [i, batch] of batches.entries()) {
+    if (settings.signal?.aborted) {
+      errors.push('cancelled');
+      break;
+    }
+    const label = `check ${i + 1}/${batches.length}`;
+    log(`${backend.name}: ${label} (${batch.length} sections, ${batch.reduce((n, s) => n + s.original.length + s.polished.length, 0)} chars)`);
+    try {
+      const raw = await backend.complete(buildCheckPrompt(batch), CHECK_SCHEMA);
+      corrections.push(...parseCorrections(raw, batch.map((s) => s.id)));
+    } catch (e) {
+      errors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { corrections, errors };
 }

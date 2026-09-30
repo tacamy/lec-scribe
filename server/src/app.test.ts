@@ -66,6 +66,7 @@ beforeAll(async () => {
     keepWav: true,
     llm: 'codex',
     llmModel: '',
+  llmCheckModel: '',
     codexBin: codex,
     openaiApiKey: '',
     ollamaUrl: 'http://127.0.0.1:1',
