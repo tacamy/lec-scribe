@@ -3,13 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  applyCorrections,
   batchSections,
+  buildCheckPrompt,
   buildOutlinePrompt,
   buildPrompt,
+  check,
+  checkWithFallback,
   codexArgs,
   createBackend,
+  isModelUnavailable,
   outline,
   parseCodexDefaults,
+  parseCorrections,
   parseOutline,
   parseResponse,
   polish,
@@ -217,5 +223,161 @@ describe('codex exec の呼び方（個人設定を読まない、2026-09-29）'
       if (previous === undefined) delete process.env['CODEX_HOME'];
       else process.env['CODEX_HOME'] = previous;
     }
+  });
+});
+
+describe('校正（誤変換の修正、2026-09-30）', () => {
+  const inputs = [
+    { id: 'slide_110', original: 'こっちの張り千本という文字は可愛さ、きっちゅさを出している', polished: 'こちらの「張り千本」という文字は、かわいさ、きっちりさを出しています。' },
+    { id: 'slide_156', original: 'ステンシルで作ったものを傾きをして印字をする', polished: 'ステンシルで作ったものを傾けて印字しています。' },
+  ];
+
+  it('buildCheckPrompt は各セクションに原文と整え済みを並べる', () => {
+    const p = buildCheckPrompt(inputs);
+    expect(p).toContain('<<<SECTION id="slide_110">>>\n[原文]\nこっちの張り千本という文字は可愛さ、きっちゅさを出している\n[整え済み]\nこちらの「張り千本」という文字は、かわいさ、きっちりさを出しています。\n<<<END>>>');
+    expect(p).toContain('誤変換');
+  });
+
+  it('parseCorrections は知らない id・空の文字列・直しになっていないものを捨てる', () => {
+    const raw = JSON.stringify({
+      corrections: [
+        { id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' },
+        { id: 'nope', wrong: 'a', right: 'b' },
+        { id: 'slide_110', wrong: '', right: 'x' },
+        { id: 'slide_110', wrong: 'y', right: '' },
+        { id: 'slide_156', wrong: '同じ', right: '同じ' },
+      ],
+    });
+    expect(parseCorrections(raw, ['slide_110', 'slide_156'])).toEqual([{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(parseCorrections('説明\n```json\n' + raw + '\n```', ['slide_110', 'slide_156'])).toHaveLength(1);
+    expect(parseCorrections('{"foo":1}', ['slide_110'])).toEqual([]);
+  });
+
+  it('applyCorrections は長い wrong から順に最初の 1 か所だけ置き換え、見つからない直しは捨てる', () => {
+    const texts = new Map([
+      ['slide_110', 'この「打足」という文字。打足は面白い。'],
+      ['slide_156', '傾けて印字しています。'],
+    ]);
+    const { texts: out, applied } = applyCorrections(texts, [
+      // 同じ箇所を違う長さで指した重複: 長い方が先に当たり、短い方は 2 つ目の「打足」に当たる
+      { id: 'slide_110', wrong: '打足', right: '蛇足' },
+      { id: 'slide_110', wrong: '「打足」', right: '「蛇足」' },
+      { id: 'slide_156', wrong: '本文にない', right: 'x' },
+      { id: 'slide_156', wrong: '傾けて印字', right: '型抜きして印字' },
+    ]);
+    expect(out.get('slide_110')).toBe('この「蛇足」という文字。蛇足は面白い。');
+    expect(out.get('slide_156')).toBe('型抜きして印字しています。');
+    expect(applied).toHaveLength(3);
+    // 知らない id は本文に触らない
+    expect(applyCorrections(new Map([['a', 'x']]), [{ id: 'b', wrong: 'x', right: 'y' }]).applied).toEqual([]);
+    // 置き換える場所は直す前の本文で決める: 先に当てた直しが挿し込んだ文字列（「型抜きして」の「して」）には当たらない
+    const guarded = applyCorrections(new Map([['s', '傾けて印字します。整えして完了。']]), [
+      { id: 's', wrong: '傾けて印字', right: '型抜きして印字' },
+      { id: 's', wrong: 'して', right: 'やって' },
+    ]);
+    expect(guarded.texts.get('s')).toBe('型抜きして印字します。整えやって完了。');
+  });
+
+  it('check は原文＋整え済みの文字数でまとめて呼び、失敗したバッチだけ諦める', async () => {
+    const prompts: string[] = [];
+    const backend = {
+      name: 'fake',
+      async complete(prompt: string) {
+        prompts.push(prompt);
+        if (prompt.includes('id="slide_156"')) throw new Error('rate limited');
+        return JSON.stringify({ corrections: [{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }] });
+      },
+    };
+    // charsPerCall を小さくして 1 節ずつのバッチに分ける
+    const { corrections, errors } = await check(inputs, backend, { ...settings, charsPerCall: 10 });
+    expect(prompts).toHaveLength(2);
+    expect(corrections).toEqual([{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(errors).toEqual(['check 2/2: rate limited']);
+  });
+});
+
+describe('校正モデルが使えないときの受け皿（2026-10-01）', () => {
+  const one = [{ id: 's1', original: '可愛さ、きっちゅさを出している', polished: 'かわいさ、きっちりさを出しています。' }];
+  const codexMsg = `check 1/1: codex exec failed (1): {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."}}`;
+
+  it('isModelUnavailable は「モデルが使えない」失敗だけに当たる', () => {
+    expect(isModelUnavailable(codexMsg)).toBe(true);
+    expect(isModelUnavailable('The model `gpt-x` does not exist or you do not have access to it.')).toBe(true);
+    expect(isModelUnavailable("model 'qwen3:x' not found, try pulling it first")).toBe(true);
+    expect(isModelUnavailable('The model is not available for your plan')).toBe(true);
+    expect(isModelUnavailable('The model gpt-x has been deprecated')).toBe(true);
+    expect(isModelUnavailable('check 1/1: rate limited')).toBe(false);
+    expect(isModelUnavailable('cancelled')).toBe(false);
+    expect(isModelUnavailable('schema.json: no such file')).toBe(false);
+  });
+
+  it('使えないモデルの失敗なら本文のモデルで 1 度だけやり直し、エラーは残さない', async () => {
+    const bad = { name: 'codex (gpt-6-luna)', async complete(): Promise<string> { throw new Error("The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."); } };
+    const good = {
+      name: 'codex (gpt-5.6-terra)',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]);
+        return JSON.stringify({ corrections: ids.map((id) => ({ id, wrong: 'きっちりさ', right: 'キッチュさ' })) });
+      },
+    };
+    const logs: string[] = [];
+    const r = await checkWithFallback(one, bad, good, settings, (m) => logs.push(m));
+    expect(r.corrections).toEqual([{ id: 's1', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(r.errors).toEqual([]);
+    expect(logs.join('\n')).toContain('codex (gpt-6-luna)）が使えないようです');
+  });
+
+  it('モデル不可と一時的な失敗が混ざっても（バッチが多い講義）、1 つでもモデル不可ならやり直す', async () => {
+    const two = [
+      { id: 's1', original: '原文その 1 です', polished: '整えた本文その 1 です。' },
+      { id: 's2', original: '原文その 2 です', polished: '整えた本文その 2 です。' },
+    ];
+    let call = 0;
+    const mixed = {
+      name: 'codex (gpt-6-luna)',
+      async complete(): Promise<string> {
+        call++;
+        throw new Error(call === 1 ? "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account." : 'rate limited');
+      },
+    };
+    const good = {
+      name: 'codex (gpt-5.6-terra)',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]);
+        return JSON.stringify({ corrections: ids.map((id) => ({ id, wrong: '整えた', right: '校正済みの' })) });
+      },
+    };
+    // charsPerCall 20 なので 1 節ずつの 2 バッチになり、1 つ目がモデル不可・2 つ目が枠切れ
+    const r = await checkWithFallback(two, mixed, good, settings);
+    expect(call).toBe(2);
+    expect(r.corrections).toHaveLength(2);
+    expect(r.errors).toEqual([]);
+  });
+
+  it('一時的な失敗（枠切れなど）ではやり直さず、fallback がなければそのまま返す', async () => {
+    const flaky = { name: 'codex (gpt-6-astra)', async complete(): Promise<string> { throw new Error('rate limited'); } };
+    let fallbackCalls = 0;
+    const spy = { name: 'spy', async complete() { fallbackCalls++; return JSON.stringify({ corrections: [] }); } };
+    const r = await checkWithFallback(one, flaky, spy, settings);
+    expect(fallbackCalls).toBe(0);
+    expect(r.errors).toEqual(['check 1/1: rate limited']);
+    const bad = { name: 'codex (gpt-6-luna)', async complete(): Promise<string> { throw new Error("The 'x' model is not supported when using Codex with a ChatGPT account."); } };
+    const r2 = await checkWithFallback(one, bad, null, settings);
+    expect(r2.errors).toHaveLength(1);
+  });
+
+  it('校正モデルで一部でも直しが取れたときはやり直さない', async () => {
+    let calls = 0;
+    const half = {
+      name: 'codex (gpt-6-astra)',
+      async complete() {
+        calls++;
+        return JSON.stringify({ corrections: [{ id: 's1', wrong: 'きっちりさ', right: 'キッチュさ' }] });
+      },
+    };
+    const spy = { name: 'spy', async complete() { throw new Error('should not be called'); } };
+    const r = await checkWithFallback(one, half, spy, settings);
+    expect(calls).toBe(1);
+    expect(r.corrections).toHaveLength(1);
   });
 });

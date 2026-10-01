@@ -84,6 +84,31 @@ export const OUTLINE_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
+/** 校正（誤変換の修正）の入出力。original は文字起こしそのまま、polished は整えた本文 */
+export type CheckInput = { id: string; original: string; polished: string };
+export type Correction = { id: string; wrong: string; right: string };
+
+export const CHECK_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    corrections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          wrong: { type: 'string' },
+          right: { type: 'string' },
+        },
+        required: ['id', 'wrong', 'right'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['corrections'],
+  additionalProperties: false,
+};
+
 export function buildPrompt(sections: readonly PolishInput[]): string {
   const body = sections
     .map((s) => `<<<SECTION id="${s.id}" heading="${s.heading}">>>\n${s.text.trim() || '（発話なし）'}\n<<<END>>>`)
@@ -112,6 +137,23 @@ export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: s
    最初の topic の startId は最初の部分の id にしてください。話題は細かく割りすぎず、10 分の動画なら 2〜4 個、90 分なら 6〜15 個が目安です。「（発話なし）」の部分は前の話題に含めてください。
 
 出力は指定された JSON スキーマに従ってください。
+
+${body}`;
+}
+
+/** 整えた本文を原文（文字起こし）と突き合わせ、誤変換だけを直してもらうプロンプト（§13.5 の校正） */
+export function buildCheckPrompt(sections: readonly CheckInput[]): string {
+  const body = sections
+    .map((s) => `<<<SECTION id="${s.id}">>>\n[原文]\n${s.original.trim()}\n[整え済み]\n${s.polished.trim()}\n<<<END>>>`)
+    .join('\n\n');
+  return `あなたは文字起こしの校正者です。以下の各セクションには、動画音声の自動文字起こし（原文）と、それを読みやすい書き言葉に整えた本文（整え済み）があります。整え済みの本文に残っている、音声認識の誤変換に由来する誤った語（同音・類似音の別の語になっている、文脈で意味が通らない）だけを直してください。整える途中で原文と違う誤った語に置き換わってしまった箇所も、原文と文脈から正しい語に直してください。
+
+- 出力は corrections の配列。各要素は { id, wrong, right }
+- wrong はそのセクションの整え済み本文にそのまま現れる文字列を、置き換える場所が一意に定まる長さで書く
+- right は直したあとの文字列
+- 誤変換の修正だけを行う。文体や言い回しの変更、要約、語順の入れ替え、句読点だけの変更はしない
+- 確信が持てない固有名詞や専門用語は直さない
+- 直す箇所がなければ corrections は空配列にする
 
 ${body}`;
 }
@@ -162,23 +204,87 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
   return { overview: strings(parsed.overview), topics };
 }
 
-/** 本文の文字数が charsPerCall を超えないようにまとめる（1 セクションが超える場合はそれ単独） */
-export function batchSections(sections: readonly PolishInput[], charsPerCall: number): PolishInput[][] {
-  const batches: PolishInput[][] = [];
-  let current: PolishInput[] = [];
-  let size = 0;
-  for (const s of sections) {
-    const len = s.text.length;
-    if (current.length > 0 && size + len > charsPerCall) {
+/** 校正の返答を読む。知らない id、空の文字列、直しになっていないもの（wrong と right が同じ）は捨てる */
+export function parseCorrections(raw: string, ids: readonly string[]): Correction[] {
+  const parsed = extractJson(raw) as { corrections?: unknown };
+  const known = new Set(ids);
+  const out: Correction[] = [];
+  for (const item of Array.isArray(parsed.corrections) ? (parsed.corrections as Array<Record<string, unknown>>) : []) {
+    const id = String(item['id'] ?? '');
+    const wrong = String(item['wrong'] ?? '');
+    const right = String(item['right'] ?? '');
+    if (!known.has(id) || wrong.length === 0 || right.length === 0 || wrong === right) continue;
+    out.push({ id, wrong, right });
+  }
+  return out;
+}
+
+/**
+ * 校正の直しを本文に当てる。置き換える場所は**直す前の本文**の上で決める（先に当てた直しが挿し込んだ文字列に、
+ * あとの直しが当たって壊さないため）。節ごとに長い wrong から順に、すでに取られた場所と重ならない最初の出現位置を取り、
+ * 見つからない直しは捨てる（同じ箇所を違う長さで指した重複は長い方だけが残る）。場所が全部決まってから一度に置き換える
+ */
+export function applyCorrections(texts: ReadonlyMap<string, string>, corrections: readonly Correction[]): { texts: Map<string, string>; applied: Correction[] } {
+  const out = new Map(texts);
+  const applied: Correction[] = [];
+  const byId = new Map<string, Correction[]>();
+  for (const c of corrections) {
+    if (!byId.has(c.id)) byId.set(c.id, []);
+    byId.get(c.id)!.push(c);
+  }
+  for (const [id, list] of byId) {
+    const text = out.get(id);
+    if (text === undefined) continue;
+    const spans: Array<{ start: number; end: number; right: string }> = [];
+    for (const c of [...list].sort((a, b) => b.wrong.length - a.wrong.length)) {
+      for (let from = 0; ; ) {
+        const at = text.indexOf(c.wrong, from);
+        if (at < 0) break;
+        const end = at + c.wrong.length;
+        if (spans.some((sp) => at < sp.end && sp.start < end)) {
+          from = at + 1;
+          continue;
+        }
+        spans.push({ start: at, end, right: c.right });
+        applied.push(c);
+        break;
+      }
+    }
+    if (spans.length === 0) continue;
+    spans.sort((a, b) => a.start - b.start);
+    let built = '';
+    let pos = 0;
+    for (const sp of spans) {
+      built += text.slice(pos, sp.start) + sp.right;
+      pos = sp.end;
+    }
+    out.set(id, built + text.slice(pos));
+  }
+  return { texts: out, applied };
+}
+
+/** 大きさの合計が budget を超えないようにまとめる（1 件で超える場合はそれ単独） */
+function batchBy<T>(items: readonly T[], size: (item: T) => number, budget: number): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let total = 0;
+  for (const item of items) {
+    const n = size(item);
+    if (current.length > 0 && total + n > budget) {
       batches.push(current);
       current = [];
-      size = 0;
+      total = 0;
     }
-    current.push(s);
-    size += len;
+    current.push(item);
+    total += n;
   }
   if (current.length > 0) batches.push(current);
   return batches;
+}
+
+/** 本文の文字数が charsPerCall を超えないようにまとめる（1 セクションが超える場合はそれ単独） */
+export function batchSections(sections: readonly PolishInput[], charsPerCall: number): PolishInput[][] {
+  return batchBy(sections, (s) => s.text.length, charsPerCall);
 }
 
 export interface LlmBackend {
@@ -403,4 +509,68 @@ export async function outline(
   } catch (e) {
     return { error: `outline: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/**
+ * 校正: 整えた本文を原文と突き合わせ、誤変換だけの直しをもらう（§13.5、2026-09-30）。
+ * 1 回に入れる文字数（原文＋整え済み）は charsPerCall を目安にまとめる。1 バッチの失敗はそのバッチだけ諦める
+ * （直しが入らないだけで、本文はそのまま使える）
+ */
+export async function check(
+  sections: readonly CheckInput[],
+  backend: LlmBackend,
+  settings: LlmSettings,
+  log: (message: string) => void = () => undefined,
+): Promise<{ corrections: Correction[]; errors: string[] }> {
+  const corrections: Correction[] = [];
+  const errors: string[] = [];
+  const batches = batchBy(sections, (s) => s.original.length + s.polished.length, settings.charsPerCall);
+  for (const [i, batch] of batches.entries()) {
+    if (settings.signal?.aborted) {
+      errors.push('cancelled');
+      break;
+    }
+    const label = `check ${i + 1}/${batches.length}`;
+    log(`${backend.name}: ${label} (${batch.length} sections, ${batch.reduce((n, s) => n + s.original.length + s.polished.length, 0)} chars)`);
+    try {
+      const raw = await backend.complete(buildCheckPrompt(batch), CHECK_SCHEMA);
+      corrections.push(...parseCorrections(raw, batch.map((s) => s.id)));
+    } catch (e) {
+      errors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { corrections, errors };
+}
+
+/**
+ * 失敗の文面が「モデルが使えない」（プランにない、存在しない、アクセス権がない、廃止された）を指しているか。
+ * codex (ChatGPT): "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."
+ * OpenAI API: "The model `x` does not exist or you do not have access to it."
+ * Ollama: "model 'x' not found, try pulling it first"
+ * 文字列の判定なので取り違えはありうる（codex は構造化された失敗を返さないため、ここに倒している）。誤って当たっても
+ * 本文のモデルで校正を 1 回やり直すだけ、取りこぼしても未校正で完成してログに残るだけで、どちらも壊れはしない
+ */
+export function isModelUnavailable(message: string): boolean {
+  return /model/i.test(message) && /(not supported|unsupported|not found|does not exist|do not have access|not available|unavailable|deprecated|invalid model|unknown model)/i.test(message);
+}
+
+/**
+ * 校正を呼び、「指定したモデルが使えない」失敗が 1 つでもあれば、fallback（本文を整えたのと同じモデル。直前の polish で
+ * 使えると分かっている）で 1 度だけやり直す（2026-10-01）。校正モデルの指定間違い・プランの違いで未校正のまま完成させない。
+ * 1 つでも、としたのは、モデルは途中で使えるようにはならないので、枠切れなどの別の失敗が混ざっていても判断は変わらないため
+ * （全部そろったときだけにすると、混在した講義で受け皿が動かない。2026-10-01 のレビュー）。
+ * 使えなかったことはログに残すだけで、呼び出し側の記録（checkErrors）には fallback の結果だけが載る。
+ * モデル不可の失敗がない（枠切れだけなど）ときはやり直さない（同じ枠を別のモデルで二重に使わない）
+ */
+export async function checkWithFallback(
+  sections: readonly CheckInput[],
+  backend: LlmBackend,
+  fallback: LlmBackend | null,
+  settings: LlmSettings,
+  log: (message: string) => void = () => undefined,
+): Promise<{ corrections: Correction[]; errors: string[] }> {
+  const first = await check(sections, backend, settings, log);
+  if (!fallback || first.corrections.length > 0 || !first.errors.some(isModelUnavailable)) return first;
+  log(`校正のモデル（${backend.name}）が使えないようです: ${first.errors.find(isModelUnavailable)}。${fallback.name} で校正し直します`);
+  return await check(sections, fallback, settings, log);
 }

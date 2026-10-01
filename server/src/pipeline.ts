@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { createBackend, outline, polish, type Outline, type PolishOutput } from './llm.ts';
+import { applyCorrections, checkWithFallback, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
@@ -464,7 +464,12 @@ export class Pipeline {
         notes = await step('polishing', async () => {
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
           // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
-          const cacheSettings = { kind: llmSettings.kind, model: llmSettings.model, charsPerCall: llmSettings.charsPerCall };
+          const cacheSettings = {
+            kind: llmSettings.kind,
+            model: llmSettings.model,
+            charsPerCall: llmSettings.charsPerCall,
+            ...(this.config.llmCheckModel ? { checkModel: this.config.llmCheckModel } : {}),
+          };
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
           // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
@@ -490,6 +495,10 @@ export class Pipeline {
             const todo = inputs.filter((s) => derived.unmatched.includes(s.id));
             polished = derived.polished;
             errors = [];
+            /** 校正で当てた直し（キャッシュに記録する） */
+            let corrections: Correction[] = [];
+            /** 校正だけの失敗。本文は揃っているので、errors（notesError とキャッシュの使い回しの判断）には混ぜない */
+            let checkErrors: string[] = [];
             if (todo.length > 0) {
               if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
               const result = await polish(todo, backend, llmSettings, this.log);
@@ -497,6 +506,31 @@ export class Pipeline {
               errors = result.errors;
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
+              // 校正（任意、§13.5）: 新しく整えた節だけを原文と突き合わせ、誤変換を直す。組み替えで使い回した節は前回すでに校正済み
+              const checkBackend = this.config.llmCheckModel ? createBackend({ ...llmSettings, model: this.config.llmCheckModel }) : null;
+              const checkInputs = checkBackend
+                ? todo.flatMap((s) => {
+                    const text = polished.get(s.id)?.text;
+                    return text ? [{ id: s.id, original: s.text, polished: text }] : [];
+                  })
+                : [];
+              if (checkBackend && checkInputs.length > 0) {
+                // 校正モデルが使えない（プランにない等）ときは、本文と同じモデルで校正し直す（未校正のまま完成させない）
+                const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? backend : null, llmSettings, this.log);
+                if (signal.aborted) throw new Error('cancelled');
+                if (notesStopped()) throw new Error('notes stopped');
+                // 校正の失敗は polish の errors に混ぜない（2026-10-01 のレビュー）: 本文は揃っていて直しが入らないだけなので、
+                // 混ぜると拡張が「一部の節だけ文字起こしのまま」と誤って表示し、キャッシュも使い回されなくなる
+                checkErrors = checked.errors;
+                if (checkErrors.length > 0) this.log(`校正の一部が失敗しました（本文は未校正のまま使います）: ${checkErrors.join(' / ')}`);
+                const applied = applyCorrections(new Map(checkInputs.map((s) => [s.id, s.polished])), checked.corrections);
+                for (const [id, text] of applied.texts) polished.set(id, { id, text });
+                corrections = applied.applied;
+                if (checked.corrections.length > 0) {
+                  const dropped = checked.corrections.length - corrections.length;
+                  this.log(`校正: ${corrections.length} 件の誤変換を直しました${dropped > 0 ? `（${dropped} 件は本文に見つからず捨てました）` : ''}`);
+                }
+              }
             }
             // 発話のある節が 1 つも整わなかったら失敗とする（空の節はキャッシュの組み替えでも埋まるため数に入れない）
             const hasText = inputs.some((i) => i.text !== '');
@@ -523,6 +557,8 @@ export class Pipeline {
               settings: cacheSettings,
               inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],
+              ...(corrections.length > 0 ? { corrections } : {}),
+              ...(checkErrors.length > 0 ? { checkErrors } : {}),
               ...(topics ? { outline: topics } : {}),
               ...(errors.length > 0 ? { errors } : {}),
             });

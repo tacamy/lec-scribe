@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { workPath } from './layout.ts';
-import type { Outline, PolishOutput } from './llm.ts';
+import type { Correction, Outline, PolishOutput } from './llm.ts';
 
 /**
  * LLM の結果（整えた本文と話題の区切り）を .lecscribe/notes-cache.json に残す（SPEC §13.5b）。
@@ -15,7 +15,13 @@ export const NOTES_CACHE_FILE = 'notes-cache.json';
 
 export type NotesCacheInput = { id: string; text: string };
 
-export type CacheSettings = { kind: string; model: string; charsPerCall: number };
+export type CacheSettings = {
+  kind: string;
+  model: string;
+  charsPerCall: number;
+  /** 校正（誤変換の修正）に使ったモデル。校正なしなら省く（古いキャッシュと鍵が変わらないように） */
+  checkModel?: string;
+};
 
 export type NotesCache = {
   /** 入力と設定から作る鍵。変わっていれば呼び直す */
@@ -28,6 +34,13 @@ export type NotesCache = {
   inputs?: NotesCacheInput[];
   polished: PolishOutput[];
   outline?: Outline;
+  /** 校正（誤変換の修正）で当てた直し。polished には当てたあとの本文が入る（§13.5、記録用。その回に当てた分だけで、組み替えでは引き継がない） */
+  corrections?: Correction[];
+  /**
+   * 校正だけの失敗（枠切れなど）。本文は揃っていて直しが入らないだけなので、errors とは別に残し、
+   * キャッシュの使い回しの判断（errors が空か）には使わない（2026-10-01 のレビュー）
+   */
+  checkErrors?: string[];
   /** LLM がうまく答えなかった節などの記録 */
   errors?: string[];
 };
@@ -35,7 +48,9 @@ export type NotesCache = {
 /** 節ごとの本文と、呼び出し先・モデル・分割の大きさから鍵を作る */
 export function cacheKey(sections: readonly NotesCacheInput[], settings: CacheSettings): string {
   const hash = createHash('sha256');
-  hash.update(`${settings.kind}\0${settings.model}\0${settings.charsPerCall}\n`);
+  // 校正のモデルは有効なときだけ鍵に混ぜる（無効なら今までの鍵のままで、既存のキャッシュが無駄にならない）。
+  // 節の行（id と本文の 2 欄）と混ざらないよう、設定の行の 4 つ目の欄として足す（2026-10-01 のレビュー）
+  hash.update(`${settings.kind}\0${settings.model}\0${settings.charsPerCall}${settings.checkModel ? `\0check:${settings.checkModel}` : ''}\n`);
   for (const s of sections) hash.update(`${s.id}\0${s.text}\n`);
   return hash.digest('hex').slice(0, 32);
 }
@@ -54,7 +69,7 @@ export async function readNotesCache(dir: string): Promise<NotesCache | null> {
 /** 呼び出し先・モデル・分割の大きさが前と同じか。分からない（古いキャッシュ）なら使わない */
 export function sameSettings(cache: NotesCache, settings: CacheSettings): boolean {
   const s = cache.settings;
-  return !!s && s.kind === settings.kind && s.model === settings.model && s.charsPerCall === settings.charsPerCall;
+  return !!s && s.kind === settings.kind && s.model === settings.model && s.charsPerCall === settings.charsPerCall && (s.checkModel ?? '') === (settings.checkModel ?? '');
 }
 
 /**
