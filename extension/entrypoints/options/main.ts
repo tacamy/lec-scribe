@@ -7,6 +7,7 @@ import { sendToBackground } from '../../src/messages';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const result = $('result');
 const pairStatus = $('pairStatus');
+const pairBtn = $<HTMLButtonElement>('pair');
 const unpairBtn = $<HTMLButtonElement>('unpair');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
@@ -33,9 +34,12 @@ function show(text: string, ok: boolean | null = null) {
 
 function renderPairStatus() {
   const connected = config.server.paired && config.server.token.length > 0;
-  // トークンだけあって承認の記録がないのは、手で貼っていた頃（2026-09-09 より前）の設定
+  // トークンだけあって承認の記録がないのは、手で貼っていた頃（2026-09-09 より前）の設定か、サーバー側の承認が消えた状態
   pairStatus.textContent = connected ? '接続済み（この Mac のサーバーが承認済み）' : config.server.token ? 'トークンで接続' : '未接続';
   pairStatus.className = `result${connected ? ' ok' : ''}`;
+  // 状態で出し分ける（2026-10-01 の UI レビュー）: 接続済みなら「接続」は出さない（押す意味がない）。
+  // トークンはあるのに承認が確認できないときだけ、復旧用に両方出す
+  pairBtn.hidden = connected;
   unpairBtn.hidden = !config.server.token;
 }
 
@@ -71,10 +75,16 @@ function renderNotes(health: Health | null) {
 // 開いた時点のサーバーの状態を出す（接続テストを押さなくても分かるように）
 const initialCheck = ++notesGeneration;
 void fetchHealth(config.server)
-  .then((body) => {
+  .then(async (body) => {
     if (initialCheck === notesGeneration) {
       renderNotes(body);
       void renderModels(body);
+      // サーバー側の承認状態を開いた時点でも反映する（サーバーを入れ直して承認が消えていたら「接続」を出し直す）
+      if (body.paired !== undefined && body.paired !== config.server.paired) {
+        config = { ...config, server: { ...config.server, paired: body.paired } };
+        await saveConfig(config);
+        renderPairStatus();
+      }
     }
   })
   .catch(() => {
@@ -85,7 +95,7 @@ void fetchHealth(config.server)
   });
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
-$('pair').addEventListener('click', async () => {
+pairBtn.addEventListener('click', async () => {
   show('Mac の画面に確認ダイアログが出ます。「許可」を押してください…');
   try {
     // 承認と保存は service worker が行う（パネルからも同じ経路）
