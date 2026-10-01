@@ -152,9 +152,11 @@ $('test').addEventListener('click', async () => {
  * 保存はサーバーの settings.json に入り、再起動なしで次のノート作成から効く
  */
 const MODEL_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }> = {
+  // どのプリセットでも校正は付ける（校正は別の呼び出しに分けたほうが誤変換に強い。§13.5 の実測）。
+  // 校正なしにできるのは、カスタムで校正の欄を空にしたときだけ
   recommended: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' },
-  quality: { llmModel: 'gpt-6-astra', llmCheckModel: '' },
-  economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: '' },
+  quality: { llmModel: 'gpt-6-astra', llmCheckModel: 'gpt-6-astra' },
+  economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-5.6-terra' },
 };
 
 const presetRadios = () => [...document.querySelectorAll<HTMLInputElement>('input[name="modelPreset"]')];

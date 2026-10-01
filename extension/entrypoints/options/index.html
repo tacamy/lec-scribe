@@ -15,6 +15,8 @@
       section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
       /* 複数行の結果（接続テスト）でも、ボタンの文字と 1 行目がそろうように baseline でそろえる */
       .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+      /* hidden 属性が .row の display: flex に負けないように（カスタム欄の隠し）*/
+      .row[hidden] { display: none; }
       button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
       button.primary { background: var(--accent); color: #fff; }
       button.secondary { background: transparent; border-color: var(--border); color: var(--fg); }
@@ -68,9 +70,9 @@
             ノート作成に使うモデル。切り替えたあと、各講義の最初の「やり直す」ではノートが作り直しになります
             （文字起こしは再利用します）。
           </p>
-          <label class="choice"><input type="radio" name="modelPreset" value="recommended" /><span><b>推奨</b>: gpt-5.6-terraで整え、gpt-6-astraが誤変換を校正（使用量は高品質の約半分）</span></label>
-          <label class="choice"><input type="radio" name="modelPreset" value="quality" /><span><b>高品質</b>: すべてgpt-6-astra（使用量は多め）</span></label>
-          <label class="choice"><input type="radio" name="modelPreset" value="economy" /><span><b>節約</b>: gpt-5.6-terraのみ（校正なし。使用量は最小）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="recommended" /><span><b>推奨</b>: gpt-5.6-terraで整え、gpt-6-astraが誤変換を校正（品質と使用量のバランス）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="quality" /><span><b>高品質</b>: 整えも校正もgpt-6-astra（使用量は推奨の2倍以上）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="economy" /><span><b>節約</b>: 整えも校正もgpt-5.6-terra（使用量は最小）</span></label>
           <label class="choice"><input type="radio" name="modelPreset" value="custom" /><span><b>カスタム</b>（モデル名を直接入れる）</span></label>
           <div id="customModels" class="row" hidden>
             <label>整え・要点 <input id="modelMain" placeholder="空なら既定のモデル" /></label>
