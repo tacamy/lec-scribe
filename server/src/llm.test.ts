@@ -1,5 +1,21 @@
+import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { batchSections, buildOutlinePrompt, buildPrompt, outline, parseOutline, parseResponse, polish, type LlmSettings, type PolishInput } from './llm.ts';
+import {
+  batchSections,
+  buildOutlinePrompt,
+  buildPrompt,
+  codexArgs,
+  createBackend,
+  outline,
+  parseCodexDefaults,
+  parseOutline,
+  parseResponse,
+  polish,
+  type LlmSettings,
+  type PolishInput,
+} from './llm.ts';
 
 const settings: LlmSettings = { kind: 'codex', model: '', codexBin: 'codex', openaiApiKey: '', ollamaUrl: '', charsPerCall: 20 };
 const sections: PolishInput[] = [
@@ -143,5 +159,63 @@ describe('polish の分割リトライ', () => {
     const { results, errors } = await polish(three, backend, big);
     expect([...results.keys()].sort()).toEqual(['a', 'b', 'c']);
     expect(errors).toEqual([]);
+  });
+});
+
+describe('codex exec の呼び方（個人設定を読まない、2026-09-29）', () => {
+  it('parseCodexDefaults は表の外の model と model_reasoning_effort だけを読む', () => {
+    const config = [
+      'notify = ["/path/to/client", "turn-ended"]',
+      'model = "gpt-6-astra"   # 普段使い',
+      "model_reasoning_effort = 'medium'",
+      '',
+      '[profiles.fast]',
+      'model = "gpt-6-luna"',
+      'model_reasoning_effort = "low"',
+    ].join('\n');
+    expect(parseCodexDefaults(config)).toEqual({ model: 'gpt-6-astra', effort: 'medium' });
+    expect(parseCodexDefaults('[plugins."x"]\nenabled = true')).toEqual({});
+    expect(parseCodexDefaults('')).toEqual({});
+    // 推論の強さは -c の値に埋めるので、英字以外を含むものは読まない
+    expect(parseCodexDefaults('model_reasoning_effort = "high\\" -c x"')).toEqual({});
+  });
+
+  it('codexArgs は設定ファイルを読まず、モデルと推論の強さを明示する。プロンプトは最後', () => {
+    const args = codexArgs({ dir: '/tmp/x', schemaFile: '/tmp/x/s.json', outFile: '/tmp/x/o.txt', prompt: '本文', model: 'gpt-6-astra', effort: 'medium' });
+    expect(args.slice(0, 4)).toEqual(['exec', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config']);
+    expect(args).toContain('read-only');
+    expect(args.join(' ')).toContain('--model gpt-6-astra -c model_reasoning_effort="medium" 本文');
+    expect(args.at(-1)).toBe('本文');
+    // 既定が読めなければ指定しない（Codex の既定になる）
+    const bare = codexArgs({ dir: '/tmp/x', schemaFile: '/tmp/x/s.json', outFile: '/tmp/x/o.txt', prompt: '本文' });
+    expect(bare).not.toContain('--model');
+    expect(bare).not.toContain('-c');
+  });
+
+  it('呼び出しでは CODEX_HOME の設定から既定を引き継ぎ、サーバーのモデル指定があればそちらを使う', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-codex-test-'));
+    const codexHome = path.join(dir, 'home');
+    await mkdir(codexHome);
+    await writeFile(path.join(codexHome, 'config.toml'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\n[plugins."slack@openai-curated"]\nenabled = true\n');
+    // 受け取った引数を --output-last-message のファイルに書くだけの codex の代わり
+    const fake = path.join(dir, 'codex');
+    await writeFile(
+      fake,
+      `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nrequire('node:fs').writeFileSync(a[a.indexOf('--output-last-message') + 1], JSON.stringify(a));\n`,
+    );
+    await chmod(fake, 0o755);
+    const previous = process.env['CODEX_HOME'];
+    process.env['CODEX_HOME'] = codexHome;
+    try {
+      const call = async (model: string) => JSON.parse(await createBackend({ ...settings, model, codexBin: fake })!.complete('本文', { type: 'object' })) as string[];
+      const inherited = await call('');
+      expect(inherited).toContain('--ignore-user-config');
+      expect(inherited.join(' ')).toContain('--model gpt-6-astra -c model_reasoning_effort="medium"');
+      const chosen = await call('gpt-6-luna');
+      expect(chosen.join(' ')).toContain('--model gpt-6-luna -c model_reasoning_effort="medium"');
+    } finally {
+      if (previous === undefined) delete process.env['CODEX_HOME'];
+      else process.env['CODEX_HOME'] = previous;
+    }
   });
 });
