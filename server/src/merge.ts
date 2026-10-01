@@ -252,11 +252,12 @@ export function buildNotesMarkdown(input: {
       if (topic.summary.length > 0) lines.push('**要点**', '', ...topic.summary.map((s) => `- ${s}`), '');
     }
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
-    // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない
+    // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
+    // 記号だけ（「♪」等。古い transcript に残っていることがある）は発話ではないので、注意書きも本文も出さない（2026-10-01）
     const polished = input.polished.get(section.id)?.text;
     if (polished) {
       lines.push(polished, '');
-    } else if (section.texts.length > 0) {
+    } else if (section.texts.some((t) => /[\p{L}\p{N}]/u.test(t))) {
       lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(section.texts), '');
     }
   }

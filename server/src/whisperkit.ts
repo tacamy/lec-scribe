@@ -133,7 +133,7 @@ const WINDOW_ARTIFACT_SEC = 20;
 const OVERLAP_ARTIFACT_SEC = 5;
 
 /** 捨てた区間。なぜ捨てたかをログに残せるように reason を付ける */
-export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' };
+export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' };
 
 /**
  * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
@@ -154,6 +154,12 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   const talkEnd = segments.reduce((m, s) => Math.max(m, s.end), 0);
   const sorted = [...segments].sort((a, b) => a.start - b.start);
   const survivors = segments.filter((s) => {
+    // 文字（文字・数字）を 1 つも含まない区間は発話ではない（動画の最後の音楽が「♪」と書き起こされる等。2026-10-01）。
+    // 残すと「発話があるのに整えると空」になり、notes.md に「（整えられなかったため文字起こしのまま）」と ♪ だけが載る
+    if (!/[\p{L}\p{N}]/u.test(s.text)) {
+      dropped.push({ ...s, reason: 'symbol' });
+      return false;
+    }
     if (!isStockPhraseOnly(s.text)) return true;
     const midTalk = talkEnd - s.end > CLOSING_WINDOW_SEC;
     // 直前の区間の終わりにぴったり続く決まり文句は、窓の末尾に付け足された幻覚（本物の発話は VAD の区切りで少し間が空く）

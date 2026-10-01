@@ -61,6 +61,18 @@ describe('whisperkitArgs', () => {
 });
 
 describe('dropWindowArtifacts', () => {
+  it('文字を含まない記号だけの区間（動画の最後の音楽の「♪」など）は発話ではないので捨てる', () => {
+    const segments = [
+      { start: 0, end: 5, text: 'アイデアの基礎の科目を担当します' },
+      { start: 88, end: 90, text: ' ♪' },
+      { start: 91, end: 92, text: '♪〜🎵' },
+    ];
+    const { kept, dropped } = dropWindowArtifacts(segments);
+    expect(kept.map((s) => s.text)).toEqual(['アイデアの基礎の科目を担当します']);
+    expect(dropped.map((d) => d.reason)).toEqual(['symbol', 'symbol']);
+  });
+
+
   it('drops 30-second window segments that overlap real speech, and long stock phrases', () => {
     // 実例（1章）: 59.6〜89.6 の決まり文句が 61〜86 秒の本物の発話と重なっていた
     const segments = [

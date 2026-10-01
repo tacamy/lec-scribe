@@ -153,6 +153,11 @@ describe('buildNotesMarkdown', () => {
     // LLM が本文を落としてしまっても、発話があった節を黙って消さない
     const md = buildNotesMarkdown({ sections, polished: new Map([['slide_001', { text: '' }]]) });
     expect(md).toContain('![slide_001](slides/slide_001.png)\n\n（整えられなかったため文字起こしのまま）\n\n一枚目の話。');
+    // 記号だけの本文（古い transcript に残った「♪」など）は発話ではないので、注意書きも本文も出さず画像だけにする
+    const symbolOnly = [{ ...sections[0]!, texts: [' ♪'] }];
+    const quiet = buildNotesMarkdown({ sections: symbolOnly, polished: new Map([['slide_001', { text: '' }]]) });
+    expect(quiet).not.toContain('整えられなかったため');
+    expect(quiet).not.toContain('♪');
   });
 
   it('leaves a silent slide as the image alone', () => {
