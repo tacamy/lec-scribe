@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { applyCorrections, checkWithFallback, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
+import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
@@ -447,6 +447,9 @@ export class Pipeline {
         this.log(`ノートを整えられませんでした（${notesError}）。文字起こしそのままの本文を置きました`);
         return { notes: false, notesError };
       };
+      // モデルは処理の開始時に一度だけ写し取る（POST /settings は共有の config を書き換えるので、
+      // 進行中の処理に混ぜるとキャッシュの記録と実際に使ったモデルが食い違う。2026-10-01 のレビュー）
+      const llmCheckModel = this.config.llmCheckModel;
       const llmSettings = {
         kind: this.config.llm,
         model: this.config.llmModel,
@@ -462,13 +465,17 @@ export class Pipeline {
       const backend = createBackend(llmSettings);
       if (backend) {
         notes = await step('polishing', async () => {
+          // 整えのモデルが使えず指定なしに切り替えたとき、以降（要点・校正の受け皿）も同じ切り替え先を使う
+          let activeBackend = backend;
+          /** activeBackend が使っているモデル（受け皿に切り替えたら ''）。校正の受け皿を出すかの比較はこちらで行う */
+          let activeModel = llmSettings.model;
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
           // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
           const cacheSettings = {
             kind: llmSettings.kind,
             model: llmSettings.model,
             charsPerCall: llmSettings.charsPerCall,
-            ...(this.config.llmCheckModel ? { checkModel: this.config.llmCheckModel } : {}),
+            ...(llmCheckModel ? { checkModel: llmCheckModel } : {}),
           };
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
@@ -501,13 +508,26 @@ export class Pipeline {
             let checkErrors: string[] = [];
             if (todo.length > 0) {
               if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
-              const result = await polish(todo, backend, llmSettings, this.log);
-              for (const [id, out] of result.results) polished.set(id, out);
-              errors = result.errors;
+              let result = await polish(todo, activeBackend, llmSettings, this.log);
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
+              // 整えのモデルが使えない（プランにない等。設定画面で選べるようになったぶん起きやすい）ときは、
+              // 指定なし（呼び出し先の既定のモデル）で 1 度だけやり直す。文字起こしのままのノートに落とさない（2026-10-01）
+              if (llmSettings.model && result.results.size === 0 && result.errors.some(isModelUnavailable)) {
+                const fallback = createBackend({ ...llmSettings, model: '' });
+                if (fallback) {
+                  this.log(`整えのモデル（${activeBackend.name}）が使えないようです: ${result.errors.find(isModelUnavailable)}。${fallback.name}（指定なし）でやり直します`);
+                  activeBackend = fallback;
+                  activeModel = '';
+                  result = await polish(todo, activeBackend, llmSettings, this.log);
+                  if (signal.aborted) throw new Error('cancelled');
+                  if (notesStopped()) throw new Error('notes stopped');
+                }
+              }
+              for (const [id, out] of result.results) polished.set(id, out);
+              errors = result.errors;
               // 校正（任意、§13.5）: 新しく整えた節だけを原文と突き合わせ、誤変換を直す。組み替えで使い回した節は前回すでに校正済み
-              const checkBackend = this.config.llmCheckModel ? createBackend({ ...llmSettings, model: this.config.llmCheckModel }) : null;
+              const checkBackend = llmCheckModel ? createBackend({ ...llmSettings, model: llmCheckModel }) : null;
               const checkInputs = checkBackend
                 ? todo.flatMap((s) => {
                     const text = polished.get(s.id)?.text;
@@ -516,7 +536,9 @@ export class Pipeline {
                 : [];
               if (checkBackend && checkInputs.length > 0) {
                 // 校正モデルが使えない（プランにない等）ときは、本文と同じモデルで校正し直す（未校正のまま完成させない）
-                const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? backend : null, llmSettings, this.log);
+                // 校正モデルが「いま整えに使ったモデル」と同じときだけ受け皿なし（同じものを二度試しても無駄）。
+                // 整えが既定のモデルに切り替わっていたら、校正モデルと名前が同じでも受け皿はその既定のモデルにする（2026-10-01 のレビュー）
+                const checked = await checkWithFallback(checkInputs, checkBackend, llmCheckModel !== activeModel ? activeBackend : null, llmSettings, this.log);
                 if (signal.aborted) throw new Error('cancelled');
                 if (notesStopped()) throw new Error('notes stopped');
                 // 校正の失敗は polish の errors に混ぜない（2026-10-01 のレビュー）: 本文は揃っていて直しが入らないだけなので、
@@ -544,7 +566,7 @@ export class Pipeline {
             } else {
               // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
               const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
-              const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+              const { outline: made, error: outlineError } = await outline(outlineInput, activeBackend, llmSettings, this.log);
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
               topics = made;
@@ -553,7 +575,7 @@ export class Pipeline {
             await writeNotesCache(dir, {
               key,
               generatedAt: now(),
-              backend: backend.name,
+              backend: activeBackend.name,
               settings: cacheSettings,
               inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],

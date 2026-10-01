@@ -468,7 +468,8 @@ export async function polish(
       failure = e instanceof Error ? e.message : String(e);
     }
     if (!failure) return;
-    if (canSplit && batch.length > 1 && !settings.signal?.aborted) {
+    // 「モデルが使えない」失敗は、分けて送り直してもモデルは現れないので打ち切る（受け皿が拾う。2026-10-01 のレビュー）
+    if (canSplit && batch.length > 1 && !settings.signal?.aborted && !isModelUnavailable(failure)) {
       // 答えが返らなかった節だけをやり直す。全部だめなら半分に分けて送り直す（長すぎたとき用）
       const missing = batch.filter((s) => !answered.has(s.id));
       const retry = missing.length > 0 && missing.length < batch.length ? [missing] : [batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))];

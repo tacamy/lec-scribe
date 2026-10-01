@@ -69,7 +69,10 @@ describe('ポートをほかのアプリが使っているとき（§12.1d）', 
     reply('{"ok":false,"error":{"code":"INTERNAL","message":"boom"}}', 500);
     const error = await fetchHealth(server).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(ForeignServerError);
-    expect((error as Error).message).toBe('HTTP 500: boom');
+    // サーバーの日本語メッセージをそのまま見せる（HTTP の番号は、メッセージが無いときだけ）
+    expect((error as Error).message).toBe('boom');
+    reply('{"ok":false}', 500);
+    expect(((await fetchHealth(server).catch((e: unknown) => e)) as Error).message).toBe('HTTP 500');
     reply('{"ok":true,"version":"0.1.0","api":3}');
     expect(await fetchHealth(server)).toMatchObject({ version: '0.1.0', api: 3 });
   });

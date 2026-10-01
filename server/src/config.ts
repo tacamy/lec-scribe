@@ -37,6 +37,8 @@ export type ServerConfig = {
   llmModel: string;
   /** 校正（誤変換の修正）に使うモデル。空なら校正はしない（§13.5、2026-09-30） */
   llmCheckModel: string;
+  /** 設定画面から変えた設定の保存先（§15.2、2026-10-01）。読み書きは settings.ts */
+  settingsFile: string;
   codexBin: string;
   openaiApiKey: string;
   ollamaUrl: string;
@@ -90,6 +92,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     llm: parseLlm(pick('llm', 'LEC_SCRIBE_LLM', 'none')),
     llmModel: pick('llm-model', 'LEC_SCRIBE_LLM_MODEL', ''),
     llmCheckModel: pick('llm-check-model', 'LEC_SCRIBE_LLM_CHECK_MODEL', ''),
+    settingsFile: expandHome(pick('settings-file', 'LEC_SCRIBE_SETTINGS_FILE', path.join(home, '.lec-scribe', 'settings.json'))),
     codexBin: pick('codex', 'LEC_SCRIBE_CODEX', 'codex'),
     openaiApiKey: env['OPENAI_API_KEY'] ?? '',
     ollamaUrl: pick('ollama-url', 'LEC_SCRIBE_OLLAMA_URL', 'http://127.0.0.1:11434'),
