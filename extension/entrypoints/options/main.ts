@@ -16,6 +16,8 @@ const modelMain = $<HTMLInputElement>('modelMain');
 const modelCheck = $<HTMLInputElement>('modelCheck');
 const customModels = $('customModels');
 const resetModelsBtn = $<HTMLButtonElement>('resetModels');
+const modelPresetSel = $<HTMLSelectElement>('modelPreset');
+const presetDetail = $('presetDetail');
 const notesCmd = $('notesCmd');
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
 notesCmd.textContent = NOTES_COMMAND;
@@ -149,17 +151,22 @@ $('test').addEventListener('click', async () => {
 /**
  * ノート作成のモデルの選択（SPEC §15.2、api 5。2026-10-01）。
  * codex のときだけ出す（プリセットのモデル名が ChatGPT のプランのもののため。openai / ollama は従来どおり環境変数で指定する）。
- * 保存はサーバーの settings.json に入り、再起動なしで次のノート作成から効く
+ * 保存はサーバーの settings.json に入り、再起動なしで次のノート作成から効く。
+ * どのプリセットでも校正は付ける（校正は別の呼び出しに分けたほうが誤変換に強い。§13.5 の実測）。
+ * 校正なしにできるのは、カスタムで校正の欄を空にしたときだけ
  */
 const MODEL_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }> = {
-  // どのプリセットでも校正は付ける（校正は別の呼び出しに分けたほうが誤変換に強い。§13.5 の実測）。
-  // 校正なしにできるのは、カスタムで校正の欄を空にしたときだけ
   recommended: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' },
   quality: { llmModel: 'gpt-6-astra', llmCheckModel: 'gpt-6-astra' },
   economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-5.6-terra' },
 };
 
-const presetRadios = () => [...document.querySelectorAll<HTMLInputElement>('input[name="modelPreset"]')];
+const PRESET_DETAIL: Record<string, string> = {
+  recommended: 'gpt-5.6-terraが本文を整えて要点を作り、gpt-6-astraが誤変換だけを校正します。',
+  quality: '整え・要点も校正も、すべてgpt-6-astraで行います。',
+  economy: '整え・要点も校正も、すべてgpt-5.6-terraで行います。',
+  custom: 'モデル名を直接指定します。校正の欄を空にすると校正なしになります。',
+};
 
 function presetOf(llmModel: string, llmCheckModel: string): string {
   for (const [key, v] of Object.entries(MODEL_PRESETS)) {
@@ -168,17 +175,18 @@ function presetOf(llmModel: string, llmCheckModel: string): string {
   return 'custom';
 }
 
-function selectedPreset(): string {
-  return presetRadios().find((r) => r.checked)?.value ?? 'custom';
+function renderPresetDetail() {
+  const preset = modelPresetSel.value;
+  presetDetail.textContent = PRESET_DETAIL[preset] ?? '';
+  customModels.hidden = preset !== 'custom';
 }
 
 function renderModelChoice(llmModel: string, llmCheckModel: string, overridden: boolean) {
-  const preset = presetOf(llmModel, llmCheckModel);
-  for (const r of presetRadios()) r.checked = r.value === preset;
+  modelPresetSel.value = presetOf(llmModel, llmCheckModel);
   modelMain.value = llmModel;
   modelCheck.value = llmCheckModel;
-  customModels.hidden = preset !== 'custom';
   resetModelsBtn.hidden = !overridden;
+  renderPresetDetail();
 }
 
 /** モデルの選択を出す。古いサーバー（api 5 未満）・codex 以外・未承認のときは出さない */
@@ -196,17 +204,14 @@ async function renderModels(health: Health | null) {
   }
 }
 
-for (const r of presetRadios()) {
-  r.addEventListener('change', () => {
-    const preset = selectedPreset();
-    customModels.hidden = preset !== 'custom';
-    const values = MODEL_PRESETS[preset];
-    if (values) {
-      modelMain.value = values.llmModel;
-      modelCheck.value = values.llmCheckModel;
-    }
-  });
-}
+modelPresetSel.addEventListener('change', () => {
+  const values = MODEL_PRESETS[modelPresetSel.value];
+  if (values) {
+    modelMain.value = values.llmModel;
+    modelCheck.value = values.llmCheckModel;
+  }
+  renderPresetDetail();
+});
 
 function showModelResult(text: string, ok: boolean) {
   modelResult.textContent = text;
@@ -214,7 +219,7 @@ function showModelResult(text: string, ok: boolean) {
 }
 
 $('saveModels').addEventListener('click', async () => {
-  const preset = selectedPreset();
+  const preset = modelPresetSel.value;
   const values = MODEL_PRESETS[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
   try {
     const saved = await saveLlmSettings(config.server, values);

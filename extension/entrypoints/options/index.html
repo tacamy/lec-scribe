@@ -12,7 +12,7 @@
       main { max-width: 640px; margin: 0 auto; padding: 32px 24px 48px; display: grid; gap: 24px; }
       h1 { margin: 0; font-size: 20px; }
       h2 { margin: 0 0 8px; font-size: 15px; }
-      section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+      section { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 10px; }
       /* 複数行の結果（接続テスト）でも、ボタンの文字と 1 行目がそろうように baseline でそろえる */
       .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
       /* hidden 属性が .row の display: flex に負けないように（カスタム欄の隠し）*/
@@ -26,12 +26,12 @@
       code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
       p { margin: 0; color: var(--muted); font-size: 13px; }
       code#notesCmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; }
-      .choice { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
-      .choice input { margin: 0; }
-      .choice b { font-weight: 600; }
+      h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+      #modelBox { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 4px; }
+      select { font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); max-width: 100%; }
       #customModels { gap: 12px; }
       #customModels label { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); }
-      #customModels input { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 160px; }
+      #customModels input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 170px; }
     </style>
   </head>
   <body>
@@ -66,24 +66,27 @@
           <span id="notesStatus" class="result">確認中…</span>
         </div>
         <div id="modelBox" hidden>
-          <p>
-            ノート作成に使うモデル。切り替えたあと、各講義の最初の「やり直す」ではノートが作り直しになります
-            （文字起こしは再利用します）。
-          </p>
-          <label class="choice"><input type="radio" name="modelPreset" value="recommended" /><span><b>推奨</b>: gpt-5.6-terraで整え、gpt-6-astraが誤変換を校正（品質と使用量のバランス）</span></label>
-          <label class="choice"><input type="radio" name="modelPreset" value="quality" /><span><b>高品質</b>: 整えも校正もgpt-6-astra（使用量は推奨の2倍以上）</span></label>
-          <label class="choice"><input type="radio" name="modelPreset" value="economy" /><span><b>節約</b>: 整えも校正もgpt-5.6-terra（使用量は最小）</span></label>
-          <label class="choice"><input type="radio" name="modelPreset" value="custom" /><span><b>カスタム</b>（モデル名を直接入れる）</span></label>
+          <h3>使うモデル</h3>
+          <div class="row">
+            <select id="modelPreset">
+              <option value="recommended">推奨（品質と使用量のバランス）</option>
+              <option value="quality">高品質（使用量は推奨の2倍以上）</option>
+              <option value="economy">節約（使用量は最小）</option>
+              <option value="custom">カスタム</option>
+            </select>
+            <button id="saveModels" class="primary" type="button">保存</button>
+            <button id="resetModels" class="secondary" type="button" hidden>起動時の設定に戻す</button>
+          </div>
+          <p id="presetDetail"></p>
           <div id="customModels" class="row" hidden>
             <label>整え・要点 <input id="modelMain" placeholder="空なら既定のモデル" /></label>
             <label>校正 <input id="modelCheck" placeholder="空なら校正なし" /></label>
           </div>
-          <div class="row">
-            <button id="saveModels" class="primary" type="button">保存</button>
-            <button id="resetModels" class="secondary" type="button" hidden>サーバー起動時の設定に戻す</button>
-            <span id="modelResult" class="result"></span>
-          </div>
-          <p>使えるモデル名はChatGPTのプランによって違います。使えないモデルを保存しても、処理のときに自動で既定のモデルに切り替わります。</p>
+          <span id="modelResult" class="result"></span>
+          <p>
+            切り替えたあと、各講義の最初の「やり直す」はノートを作り直します（文字起こしは再利用します）。
+            使えるモデル名はChatGPTのプランによって違いますが、使えないモデルを保存しても処理のときに既定のモデルへ自動で切り替わります。
+          </p>
         </div>
         <div id="notesHint" hidden>
           <p>「ターミナル」で次の 1 行を実行すると有効になります（Codex CLI を入れて ChatGPT アカウントでログインします。API キーは要りません）。</p>
