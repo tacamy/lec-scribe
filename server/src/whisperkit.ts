@@ -1,4 +1,4 @@
-import type { Segment } from './format.ts';
+import { hasSpeechText, type Segment } from './format.ts';
 
 /**
  * whisperkit-cli の呼び出しと report JSON の正規化（SPEC §13.1）。
@@ -133,7 +133,7 @@ const WINDOW_ARTIFACT_SEC = 20;
 const OVERLAP_ARTIFACT_SEC = 5;
 
 /** 捨てた区間。なぜ捨てたかをログに残せるように reason を付ける */
-export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' };
+export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' };
 
 /**
  * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
@@ -148,12 +148,24 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   const dropped: DroppedSegment[] = [];
   const duration = (s: Segment) => s.end - s.start;
 
+  // 文字（文字・数字）を 1 つも含まない区間は発話ではない（動画の最後の音楽が「♪」と書き起こされる等。2026-10-01）。
+  // 残すと「発話があるのに整えると空」になり、notes.md に「（整えられなかったため文字起こしのまま）」と ♪ だけが載る。
+  // 出力からは外すが、時間帯としては実在する音（音楽の帯）なので、下の「重なり」の判定には証拠として残す。
+  // 発話が 1 つもない録音（音楽だけの動画など）は、全部を失敗にしないため何も捨てずそのまま返す
+  const speech: Segment[] = [];
+  const symbols: Segment[] = [];
+  for (const s of segments) (hasSpeechText(s.text) ? speech : symbols).push(s);
+  if (speech.length === 0) return { kept: [...segments], dropped: [] };
+  for (const s of symbols) dropped.push({ ...s, reason: 'symbol' });
+
   // 決まり文句だけの区間は、(a) しゃべる速さから考えて長すぎる、または (b) 話の途中に出てくる
   // （締めの言葉は最後にしか言わない）なら捨てる。実例: 5 章で「ありがとうございました」が
-  // 2.0 秒ちょうどの区間として話の途中に 3 回入っていた（直前の区間の終わりと同じ時刻に始まる）
-  const talkEnd = segments.reduce((m, s) => Math.max(m, s.end), 0);
-  const sorted = [...segments].sort((a, b) => a.start - b.start);
-  const survivors = segments.filter((s) => {
+  // 2.0 秒ちょうどの区間として話の途中に 3 回入っていた（直前の区間の終わりと同じ時刻に始まる）。
+  // 「音声の終わり」は発話の終わり: 記号区間（エンディングの音楽）まで含めると、本当に最後に言った
+  // 締めの言葉が「話の途中」扱いになって捨てられる（2026-10-01 のレビュー）
+  const talkEnd = speech.reduce((m, s) => Math.max(m, s.end), 0);
+  const sorted = [...speech].sort((a, b) => a.start - b.start);
+  const survivors = speech.filter((s) => {
     if (!isStockPhraseOnly(s.text)) return true;
     const midTalk = talkEnd - s.end > CLOSING_WINDOW_SEC;
     // 直前の区間の終わりにぴったり続く決まり文句は、窓の末尾に付け足された幻覚（本物の発話は VAD の区切りで少し間が空く）
@@ -171,7 +183,8 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   for (const s of [...survivors].sort((a, b) => duration(b) - duration(a))) {
     if (duration(s) < WINDOW_ARTIFACT_SEC) break; // 長い順なので、ここから先は対象外
     let overlap = 0;
-    for (const o of alive) {
+    // 記号区間（音楽の帯）も重なりの証拠に数える。幻覚の窓が音楽としか重なっていない場合に取りこぼさない（2026-10-01 のレビュー）
+    for (const o of [...alive, ...symbols]) {
       if (o === s) continue;
       overlap += Math.max(0, Math.min(s.end, o.end) - Math.max(s.start, o.start));
     }
