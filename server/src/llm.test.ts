@@ -296,6 +296,28 @@ describe('校正（誤変換の修正、2026-09-30）', () => {
   });
 });
 
+describe('モデルが使えない失敗では、polish は分割のやり直しをしない（2026-10-01）', () => {
+  it('枠切れは半分に分けてやり直すが、モデル不可は 1 回で打ち切る', async () => {
+    const calls: number[] = [];
+    const make = (message: string) => ({
+      name: 'fake',
+      async complete(prompt: string): Promise<string> {
+        calls.push([...prompt.matchAll(/<<<SECTION/g)].length);
+        throw new Error(message);
+      },
+    });
+    // 2 節で 1 バッチ（charsPerCall 1000）。枠切れ → 1 回 ＋ 半分 2 回 = 3 回
+    const wide = { ...settings, charsPerCall: 1000 };
+    await polish(sections.slice(0, 2), make('rate limited'), wide);
+    expect(calls).toEqual([2, 1, 1]);
+    calls.length = 0;
+    // モデル不可 → 分けてもモデルは現れないので 1 回だけ
+    const { errors } = await polish(sections.slice(0, 2), make("The 'x' model is not supported when using Codex with a ChatGPT account."), wide);
+    expect(calls).toEqual([2]);
+    expect(errors).toHaveLength(1);
+  });
+});
+
 describe('校正モデルが使えないときの受け皿（2026-10-01）', () => {
   const one = [{ id: 's1', original: '可愛さ、きっちゅさを出している', polished: 'かわいさ、きっちりさを出しています。' }];
   const codexMsg = `check 1/1: codex exec failed (1): {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."}}`;

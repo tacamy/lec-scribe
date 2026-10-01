@@ -440,6 +440,31 @@ describe('local server', () => {
     }
   });
 
+  it('整えと校正が同じ使えないモデル（高品質・節約の形）でも、両方とも既定のモデルに切り替わって校正まで動く', async () => {
+    const logs: string[] = [];
+    const { server } = createApp({ ...config, llmModel: 'model-gone', llmCheckModel: 'model-gone', outDir: path.join(tmp, 'out-both-gone') }, TOKEN, (m) => logs.push(m));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const b = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-162000-gne2';
+      await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'both gone' }) });
+      await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string } } = { stage: 'queued' };
+      for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      expect(status.result).toMatchObject({ notes: true });
+      // 整えは既定のモデルに切り替わり、校正の受け皿も「切り替わった先」を使うので校正まで入る
+      expect(logs.join('\n')).toContain('整えのモデル（codex (model-gone)）が使えないようです');
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   describe('中止（§11.3）', () => {
     /** 設定を変えた別サーバーを立てる。同じ outDir を渡せば「やり直す」を再現できる */
     const startApp = async (overrides: Partial<ServerConfig>) => {

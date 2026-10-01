@@ -30,6 +30,8 @@
       code#notesCmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; }
       h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
       #modelBox { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 4px; }
+      /* display: grid が hidden 属性（UA の display: none）に勝たないように。.row[hidden] と同じ理由 */
+      #modelBox[hidden] { display: none; }
       /* 見出しと select の間だけ詰める（grid の gap より狭く） */
       #modelBox h3 { margin-bottom: -2px; }
       /* ボタンと同じ式（font 14px × 1.6 + padding 8px + border 1px）で高さをそろえる。

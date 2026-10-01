@@ -72,27 +72,32 @@ function renderNotes(health: Health | null) {
   notesHint.hidden = enabled || unknown;
 }
 
+/**
+ * サーバーの状態（ノート作成・モデル選択・承認）をまとめて取り直す。
+ * 開いたとき、「このMacと接続」「接続を解除」のあとに呼ぶ（接続テストは自前の表示があるので別）。
+ * 承認状態はサーバーを入れ直して消えていることがあるので、/health の paired を設定にも反映する
+ */
+async function refreshServerState() {
+  const generation = ++notesGeneration;
+  try {
+    const body = await fetchHealth(config.server);
+    if (generation !== notesGeneration) return;
+    renderNotes(body);
+    void renderModels(body);
+    if (body.paired !== undefined && body.paired !== config.server.paired) {
+      config = { ...config, server: { ...config.server, paired: body.paired } };
+      await saveConfig(config);
+      renderPairStatus();
+    }
+  } catch {
+    if (generation !== notesGeneration) return;
+    renderNotes(null);
+    void renderModels(null);
+  }
+}
+
 // 開いた時点のサーバーの状態を出す（接続テストを押さなくても分かるように）
-const initialCheck = ++notesGeneration;
-void fetchHealth(config.server)
-  .then(async (body) => {
-    if (initialCheck === notesGeneration) {
-      renderNotes(body);
-      void renderModels(body);
-      // サーバー側の承認状態を開いた時点でも反映する（サーバーを入れ直して承認が消えていたら「接続」を出し直す）
-      if (body.paired !== undefined && body.paired !== config.server.paired) {
-        config = { ...config, server: { ...config.server, paired: body.paired } };
-        await saveConfig(config);
-        renderPairStatus();
-      }
-    }
-  })
-  .catch(() => {
-    if (initialCheck === notesGeneration) {
-      renderNotes(null);
-      void renderModels(null);
-    }
-  });
+void refreshServerState();
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
 pairBtn.addEventListener('click', async () => {
@@ -103,6 +108,8 @@ pairBtn.addEventListener('click', async () => {
     config = await loadConfig();
     renderPairStatus();
     show('接続しました。', true);
+    // 承認できたのでモデルの選択などを出し直す
+    void refreshServerState();
   } catch (e) {
     show(e instanceof Error ? e.message : String(e), false);
   }
@@ -119,6 +126,8 @@ unpairBtn.addEventListener('click', async () => {
     config = await loadConfig();
     renderPairStatus();
     show('接続を解除しました。', true);
+    // 未承認になったのでモデルの選択を消す
+    void refreshServerState();
   } catch (e) {
     show(e instanceof Error ? e.message : String(e), false);
   }
@@ -199,22 +208,30 @@ function renderModelChoice(llmModel: string, llmCheckModel: string, overridden: 
   renderPresetDetail();
 }
 
+/** 遅れて届いた古い /settings の応答で、保存直後の表示を巻き戻さないための世代番号 */
+let modelsGeneration = 0;
+/** 保存していない編集（カスタムのモデル名など）があるか。あるときは取り直しで欄を上書きしない */
+let modelsDirty = false;
+
 /** モデルの選択を出す。古いサーバー（api 5 未満）・codex 以外・未承認のときは出さない */
 async function renderModels(health: Health | null) {
   const usable = !!health && (health.api ?? 0) >= 5 && health.llm === 'codex' && health.authorized === true;
   modelBox.hidden = !usable;
   if (!usable) return;
+  const generation = ++modelsGeneration;
   try {
     const current = await fetchLlmSettings(config.server);
+    if (generation !== modelsGeneration || modelsDirty) return;
     renderModelChoice(current.llmModel ?? '', current.llmCheckModel ?? '', current.overridden === true);
     modelResult.textContent = '';
     modelResult.className = 'result';
   } catch {
-    modelBox.hidden = true;
+    if (generation === modelsGeneration) modelBox.hidden = true;
   }
 }
 
 modelPresetSel.addEventListener('change', () => {
+  modelsDirty = true;
   const values = MODEL_PRESETS[modelPresetSel.value];
   if (values) {
     modelMain.value = values.llmModel;
@@ -222,6 +239,7 @@ modelPresetSel.addEventListener('change', () => {
   }
   renderPresetDetail();
 });
+for (const input of [modelMain, modelCheck]) input.addEventListener('input', () => (modelsDirty = true));
 
 function showModelResult(text: string, ok: boolean) {
   modelResult.textContent = text;
@@ -233,6 +251,7 @@ $('saveModels').addEventListener('click', async () => {
   const values = MODEL_PRESETS[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
   try {
     const saved = await saveLlmSettings(config.server, values);
+    modelsDirty = false;
     renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
     showModelResult('保存しました。次のノート作成（または「やり直す」）から使われます。', true);
   } catch (e) {
@@ -243,8 +262,9 @@ $('saveModels').addEventListener('click', async () => {
 resetModelsBtn.addEventListener('click', async () => {
   try {
     const saved = await saveLlmSettings(config.server, { reset: true });
+    modelsDirty = false;
     renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
-    showModelResult('サーバー起動時の設定に戻しました。', true);
+    showModelResult('起動時の設定に戻しました。', true);
   } catch (e) {
     showModelResult(e instanceof Error ? e.message : String(e), false);
   }

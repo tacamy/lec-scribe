@@ -237,7 +237,7 @@ export function createApp(
         const value = body[key];
         if (value === undefined) continue;
         if (!isValidModelName(value)) {
-          sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `${key} が不正です（使える文字は英数字と . _ : / -、64 文字まで）。` } });
+          sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `${key}が不正です（使える文字は英数字と. _ : / -、64文字まで）。` } });
           return;
         }
         overrides[key] = value;

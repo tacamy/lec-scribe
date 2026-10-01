@@ -53,27 +53,14 @@ export type LlmSettingsInfo = {
 };
 
 export async function fetchLlmSettings(server: Pick<Config['server'], 'port' | 'token'>): Promise<LlmSettingsInfo> {
-  const res = await fetch(`http://127.0.0.1:${server.port}/settings`, { headers: authHeaders(server), signal: AbortSignal.timeout(3000) });
-  const body: unknown = await res.json().catch(() => undefined);
-  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new Error(`HTTP ${res.status}${body.error?.message ? `: ${body.error.message}` : ''}`);
-  return body as LlmSettingsInfo;
+  return (await requestJson(server, '/settings')) as LlmSettingsInfo;
 }
 
 export async function saveLlmSettings(
   server: Pick<Config['server'], 'port' | 'token'>,
   update: { llmModel?: string; llmCheckModel?: string; reset?: boolean },
 ): Promise<LlmSettingsInfo> {
-  const res = await fetch(`http://127.0.0.1:${server.port}/settings`, {
-    method: 'POST',
-    headers: { ...authHeaders(server), 'content-type': 'application/json' },
-    body: JSON.stringify(update),
-    signal: AbortSignal.timeout(3000),
-  });
-  const body: unknown = await res.json().catch(() => undefined);
-  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
-  return body as LlmSettingsInfo;
+  return (await requestJson(server, '/settings', { method: 'POST', json: update })) as LlmSettingsInfo;
 }
 
 /**
@@ -105,16 +92,36 @@ export class ForeignServerError extends Error {
  * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
  * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
  */
+/**
+ * サーバーの API を呼ぶ共通形: LecScribe の応答か確かめ、失敗はサーバーの日本語メッセージ（無ければ HTTP の番号）で投げる。
+ * fetchHealth / fetchLlmSettings / saveLlmSettings で同じ定型を繰り返さないため（2026-10-01 のレビュー）
+ */
+async function requestJson(
+  server: Pick<Config['server'], 'port' | 'token'>,
+  path: string,
+  options: { auth?: boolean; timeoutMs?: number; method?: string; json?: unknown } = {},
+): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = {
+    ...(options.auth === false ? {} : authHeaders(server)),
+    ...(options.json !== undefined ? { 'content-type': 'application/json' } : {}),
+  };
+  const res = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+    method: options.method ?? 'GET',
+    headers,
+    ...(options.json !== undefined ? { body: JSON.stringify(options.json) } : {}),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 3000),
+  });
+  const body: unknown = await res.json().catch(() => undefined);
+  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
+  if (!res.ok || !body.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+  return body as Record<string, unknown>;
+}
+
 export async function fetchHealth(
   server: Pick<Config['server'], 'port' | 'token'>,
   options: { auth?: boolean; timeoutMs?: number } = {},
 ): Promise<Health> {
-  const headers = options.auth === false ? {} : authHeaders(server);
-  const res = await fetch(`http://127.0.0.1:${server.port}/health`, { headers, signal: AbortSignal.timeout(options.timeoutMs ?? 3000) });
-  const body: unknown = await res.json().catch(() => undefined);
-  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new Error(`HTTP ${res.status}${body.error?.message ? `: ${body.error.message}` : ''}`);
-  return body as Health;
+  return (await requestJson(server, '/health', options)) as Health;
 }
 
 /** サーバーが古くて、この拡張の一部の機能が通じないか */
