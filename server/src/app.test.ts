@@ -46,8 +46,8 @@ beforeAll(async () => {
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
     'codex',
-    // --model check-fail のときは一時的な失敗のふりをする（校正の失敗の試験用）
-    'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; done; '
+    // --model check-fail は一時的な失敗、--model model-gone は「モデルが使えない」失敗のふり（受け皿の試験用）
+    'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
       + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
       + 'if printf \'%s\' "$prompt" | grep -q "原文"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); printf \'{"corrections":[{"id":"%s","wrong":"整えた","right":"校正済みの"}]}\' "$first" > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
@@ -66,6 +66,7 @@ beforeAll(async () => {
     openBin: open,
     osascriptBin: osascript,
     trustedFile: path.join(tmp, 'trusted.json'),
+    settingsFile: path.join(tmp, 'settings.json'),
     keepWav: true,
     llm: 'codex',
     llmModel: '',
@@ -369,6 +370,71 @@ describe('local server', () => {
       await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
       const again = await wait();
       expect(again.result).toMatchObject({ notes: true, notesReused: true });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('設定 API でノート作成のモデルを変えると、再起動なしで次の処理から効き、保存されて overridden になる', async () => {
+    const settingsFile = path.join(tmp, 'settings-api.json');
+    const { server } = createApp({ ...config, settingsFile, outDir: path.join(tmp, 'out-settings') }, TOKEN);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const b = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const health = (await (await fetch(`${b}/health`, { headers })).json()) as { api: number; llmModel?: string; llmCheckModel?: string };
+      expect(health.api).toBeGreaterThanOrEqual(5);
+      expect(health.llmModel).toBe('');
+      const got = (await (await fetch(`${b}/settings`, { headers })).json()) as { ok: boolean; overridden: boolean };
+      expect(got).toMatchObject({ ok: true, overridden: false });
+      // 認証なしは 401、不正なモデル名は 400
+      expect((await fetch(`${b}/settings`)).status).toBe(401);
+      const bad = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ llmModel: 'a b' }) });
+      expect(bad.status).toBe(400);
+      // 校正モデルを入れて保存 → 次の finalize から校正が効く（サーバーは再起動していない）
+      const set = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ llmCheckModel: 'check-model' }) });
+      expect((await set.json() as { overridden: boolean }).overridden).toBe(true);
+      expect(JSON.parse(await readFile(settingsFile, 'utf8'))).toEqual({ llmCheckModel: 'check-model' });
+      const sessionId = '20260920-160000-set1';
+      await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'settings' }) });
+      await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let status: { stage: string; outputDir?: string } = { stage: 'queued' };
+      for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
+      // reset で起動時の設定（校正なし）に戻る
+      const reset = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ reset: true }) });
+      expect((await reset.json() as { overridden: boolean; llmCheckModel: string }).llmCheckModel).toBe('');
+      expect(await readFile(settingsFile, 'utf8').catch(() => 'gone')).toBe('gone');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('整えのモデルが使えないときは、指定なし（既定のモデル）でやり直してノートを作る', async () => {
+    const logs: string[] = [];
+    const { server } = createApp({ ...config, llmModel: 'model-gone', outDir: path.join(tmp, 'out-polish-gone') }, TOKEN, (m) => logs.push(m));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const b = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-161000-gone';
+      await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'gone' }) });
+      await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string } } = { stage: 'queued' };
+      for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      // 文字起こしのままに落ちず、既定のモデルで整っている
+      expect(status.result).toMatchObject({ notes: true });
+      expect(status.result?.notesError).toBeUndefined();
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の整えた本文。');
+      expect(logs.join('\n')).toContain('整えのモデル（codex (model-gone)）が使えないようです');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

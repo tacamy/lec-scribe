@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { applyCorrections, checkWithFallback, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
+import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
@@ -462,6 +462,8 @@ export class Pipeline {
       const backend = createBackend(llmSettings);
       if (backend) {
         notes = await step('polishing', async () => {
+          // 整えのモデルが使えず指定なしに切り替えたとき、以降（要点・校正の受け皿）も同じ切り替え先を使う
+          let activeBackend = backend;
           const inputs = result.sections.map((s) => ({ id: s.id, heading: s.heading, text: s.texts.join('') }));
           // 本文と呼び出し先が前と同じなら、保存しておいた結果を使う（§13.5b）
           const cacheSettings = {
@@ -501,11 +503,23 @@ export class Pipeline {
             let checkErrors: string[] = [];
             if (todo.length > 0) {
               if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
-              const result = await polish(todo, backend, llmSettings, this.log);
-              for (const [id, out] of result.results) polished.set(id, out);
-              errors = result.errors;
+              let result = await polish(todo, activeBackend, llmSettings, this.log);
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
+              // 整えのモデルが使えない（プランにない等。設定画面で選べるようになったぶん起きやすい）ときは、
+              // 指定なし（呼び出し先の既定のモデル）で 1 度だけやり直す。文字起こしのままのノートに落とさない（2026-10-01）
+              if (llmSettings.model && result.results.size === 0 && result.errors.some(isModelUnavailable)) {
+                const fallback = createBackend({ ...llmSettings, model: '' });
+                if (fallback) {
+                  this.log(`整えのモデル（${activeBackend.name}）が使えないようです: ${result.errors.find(isModelUnavailable)}。${fallback.name}（指定なし）でやり直します`);
+                  activeBackend = fallback;
+                  result = await polish(todo, activeBackend, llmSettings, this.log);
+                  if (signal.aborted) throw new Error('cancelled');
+                  if (notesStopped()) throw new Error('notes stopped');
+                }
+              }
+              for (const [id, out] of result.results) polished.set(id, out);
+              errors = result.errors;
               // 校正（任意、§13.5）: 新しく整えた節だけを原文と突き合わせ、誤変換を直す。組み替えで使い回した節は前回すでに校正済み
               const checkBackend = this.config.llmCheckModel ? createBackend({ ...llmSettings, model: this.config.llmCheckModel }) : null;
               const checkInputs = checkBackend
@@ -516,7 +530,7 @@ export class Pipeline {
                 : [];
               if (checkBackend && checkInputs.length > 0) {
                 // 校正モデルが使えない（プランにない等）ときは、本文と同じモデルで校正し直す（未校正のまま完成させない）
-                const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? backend : null, llmSettings, this.log);
+                const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? activeBackend : null, llmSettings, this.log);
                 if (signal.aborted) throw new Error('cancelled');
                 if (notesStopped()) throw new Error('notes stopped');
                 // 校正の失敗は polish の errors に混ぜない（2026-10-01 のレビュー）: 本文は揃っていて直しが入らないだけなので、
@@ -544,7 +558,7 @@ export class Pipeline {
             } else {
               // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
               const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
-              const { outline: made, error: outlineError } = await outline(outlineInput, backend, llmSettings, this.log);
+              const { outline: made, error: outlineError } = await outline(outlineInput, activeBackend, llmSettings, this.log);
               if (signal.aborted) throw new Error('cancelled');
               if (notesStopped()) throw new Error('notes stopped');
               topics = made;
@@ -553,7 +567,7 @@ export class Pipeline {
             await writeNotesCache(dir, {
               key,
               generatedAt: now(),
-              backend: backend.name,
+              backend: activeBackend.name,
               settings: cacheSettings,
               inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],

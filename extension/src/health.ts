@@ -37,8 +37,44 @@ export type Health = {
   model?: string;
   outDir?: string;
   llm?: string;
+  /** ノート作成のモデル（api 5 から。設定画面の「ノート作成のモデル」用） */
+  llmModel?: string;
+  llmCheckModel?: string;
   processing?: number;
 };
+
+/** GET/POST /settings の返事（api 5 から。§15.2） */
+export type LlmSettingsInfo = {
+  llm?: string;
+  llmModel?: string;
+  llmCheckModel?: string;
+  /** 設定画面で変えた値が効いているか（false なら起動時の設定のまま） */
+  overridden?: boolean;
+};
+
+export async function fetchLlmSettings(server: Pick<Config['server'], 'port' | 'token'>): Promise<LlmSettingsInfo> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/settings`, { headers: authHeaders(server), signal: AbortSignal.timeout(3000) });
+  const body: unknown = await res.json().catch(() => undefined);
+  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
+  if (!res.ok || !body.ok) throw new Error(`HTTP ${res.status}${body.error?.message ? `: ${body.error.message}` : ''}`);
+  return body as LlmSettingsInfo;
+}
+
+export async function saveLlmSettings(
+  server: Pick<Config['server'], 'port' | 'token'>,
+  update: { llmModel?: string; llmCheckModel?: string; reset?: boolean },
+): Promise<LlmSettingsInfo> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/settings`, {
+    method: 'POST',
+    headers: { ...authHeaders(server), 'content-type': 'application/json' },
+    body: JSON.stringify(update),
+    signal: AbortSignal.timeout(3000),
+  });
+  const body: unknown = await res.json().catch(() => undefined);
+  if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
+  if (!res.ok || !body.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+  return body as LlmSettingsInfo;
+}
 
 /**
  * ポートを LecScribe でないアプリが使っているときの文（SPEC §12.1d。サーバーはログにアプリの名前付きで書く）。

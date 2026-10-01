@@ -24,6 +24,12 @@
       code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
       p { margin: 0; color: var(--muted); font-size: 13px; }
       code#notesCmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; }
+      .choice { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+      .choice input { margin: 0; }
+      .choice b { font-weight: 600; }
+      #customModels { gap: 12px; }
+      #customModels label { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); }
+      #customModels input { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 160px; }
     </style>
   </head>
   <body>
@@ -56,6 +62,26 @@
         </p>
         <div class="row">
           <span id="notesStatus" class="result">確認中…</span>
+        </div>
+        <div id="modelBox" hidden>
+          <p>
+            ノート作成に使うモデル。切り替えたあと、各講義の最初の「やり直す」ではノートが作り直しになります
+            （文字起こしは再利用します）。
+          </p>
+          <label class="choice"><input type="radio" name="modelPreset" value="recommended" /><span><b>推奨</b>: gpt-5.6-terraで整え、gpt-6-astraが誤変換を校正（使用量は高品質の約半分）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="quality" /><span><b>高品質</b>: すべてgpt-6-astra（使用量は多め）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="economy" /><span><b>節約</b>: gpt-5.6-terraのみ（校正なし。使用量は最小）</span></label>
+          <label class="choice"><input type="radio" name="modelPreset" value="custom" /><span><b>カスタム</b>（モデル名を直接入れる）</span></label>
+          <div id="customModels" class="row" hidden>
+            <label>整え・要点 <input id="modelMain" placeholder="空なら既定のモデル" /></label>
+            <label>校正 <input id="modelCheck" placeholder="空なら校正なし" /></label>
+          </div>
+          <div class="row">
+            <button id="saveModels" class="primary" type="button">保存</button>
+            <button id="resetModels" class="secondary" type="button" hidden>サーバー起動時の設定に戻す</button>
+            <span id="modelResult" class="result"></span>
+          </div>
+          <p>使えるモデル名はChatGPTのプランによって違います。使えないモデルを保存しても、処理のときに自動で既定のモデルに切り替わります。</p>
         </div>
         <div id="notesHint" hidden>
           <p>「ターミナル」で次の 1 行を実行すると有効になります（Codex CLI を入れて ChatGPT アカウントでログインします。API キーは要りません）。</p>

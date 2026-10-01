@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { APP_DIR, ForeignServerError, UPDATE_COMMAND, fetchHealth, outdatedMessage, serverOutdated, visionLine, type Health } from '../../src/health';
+import { APP_DIR, ForeignServerError, UPDATE_COMMAND, fetchHealth, fetchLlmSettings, outdatedMessage, saveLlmSettings, serverOutdated, visionLine, type Health } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続。ポートとトークンの欄は置かない（2026-09-18） */
@@ -10,6 +10,12 @@ const pairStatus = $('pairStatus');
 const unpairBtn = $<HTMLButtonElement>('unpair');
 const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
+const modelBox = $('modelBox');
+const modelResult = $('modelResult');
+const modelMain = $<HTMLInputElement>('modelMain');
+const modelCheck = $<HTMLInputElement>('modelCheck');
+const customModels = $('customModels');
+const resetModelsBtn = $<HTMLButtonElement>('resetModels');
 const notesCmd = $('notesCmd');
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
 notesCmd.textContent = NOTES_COMMAND;
@@ -64,10 +70,16 @@ function renderNotes(health: Health | null) {
 const initialCheck = ++notesGeneration;
 void fetchHealth(config.server)
   .then((body) => {
-    if (initialCheck === notesGeneration) renderNotes(body);
+    if (initialCheck === notesGeneration) {
+      renderNotes(body);
+      void renderModels(body);
+    }
   })
   .catch(() => {
-    if (initialCheck === notesGeneration) renderNotes(null);
+    if (initialCheck === notesGeneration) {
+      renderNotes(null);
+      void renderModels(null);
+    }
   });
 
 /** 「このMacと接続」: サーバーが Mac にダイアログを出し、「許可」で承認される */
@@ -118,6 +130,7 @@ $('test').addEventListener('click', async () => {
     if (body.model) lines.push(`モデル: ${body.model} / 出力先: ${body.outDir ?? ''}`);
     notesGeneration++; // 進行中の初回チェックの結果で上書きされないようにする
     renderNotes(body);
+    void renderModels(body);
     // サーバー側の承認状態を設定にも反映する（trusted.json を消したときなど）
     if (body.paired !== undefined && body.paired !== config.server.paired) {
       config = { ...config, server: { ...config.server, paired: body.paired } };
@@ -129,5 +142,93 @@ $('test').addEventListener('click', async () => {
     // ほかのアプリがポートを使っているなら、「サーバーを起動してください」は当てはまらない（§12.1d）
     if (e instanceof ForeignServerError) show(e.message, false);
     else show(`接続できません（127.0.0.1:${server.port}）。サーバーを起動してください。\n${e instanceof Error ? e.message : String(e)}`, false);
+  }
+});
+
+
+/**
+ * ノート作成のモデルの選択（SPEC §15.2、api 5。2026-10-01）。
+ * codex のときだけ出す（プリセットのモデル名が ChatGPT のプランのもののため。openai / ollama は従来どおり環境変数で指定する）。
+ * 保存はサーバーの settings.json に入り、再起動なしで次のノート作成から効く
+ */
+const MODEL_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }> = {
+  recommended: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' },
+  quality: { llmModel: 'gpt-6-astra', llmCheckModel: '' },
+  economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: '' },
+};
+
+const presetRadios = () => [...document.querySelectorAll<HTMLInputElement>('input[name="modelPreset"]')];
+
+function presetOf(llmModel: string, llmCheckModel: string): string {
+  for (const [key, v] of Object.entries(MODEL_PRESETS)) {
+    if (v.llmModel === llmModel && v.llmCheckModel === llmCheckModel) return key;
+  }
+  return 'custom';
+}
+
+function selectedPreset(): string {
+  return presetRadios().find((r) => r.checked)?.value ?? 'custom';
+}
+
+function renderModelChoice(llmModel: string, llmCheckModel: string, overridden: boolean) {
+  const preset = presetOf(llmModel, llmCheckModel);
+  for (const r of presetRadios()) r.checked = r.value === preset;
+  modelMain.value = llmModel;
+  modelCheck.value = llmCheckModel;
+  customModels.hidden = preset !== 'custom';
+  resetModelsBtn.hidden = !overridden;
+}
+
+/** モデルの選択を出す。古いサーバー（api 5 未満）・codex 以外・未承認のときは出さない */
+async function renderModels(health: Health | null) {
+  const usable = !!health && (health.api ?? 0) >= 5 && health.llm === 'codex' && health.authorized === true;
+  modelBox.hidden = !usable;
+  if (!usable) return;
+  try {
+    const current = await fetchLlmSettings(config.server);
+    renderModelChoice(current.llmModel ?? '', current.llmCheckModel ?? '', current.overridden === true);
+    modelResult.textContent = '';
+    modelResult.className = 'result';
+  } catch {
+    modelBox.hidden = true;
+  }
+}
+
+for (const r of presetRadios()) {
+  r.addEventListener('change', () => {
+    const preset = selectedPreset();
+    customModels.hidden = preset !== 'custom';
+    const values = MODEL_PRESETS[preset];
+    if (values) {
+      modelMain.value = values.llmModel;
+      modelCheck.value = values.llmCheckModel;
+    }
+  });
+}
+
+function showModelResult(text: string, ok: boolean) {
+  modelResult.textContent = text;
+  modelResult.className = `result${ok ? ' ok' : ' ng'}`;
+}
+
+$('saveModels').addEventListener('click', async () => {
+  const preset = selectedPreset();
+  const values = MODEL_PRESETS[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
+  try {
+    const saved = await saveLlmSettings(config.server, values);
+    renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
+    showModelResult('保存しました。次のノート作成（または「やり直す」）から使われます。', true);
+  } catch (e) {
+    showModelResult(e instanceof Error ? e.message : String(e), false);
+  }
+});
+
+resetModelsBtn.addEventListener('click', async () => {
+  try {
+    const saved = await saveLlmSettings(config.server, { reset: true });
+    renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
+    showModelResult('サーバー起動時の設定に戻しました。', true);
+  } catch (e) {
+    showModelResult(e instanceof Error ? e.message : String(e), false);
   }
 });
