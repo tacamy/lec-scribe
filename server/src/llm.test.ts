@@ -9,8 +9,10 @@ import {
   buildOutlinePrompt,
   buildPrompt,
   check,
+  checkWithFallback,
   codexArgs,
   createBackend,
+  isModelUnavailable,
   outline,
   parseCodexDefaults,
   parseCorrections,
@@ -285,5 +287,62 @@ describe('校正（誤変換の修正、2026-09-30）', () => {
     expect(prompts).toHaveLength(2);
     expect(corrections).toEqual([{ id: 'slide_110', wrong: 'きっちりさ', right: 'キッチュさ' }]);
     expect(errors).toEqual(['check 2/2: rate limited']);
+  });
+});
+
+describe('校正モデルが使えないときの受け皿（2026-10-01）', () => {
+  const one = [{ id: 's1', original: '可愛さ、きっちゅさを出している', polished: 'かわいさ、きっちりさを出しています。' }];
+  const codexMsg = `check 1/1: codex exec failed (1): {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."}}`;
+
+  it('isModelUnavailable は「モデルが使えない」失敗だけに当たる', () => {
+    expect(isModelUnavailable(codexMsg)).toBe(true);
+    expect(isModelUnavailable('The model `gpt-x` does not exist or you do not have access to it.')).toBe(true);
+    expect(isModelUnavailable("model 'qwen3:x' not found, try pulling it first")).toBe(true);
+    expect(isModelUnavailable('check 1/1: rate limited')).toBe(false);
+    expect(isModelUnavailable('cancelled')).toBe(false);
+    expect(isModelUnavailable('schema.json: no such file')).toBe(false);
+  });
+
+  it('使えないモデルの失敗なら本文のモデルで 1 度だけやり直し、エラーは残さない', async () => {
+    const bad = { name: 'codex (gpt-6-luna)', async complete(): Promise<string> { throw new Error("The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."); } };
+    const good = {
+      name: 'codex (gpt-5.6-terra)',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]);
+        return JSON.stringify({ corrections: ids.map((id) => ({ id, wrong: 'きっちりさ', right: 'キッチュさ' })) });
+      },
+    };
+    const logs: string[] = [];
+    const r = await checkWithFallback(one, bad, good, settings, (m) => logs.push(m));
+    expect(r.corrections).toEqual([{ id: 's1', wrong: 'きっちりさ', right: 'キッチュさ' }]);
+    expect(r.errors).toEqual([]);
+    expect(logs.join('\n')).toContain('codex (gpt-6-luna)）が使えないようです');
+  });
+
+  it('一時的な失敗（枠切れなど）ではやり直さず、fallback がなければそのまま返す', async () => {
+    const flaky = { name: 'codex (gpt-6-astra)', async complete(): Promise<string> { throw new Error('rate limited'); } };
+    let fallbackCalls = 0;
+    const spy = { name: 'spy', async complete() { fallbackCalls++; return JSON.stringify({ corrections: [] }); } };
+    const r = await checkWithFallback(one, flaky, spy, settings);
+    expect(fallbackCalls).toBe(0);
+    expect(r.errors).toEqual(['check 1/1: rate limited']);
+    const bad = { name: 'codex (gpt-6-luna)', async complete(): Promise<string> { throw new Error("The 'x' model is not supported when using Codex with a ChatGPT account."); } };
+    const r2 = await checkWithFallback(one, bad, null, settings);
+    expect(r2.errors).toHaveLength(1);
+  });
+
+  it('校正モデルで一部でも直しが取れたときはやり直さない', async () => {
+    let calls = 0;
+    const half = {
+      name: 'codex (gpt-6-astra)',
+      async complete() {
+        calls++;
+        return JSON.stringify({ corrections: [{ id: 's1', wrong: 'きっちりさ', right: 'キッチュさ' }] });
+      },
+    };
+    const spy = { name: 'spy', async complete() { throw new Error('should not be called'); } };
+    const r = await checkWithFallback(one, half, spy, settings);
+    expect(calls).toBe(1);
+    expect(r.corrections).toHaveLength(1);
   });
 });

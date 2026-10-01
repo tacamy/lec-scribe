@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
-import { applyCorrections, check, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
+import { applyCorrections, checkWithFallback, createBackend, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
@@ -513,7 +513,8 @@ export class Pipeline {
                   })
                 : [];
               if (checkBackend && checkInputs.length > 0) {
-                const checked = await check(checkInputs, checkBackend, llmSettings, this.log);
+                // 校正モデルが使えない（プランにない等）ときは、本文と同じモデルで校正し直す（未校正のまま完成させない）
+                const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? backend : null, llmSettings, this.log);
                 if (signal.aborted) throw new Error('cancelled');
                 if (notesStopped()) throw new Error('notes stopped');
                 errors.push(...checked.errors);

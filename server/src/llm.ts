@@ -532,3 +532,32 @@ export async function check(
   }
   return { corrections, errors };
 }
+
+/**
+ * 失敗の文面が「モデルが使えない」（プランにない、存在しない、アクセス権がない）を指しているか。
+ * codex (ChatGPT): "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."
+ * OpenAI API: "The model `x` does not exist or you do not have access to it."
+ * Ollama: "model 'x' not found, try pulling it first"
+ */
+export function isModelUnavailable(message: string): boolean {
+  return /model/i.test(message) && /(not supported|not found|does not exist|do not have access|invalid model|unknown model)/i.test(message);
+}
+
+/**
+ * 校正を呼び、「指定したモデルが使えない」失敗だけだったときは、fallback（本文を整えたのと同じモデル。直前の polish で
+ * 使えると分かっている）で 1 度だけやり直す（2026-10-01）。校正モデルの指定間違い・プランの違いで未校正のまま完成させない。
+ * 使えなかったことはログに残すが、errors には残さない（残すとキャッシュが使い回されず、設定を直すまで毎回全部作り直しになる）。
+ * 一時的な失敗（枠切れなど）ではやり直さない（同じ枠を別のモデルで二重に使わない）
+ */
+export async function checkWithFallback(
+  sections: readonly CheckInput[],
+  backend: LlmBackend,
+  fallback: LlmBackend | null,
+  settings: LlmSettings,
+  log: (message: string) => void = () => undefined,
+): Promise<{ corrections: Correction[]; errors: string[] }> {
+  const first = await check(sections, backend, settings, log);
+  if (!fallback || first.corrections.length > 0 || first.errors.length === 0 || !first.errors.every(isModelUnavailable)) return first;
+  log(`校正のモデル（${backend.name}）が使えないようです: ${first.errors[0]}。${fallback.name} で校正し直します`);
+  return await check(sections, fallback, settings, log);
+}
