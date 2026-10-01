@@ -70,8 +70,37 @@ describe('dropWindowArtifacts', () => {
     const { kept, dropped } = dropWindowArtifacts(segments);
     expect(kept.map((s) => s.text)).toEqual(['アイデアの基礎の科目を担当します']);
     expect(dropped.map((d) => d.reason)).toEqual(['symbol', 'symbol']);
+    // 発話が 1 つもない録音（音楽だけの動画など）は、全部を失敗にしないため何も捨てない
+    const musicOnly = dropWindowArtifacts([{ start: 0, end: 5, text: '♪' }, { start: 5, end: 9, text: '🎵' }]);
+    expect(musicOnly.kept).toHaveLength(2);
+    expect(musicOnly.dropped).toHaveLength(0);
   });
 
+  it('「音声の終わり」は発話の終わりで数える（エンディングの音楽が長くても、本当に最後に言った締めの言葉を残す）', () => {
+    const segments = [
+      { start: 0, end: 95, text: '本編の話をしています' },
+      // 直前の区間と密着していると「窓の末尾の幻覚」の既存ルールに当たるので、本物らしく VAD の間を空ける
+      { start: 95.5, end: 99, text: 'ご視聴ありがとうございました' },
+      // 2 分続くエンディングの音楽。ここまで「音声の終わり」に数えると、上の締めの言葉が「話の途中」扱いで捨てられる
+      { start: 100, end: 160, text: '♪' },
+      { start: 160, end: 220, text: '♪〜' },
+    ];
+    const { kept } = dropWindowArtifacts(segments);
+    expect(kept.map((s) => s.text)).toEqual(['本編の話をしています', 'ご視聴ありがとうございました']);
+  });
+
+  it('記号区間は重なりの証拠には数える（音楽の帯としか重なっていない幻覚の窓も落とす）', () => {
+    const segments = [
+      { start: 0, end: 10, text: '本編の話をしています' },
+      // 30 秒の窓いっぱいの幻覚。重なるのは音楽の帯だけ
+      { start: 100, end: 130, text: 'この動画が役に立ったと思った方は高評価をお願いします' },
+      { start: 100, end: 115, text: '♪' },
+      { start: 115, end: 130, text: '♪〜' },
+    ];
+    const { kept, dropped } = dropWindowArtifacts(segments);
+    expect(kept.map((s) => s.text)).toEqual(['本編の話をしています']);
+    expect(dropped.map((d) => d.reason).sort()).toEqual(['overlap', 'symbol', 'symbol']);
+  });
 
   it('drops 30-second window segments that overlap real speech, and long stock phrases', () => {
     // 実例（1章）: 59.6〜89.6 の決まり文句が 61〜86 秒の本物の発話と重なっていた

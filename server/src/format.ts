@@ -6,6 +6,11 @@ export type Segment = {
 };
 
 /** 00:00:00,000（SRT）/ 00:00:00.000（VTT） */
+/** 発話といえる文字（文字・数字）を 1 つでも含むか。記号だけ（動画の最後の音楽の「♪」など）は発話ではない（2026-10-01） */
+export function hasSpeechText(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
 export function formatTimestamp(seconds: number, separator: ',' | '.' = ','): string {
   // 先にミリ秒に丸める（秒とミリ秒を別々に丸めると 59.9996 が 00:00:59,000 になる）
   const totalMs = Math.round(Math.max(0, seconds) * 1000);

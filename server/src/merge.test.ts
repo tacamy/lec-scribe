@@ -158,6 +158,11 @@ describe('buildNotesMarkdown', () => {
     const quiet = buildNotesMarkdown({ sections: symbolOnly, polished: new Map([['slide_001', { text: '' }]]) });
     expect(quiet).not.toContain('整えられなかったため');
     expect(quiet).not.toContain('♪');
+    // 発話と記号が混ざった節では、発話だけを載せて記号は除く
+    const mixed = [{ ...sections[0]!, texts: ['一枚目の話。', '♪'] }];
+    const kept = buildNotesMarkdown({ sections: mixed, polished: new Map([['slide_001', { text: '' }]]) });
+    expect(kept).toContain('（整えられなかったため文字起こしのまま）\n\n一枚目の話。');
+    expect(kept).not.toContain('♪');
   });
 
   it('leaves a silent slide as the image alone', () => {
