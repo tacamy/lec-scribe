@@ -270,6 +270,12 @@ describe('校正（誤変換の修正、2026-09-30）', () => {
     expect(applied).toHaveLength(3);
     // 知らない id は本文に触らない
     expect(applyCorrections(new Map([['a', 'x']]), [{ id: 'b', wrong: 'x', right: 'y' }]).applied).toEqual([]);
+    // 置き換える場所は直す前の本文で決める: 先に当てた直しが挿し込んだ文字列（「型抜きして」の「して」）には当たらない
+    const guarded = applyCorrections(new Map([['s', '傾けて印字します。整えして完了。']]), [
+      { id: 's', wrong: '傾けて印字', right: '型抜きして印字' },
+      { id: 's', wrong: 'して', right: 'やって' },
+    ]);
+    expect(guarded.texts.get('s')).toBe('型抜きして印字します。整えやって完了。');
   });
 
   it('check は原文＋整え済みの文字数でまとめて呼び、失敗したバッチだけ諦める', async () => {
@@ -298,6 +304,8 @@ describe('校正モデルが使えないときの受け皿（2026-10-01）', () 
     expect(isModelUnavailable(codexMsg)).toBe(true);
     expect(isModelUnavailable('The model `gpt-x` does not exist or you do not have access to it.')).toBe(true);
     expect(isModelUnavailable("model 'qwen3:x' not found, try pulling it first")).toBe(true);
+    expect(isModelUnavailable('The model is not available for your plan')).toBe(true);
+    expect(isModelUnavailable('The model gpt-x has been deprecated')).toBe(true);
     expect(isModelUnavailable('check 1/1: rate limited')).toBe(false);
     expect(isModelUnavailable('cancelled')).toBe(false);
     expect(isModelUnavailable('schema.json: no such file')).toBe(false);
@@ -317,6 +325,33 @@ describe('校正モデルが使えないときの受け皿（2026-10-01）', () 
     expect(r.corrections).toEqual([{ id: 's1', wrong: 'きっちりさ', right: 'キッチュさ' }]);
     expect(r.errors).toEqual([]);
     expect(logs.join('\n')).toContain('codex (gpt-6-luna)）が使えないようです');
+  });
+
+  it('モデル不可と一時的な失敗が混ざっても（バッチが多い講義）、1 つでもモデル不可ならやり直す', async () => {
+    const two = [
+      { id: 's1', original: '原文その 1 です', polished: '整えた本文その 1 です。' },
+      { id: 's2', original: '原文その 2 です', polished: '整えた本文その 2 です。' },
+    ];
+    let call = 0;
+    const mixed = {
+      name: 'codex (gpt-6-luna)',
+      async complete(): Promise<string> {
+        call++;
+        throw new Error(call === 1 ? "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account." : 'rate limited');
+      },
+    };
+    const good = {
+      name: 'codex (gpt-5.6-terra)',
+      async complete(prompt: string) {
+        const ids = [...prompt.matchAll(/<<<SECTION id="([^"]+)"/g)].map((m) => m[1]);
+        return JSON.stringify({ corrections: ids.map((id) => ({ id, wrong: '整えた', right: '校正済みの' })) });
+      },
+    };
+    // charsPerCall 20 なので 1 節ずつの 2 バッチになり、1 つ目がモデル不可・2 つ目が枠切れ
+    const r = await checkWithFallback(two, mixed, good, settings);
+    expect(call).toBe(2);
+    expect(r.corrections).toHaveLength(2);
+    expect(r.errors).toEqual([]);
   });
 
   it('一時的な失敗（枠切れなど）ではやり直さず、fallback がなければそのまま返す', async () => {

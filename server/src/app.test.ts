@@ -46,7 +46,10 @@ beforeAll(async () => {
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
   const codex = await writeStub(
     'codex',
-    'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
+    // --model check-fail のときは一時的な失敗のふりをする（校正の失敗の試験用）
+    'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; done; '
+      + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
+      + 'if printf \'%s\' "$prompt" | grep -q "原文"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); printf \'{"corrections":[{"id":"%s","wrong":"整えた","right":"校正済みの"}]}\' "$first" > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
       + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s"}]}\' "$first" > "$out"; exit 0; fi; '
       + 'ids=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | sed \'s/id="//; s/"//\'); body=""; for id in $ids; do body="$body{\\"id\\":\\"$id\\",\\"text\\":\\"$id の整えた本文。\\"},"; done; printf \'{"sections":[%s]}\' "${body%,}" > "$out"',
@@ -66,7 +69,7 @@ beforeAll(async () => {
     keepWav: true,
     llm: 'codex',
     llmModel: '',
-  llmCheckModel: '',
+    llmCheckModel: '',
     codexBin: codex,
     openaiApiKey: '',
     ollamaUrl: 'http://127.0.0.1:1',
@@ -294,6 +297,80 @@ describe('local server', () => {
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('最初の区間');
     } finally {
       await new Promise<void>((resolve) => limited.close(() => resolve()));
+    }
+  });
+
+  it('校正モデルを設定すると誤変換が直って notes.md に入り、直しがキャッシュに残り、2 回目は使い回す', async () => {
+    const { server } = createApp({ ...config, llmCheckModel: 'check-model', outDir: path.join(tmp, 'out-check') }, TOKEN);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const checkBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-150000-chk1';
+      const wait = async () => {
+        let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string; notesReused?: boolean } } = { stage: 'queued' };
+        for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          status = (await (await fetch(`${checkBase}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+        }
+        return status;
+      };
+      await fetch(`${checkBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'check' }) });
+      await fetch(`${checkBase}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const status = await wait();
+      expect(status.stage).toBe('done');
+      expect(status.result).toMatchObject({ notes: true });
+      expect(status.result?.notesError).toBeUndefined();
+      // スタブの校正は最初の節の「整えた」→「校正済みの」を返す。notes.md に反映され、キャッシュに記録される
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
+      const cache = JSON.parse(await readFile(path.join(status.outputDir!, '.lecscribe', 'notes-cache.json'), 'utf8')) as {
+        settings?: { checkModel?: string };
+        corrections?: Array<{ wrong: string; right: string }>;
+        errors?: string[];
+      };
+      expect(cache.settings?.checkModel).toBe('check-model');
+      expect(cache.corrections).toEqual([expect.objectContaining({ wrong: '整えた', right: '校正済みの' })]);
+      // 同じ入力でもう一度 finalize すると、校正込みの鍵のまま使い回す
+      await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const again = await wait();
+      expect(again.result).toMatchObject({ notes: true, notesReused: true });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('校正が一時的に失敗しても notesError にならず（partial 表示が出ない）、キャッシュは使い回せる', async () => {
+    const { server } = createApp({ ...config, llmCheckModel: 'check-fail', outDir: path.join(tmp, 'out-check-fail') }, TOKEN);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const checkBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20260920-151000-chk2';
+      const wait = async () => {
+        let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string; notesReused?: boolean } } = { stage: 'queued' };
+        for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          status = (await (await fetch(`${checkBase}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+        }
+        return status;
+      };
+      await fetch(`${checkBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'check fail' }) });
+      await fetch(`${checkBase}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const status = await wait();
+      expect(status.stage).toBe('done');
+      // 本文は揃っている（未校正なだけ）ので、完成扱いで notesError は付かない
+      expect(status.result).toMatchObject({ notes: true });
+      expect(status.result?.notesError).toBeUndefined();
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の整えた本文。');
+      const cache = JSON.parse(await readFile(path.join(status.outputDir!, '.lecscribe', 'notes-cache.json'), 'utf8')) as { errors?: string[]; checkErrors?: string[] };
+      expect(cache.errors).toBeUndefined();
+      expect(cache.checkErrors?.join(' ')).toContain('rate limited');
+      // 校正だけの失敗はキャッシュの使い回しを妨げない
+      await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const again = await wait();
+      expect(again.result).toMatchObject({ notes: true, notesReused: true });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

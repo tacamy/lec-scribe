@@ -497,6 +497,8 @@ export class Pipeline {
             errors = [];
             /** 校正で当てた直し（キャッシュに記録する） */
             let corrections: Correction[] = [];
+            /** 校正だけの失敗。本文は揃っているので、errors（notesError とキャッシュの使い回しの判断）には混ぜない */
+            let checkErrors: string[] = [];
             if (todo.length > 0) {
               if (todo.length < inputs.length) this.log(`前回のノートを組み替えて使い、${todo.length} 節だけ作り直します`);
               const result = await polish(todo, backend, llmSettings, this.log);
@@ -517,8 +519,11 @@ export class Pipeline {
                 const checked = await checkWithFallback(checkInputs, checkBackend, this.config.llmCheckModel !== llmSettings.model ? backend : null, llmSettings, this.log);
                 if (signal.aborted) throw new Error('cancelled');
                 if (notesStopped()) throw new Error('notes stopped');
-                errors.push(...checked.errors);
-                const applied = applyCorrections(new Map(checkInputs.map((s) => [s.id, polished.get(s.id)!.text])), checked.corrections);
+                // 校正の失敗は polish の errors に混ぜない（2026-10-01 のレビュー）: 本文は揃っていて直しが入らないだけなので、
+                // 混ぜると拡張が「一部の節だけ文字起こしのまま」と誤って表示し、キャッシュも使い回されなくなる
+                checkErrors = checked.errors;
+                if (checkErrors.length > 0) this.log(`校正の一部が失敗しました（本文は未校正のまま使います）: ${checkErrors.join(' / ')}`);
+                const applied = applyCorrections(new Map(checkInputs.map((s) => [s.id, s.polished])), checked.corrections);
                 for (const [id, text] of applied.texts) polished.set(id, { id, text });
                 corrections = applied.applied;
                 if (checked.corrections.length > 0) {
@@ -553,6 +558,7 @@ export class Pipeline {
               inputs: inputs.map((s) => ({ id: s.id, text: s.text })),
               polished: [...polished.values()],
               ...(corrections.length > 0 ? { corrections } : {}),
+              ...(checkErrors.length > 0 ? { checkErrors } : {}),
               ...(topics ? { outline: topics } : {}),
               ...(errors.length > 0 ? { errors } : {}),
             });

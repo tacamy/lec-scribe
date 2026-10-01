@@ -94,6 +94,7 @@ console.log(`  model     : ${config.model} (${config.language})`);
 console.log(
   `  llm       : ${config.llm === 'none' ? 'なし（notes.md は文字起こしのまま）' : config.llm + (config.llmModel ? ` (${config.llmModel})` : '') + (config.llmCheckModel ? ` ＋校正 (${config.llmCheckModel})` : '')}`,
 );
+if (config.llm === 'none' && config.llmCheckModel) console.log('  注意      : --llm-check-model は --llm が none のため使われません');
 console.log(`  trusted   : ${trusted.entries.length} 件の接続を承認済み（${config.trustedFile}）`);
 console.log(`  token     : ${config.tokenFile}${created ? '（新規作成）' : ''}`);
 console.log('');
