@@ -6,7 +6,7 @@ import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
@@ -476,14 +476,15 @@ export class Pipeline {
             ),
           );
           // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
-          // 割り当ては 1 回だけ（mapped の slide をそのまま使う）。区間の数はもとの区間で数える
+          // 割り当ては 1 回だけ。節は mapped の slide のまま束ね、lecture.md・notes.md で同じ節を使う。区間の数はもとの区間で数える
+          const sections = groupAssigned(mapped, slides);
           const lectureInput = {
             title: session?.title,
             url: session?.url,
             startedAt: session?.startedAt,
             segments: mapped,
             slides: [...slides],
-            assigned: true,
+            sections,
             segmentCount: segsWithVideoTime.length,
           };
           await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
@@ -493,7 +494,7 @@ export class Pipeline {
           });
           return {
             mapped,
-            sections: groupSections(mapped, slides, undefined, true),
+            sections,
             rawNotes,
             hiddenSlides: allSlides.length > slides.length ? allSlides.length - slides.length : undefined,
           };

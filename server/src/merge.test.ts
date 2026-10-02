@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupAssigned, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -150,15 +150,50 @@ describe('assignSlides', () => {
     expect(whole.every((s) => s.slide === 'slide_b.png')).toBe(true);
   });
 
+  // 前置き 12 文字＋続き 36 文字の 1 区間（15〜45 秒）。前置きは 22.5 秒に終わる
+  const cueSeg = () => [{ start: 15, end: 45, videoStart: 15, videoEnd: 45, text: '次に左の図を見てくださいこの写真では線の太さがかなり違っていて右の方が太くなっているのがわかります' }];
+  const at = (name: string, videoTime: number): SlideEntry => ({ filename: name, videoTime, reason: 'manual' });
+
+  it('前置きは、すぐ次の画像に切り替わる直前に終わるなら次の画像に寄せる', () => {
+    const out = assignSlides(cueSeg(), [at('z.png', 0), at('b.png', 24)]);
+    expect(out.map((s) => s.slide)).toEqual(['b.png']);
+  });
+
   it('前置きは 1 枚先の画像までしか寄せない（スライドを飛ばさない）', () => {
-    const zab: SlideEntry[] = [
-      { filename: 'slide_z.png', videoTime: 0, reason: 'manual' },
-      { filename: 'slide_a.png', videoTime: 10, reason: 'manual' },
-      { filename: 'slide_b.png', videoTime: 40, reason: 'manual' },
-    ];
-    const out = assignSlides([{ start: 5, end: 60, videoStart: 5, videoEnd: 60, text: 'まえの話になりますでは左の図を見てくださいここが大事なところですこの線の太さをよく見ておいてくださいこの写真は別の例になります' }], zab);
-    const a = out.filter((s) => s.slide === 'slide_a.png').map((s) => s.text).join('');
-    expect(a).toContain('では左の図を見てください');
+    // 続きの文は b に付くが、前置き（z に付く）から見て b は 2 枚先（a を飛ばす）なので寄せない
+    const out = assignSlides(cueSeg(), [at('z.png', 0), at('a.png', 20), at('b.png', 26)]);
+    expect(out.map((s) => [s.slide, s.text.slice(0, 2)])).toEqual([
+      ['z.png', '次に'],
+      ['b.png', 'この'],
+    ]);
+  });
+
+  it('前の画像の間に長く話した文は、前置きの語で始まっても次の画像に寄せない', () => {
+    // 「では…」の文は 0〜37 秒（36 秒）。前の画像に長く映っていた
+    const out = assignSlides(
+      [{ start: 0, end: 60, videoStart: 0, videoEnd: 60, text: 'ではこの図の左側にある線の細かいところを順番に説明していきますのでよく見ておいてほしいと思いますこの線の太さと隣の写真の線の太さを比べると違いがわかるはず' }],
+      [at('a.png', 0), at('b.png', 40)],
+    );
+    expect(out.map((s) => [s.slide, s.text.slice(0, 2)])).toEqual([
+      ['a.png', 'では'],
+      ['b.png', 'この'],
+    ]);
+  });
+
+  it('前の区間が「今度は」で終わり、次の区間が「ですね」で始まるときは、言いよどみとして切らない', () => {
+    const out = assignSlides(
+      [
+        { start: 10, end: 24, videoStart: 10, videoEnd: 24, text: '前の図の説明はここまでにして今度は' },
+        { start: 24, end: 50, videoStart: 24, videoEnd: 50, text: 'ですねこの参考になる図を見ていきたいと思いますがよく見てください' },
+      ],
+      [at('a.png', 0), at('b.png', 30)],
+    );
+    expect(out.map((s) => s.text)).not.toContain('ですね');
+  });
+
+  it('区間の途中で動画を巻き戻していたら（動画の時刻が逆）、分けない', () => {
+    const out = assignSlides([{ start: 0, end: 30, videoStart: 60, videoEnd: 20, text: 'ここまでになります次に新しい図の話をしていきますのでよく見てください' }], [at('a.png', 0), at('b.png', 40)]);
+    expect(out).toHaveLength(1);
   });
 
   it('「ですかね」で分けた文は、そこで文が切れたものとして割り当てる', () => {
@@ -189,7 +224,7 @@ describe('assignSlides', () => {
     const once = assignSlides([{ start: 5, end: 60, videoStart: 5, videoEnd: 60, text: 'まえの話になります次に新しい図を見てくださいここが大事ですこの写真の話をしますね今度は別のことをお話しします' }], zab);
     const twice = assignSlides(once, zab);
     expect(twice.map((s) => s.slide)).toEqual(once.map((s) => s.slide));
-    const sections = groupSections(once as MergedSegment[], zab, undefined, true);
+    const sections = groupAssigned(once as MergedSegment[], zab);
     expect(sections.map((s) => s.texts.join(''))).toEqual(['まえの話になります', ...['slide_a.png', 'slide_b.png'].map((f) => once.filter((s) => s.slide === f).map((s) => s.text).join(''))]);
   });
 
@@ -231,6 +266,30 @@ describe('innerSentenceEnds', () => {
     expect(show('これでいいですかどうか確かめます')).toEqual([]);
     // 句点のあとは「し」で始まっても切る（「しかし」など）
     expect(show('そうなります。しかし違います')).toEqual(['そうなります。']);
+  });
+
+  it('次の語の頭（よく・かなり・よろしい）を文末の「よ」「か」として取り込まない', () => {
+    const show = (t: string) => innerSentenceEnds(t).map((at) => t.slice(0, at));
+    expect(show('今ここに線がありますよく見てくださいこの線の太さが')).toEqual(['今ここに線があります', '今ここに線がありますよく見てください']);
+    expect(show('大事ですかなり重要')).toEqual(['大事です']);
+    expect(show('いいですよろしい')).toEqual(['いいです']);
+    // 文末の「ね」は空白をはさんでも取り込む
+    expect(show('こういう感じになるんです ね 次にこちらの図を')).toEqual(['こういう感じになるんです ね']);
+  });
+
+  it('「で」＋「す」で始まる語、普通体の「〜ます」、「くださいました」の途中では切らない', () => {
+    const show = (t: string) => innerSentenceEnds(t).map((at) => t.slice(0, at));
+    expect(show('これですぐわかるように')).toEqual([]);
+    expect(show('きれいな書体ですごくかっこいいですよね')).toEqual([]);
+    expect(show('手でする作業です')).toEqual([]);
+    expect(show('目を覚ます前に')).toEqual([]);
+    expect(show('教えてくださいましたこの図')).toEqual(['教えてくださいました']);
+  });
+
+  it('続く句点・感嘆符・三点リーダーは 1 つの終わりとして扱う（記号だけの部分を作らない）', () => {
+    const show = (t: string) => innerSentenceEnds(t).map((at) => t.slice(0, at));
+    expect(show('本当ですか？！次に行きます')).toEqual(['本当ですか？！']);
+    expect(show('そうなんです…。次に')).toEqual(['そうなんです…。']);
   });
 
   it('言いよどみの「ですね」（助詞の直後）では切らない', () => {
