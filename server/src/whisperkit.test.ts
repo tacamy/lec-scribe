@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
+import { dropWindowArtifacts, isStockPhraseOnly, normalizeReport, whisperkitArgs } from './whisperkit.ts';
 
 describe('normalizeReport', () => {
   it('reads { segments } and strips special tokens', () => {
@@ -76,17 +76,15 @@ describe('dropWindowArtifacts', () => {
     expect(musicOnly.dropped).toHaveLength(0);
   });
 
-  it('「音声の終わり」は発話の終わりで数える（エンディングの音楽が長くても、本当に最後に言った締めの言葉を残す）', () => {
+  it('決まり文句だけの区間は、最後に間を空けて出ても捨てる（本物の締めでもノートの中身は失われない）', () => {
     const segments = [
       { start: 0, end: 95, text: '本編の話をしています' },
-      // 直前の区間と密着していると「窓の末尾の幻覚」の既存ルールに当たるので、本物らしく VAD の間を空ける
       { start: 95.5, end: 99, text: 'ご視聴ありがとうございました' },
-      // 2 分続くエンディングの音楽。ここまで「音声の終わり」に数えると、上の締めの言葉が「話の途中」扱いで捨てられる
       { start: 100, end: 160, text: '♪' },
-      { start: 160, end: 220, text: '♪〜' },
     ];
-    const { kept } = dropWindowArtifacts(segments);
-    expect(kept.map((s) => s.text)).toEqual(['本編の話をしています', 'ご視聴ありがとうございました']);
+    const { kept, dropped } = dropWindowArtifacts(segments);
+    expect(kept.map((s) => s.text)).toEqual(['本編の話をしています']);
+    expect(dropped.map((d) => d.reason)).toEqual(['phrase', 'symbol']);
   });
 
   it('記号区間は重なりの証拠には数える（音楽の帯としか重なっていない幻覚の窓も落とす）', () => {
@@ -115,9 +113,9 @@ describe('dropWindowArtifacts', () => {
       { start: 400, end: 402, text: 'ご視聴ありがとうございました' },
     ];
     const { kept, dropped } = dropWindowArtifacts(segments);
-    expect(dropped.map((s) => s.start)).toEqual([59.6, 75.8]);
-    // 重なりのない長い区間と、短い決まり文句（本当に言った締めの言葉）は残す
-    expect(kept.map((s) => s.start)).toEqual([55.6, 61.3, 68.3, 77.4, 300, 400]);
+    expect(dropped.map((s) => s.start)).toEqual([59.6, 75.8, 400]);
+    // 重なりのない長い区間は残す
+    expect(kept.map((s) => s.start)).toEqual([55.6, 61.3, 68.3, 77.4, 300]);
   });
 
   it('drops the same overlapping windows by the overlap rule alone (no known phrase)', () => {
@@ -152,15 +150,17 @@ describe('dropWindowArtifacts', () => {
     expect(kept).toHaveLength(1);
   });
 
-  it('keeps a stock phrase said at a normal speed, drops the same words stretched over a silent window', () => {
-    // 実測（3 章の録音）: 7.4 秒に「ご視聴ありがとうございました」だけ = 1 文字 0.53 秒。話し言葉は 0.15〜0.2 秒/文字
-    // 終わりの 60 秒の中で普通の速さで言った分は残し、無音の窓いっぱいに引き伸ばされた分は捨てる
+  it('言い回しの違いや前置きの付いた決まり文句も、それだけの区間なら捨てる', () => {
     const { kept, dropped } = dropWindowArtifacts([
-      { start: 150.0, end: 152.5, text: 'ご視聴ありがとうございました' },
-      { start: 159.4, end: 166.8, text: 'ご視聴ありがとうございました' },
+      { start: 0, end: 4, text: 'こんにちは' },
+      // 実例（7 章 GD I-3）: 宣伝映像の音楽の上に 25 秒
+      { start: 888.7, end: 914.0, text: 'それではご視聴ありがとうございました' },
+      { start: 920, end: 922, text: '最後までご視聴いただきありがとうございました' },
+      { start: 930, end: 932, text: 'チャンネル登録と高評価をよろしくお願いいたします' },
+      { start: 940, end: 942, text: 'はい ありがとうございました' },
     ]);
-    expect(dropped.map((s) => s.start)).toEqual([159.4]);
-    expect(kept.map((s) => s.start)).toEqual([150.0]);
+    expect(dropped.map((s) => s.start)).toEqual([888.7, 920, 930, 940]);
+    expect(kept.map((s) => s.start)).toEqual([0]);
   });
 
   it('drops a repeated stock phrase (Whisper のループ)', () => {
@@ -182,8 +182,8 @@ describe('dropWindowArtifacts', () => {
 });
 
 describe('話の途中の決まり文句', () => {
-  it('話の途中に出た短い「ありがとうございました」は捨て、終わりのものは残す', () => {
-    // 実例（5 章）: 2.0 秒ちょうどの区間が話の途中に出る。最後の締めは本物なので残す
+  it('「ありがとうございました」だけの区間は、話の途中でも最後でも捨てる', () => {
+    // 実例（5 章）: 2.0 秒ちょうどの区間が話の途中に出る。最後に間を空けて出たものも、録音では無音だった（GD I-3 8 章・14 章）
     const { kept, dropped } = dropWindowArtifacts([
       { start: 170.2, end: 172.0, text: '実際にやってみましょう' },
       { start: 172.0, end: 174.0, text: 'ありがとうございました' },
@@ -191,9 +191,37 @@ describe('話の途中の決まり文句', () => {
       { start: 332.3, end: 334.0, text: '同じことが言えるのではないでしょうか' },
       { start: 334.0, end: 336.0, text: 'ありがとうございました' }, // 終わり近くでも、直前にぴったり続くものは幻覚
       { start: 349.6, end: 351.7, text: '次の動画もお楽しみに' },
-      { start: 352.0, end: 354.0, text: 'ありがとうございました' }, // 少し間を空けて言った締めは残す
+      { start: 352.0, end: 354.0, text: 'ありがとうございました' },
     ]);
-    expect(dropped.map((s) => s.start)).toEqual([172.0, 334.0]);
-    expect(kept.map((s) => s.start)).toEqual([170.2, 174.5, 332.3, 349.6, 352.0]);
+    expect(dropped.map((s) => s.start)).toEqual([172.0, 334.0, 352.0]);
+    expect(kept.map((s) => s.start)).toEqual([170.2, 174.5, 332.3, 349.6]);
+  });
+
+  it('「チャンネル登録をお願いいたします」は捨てる（言い回しの違いも決まり文句に数える）', () => {
+    // 実例（1 章 GD I-4、2026-10-02）: 音声の最後の区間で、直前の区間の終わりと同じ時刻に始まる
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 782.92, end: 784.8, text: '個人的にデッサンをやってみることも' },
+      { start: 784.8, end: 786.8, text: 'お勧めしたいというふうに思います' },
+      { start: 786.8, end: 788.58, text: 'チャンネル登録をお願いいたします。' },
+    ]);
+    expect(dropped.map((s) => s.text)).toEqual(['チャンネル登録をお願いいたします。']);
+    expect(kept).toHaveLength(2);
+    // 間を空けて出たものも捨てる
+    const spaced = dropWindowArtifacts([
+      { start: 784.8, end: 786.8, text: 'お勧めしたいというふうに思います' },
+      { start: 787.5, end: 789.3, text: 'チャンネル登録よろしくお願いします' },
+    ]);
+    expect(spaced.dropped).toHaveLength(1);
+  });
+});
+
+describe('isStockPhraseOnly', () => {
+  it('中身のある言葉が付いた区間は決まり文句だけとみなさない（「含む」では捨てない）', () => {
+    expect(isStockPhraseOnly('質問ありがとうございます')).toBe(false);
+    expect(isStockPhraseOnly('チャンネル登録者数が10万人を超えました')).toBe(false);
+    expect(isStockPhraseOnly('本日はここまでです。ご視聴ありがとうございました。')).toBe(false);
+    expect(isStockPhraseOnly('皆さんお疲れ様でした')).toBe(false);
+    expect(isStockPhraseOnly('ご視聴ありがとうございました。ご視聴ありがとうございました。')).toBe(true);
+    expect(isStockPhraseOnly('おやすみなさい')).toBe(true);
   });
 });
