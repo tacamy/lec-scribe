@@ -491,8 +491,8 @@ export class Pipeline {
         };
         const built = await build(shownOnly);
         const mapped = built.mapped;
-        // 字幕のファイルは画像の並びに依らないので 1 度だけ書く
-        const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
+        // 字幕のファイルは画像の並びに依らないので 1 度だけ書く。画像の境目で分けた区間（§13.4）ではなく、もとの区間で書く
+        const forSubtitles: Segment[] = segsWithVideoTime.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
         await writeFile(workPath(dir, 'transcript.srt'), toSrt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.vtt'), toVtt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.txt'), toTxt(forSubtitles));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -79,6 +79,86 @@ describe('assignSlides', () => {
   it('1 つの区間の中で切り替わったときも、長く映っていた方に付ける', () => {
     const out = assignSlides([{ ...seg(59, '二枚目の話です。'), videoEnd: 64 }], slides);
     expect(out[0]!.slide).toBe('slide_002.png');
+  });
+
+  // 1 章 GD I-4 の腕の実演の形（2026-10-02）。区間の途中で前の話題が終わり、末尾の「次に」が次の話題の文につながる
+  const arm = () => [
+    { start: 155.9, end: 160.1, videoStart: 155.9, videoEnd: 160.1, text: 'アイデアというものがたくさん発想できるようになります' },
+    { start: 160.1, end: 171.5, videoStart: 160.1, videoEnd: 171.5, text: 'できるということになりますなのでデッサンをすることがアイデアを生み出す そういう訓練になるということを覚えておいてほしいなというふうに思っています次に' },
+    { start: 171.5, end: 182.3, videoStart: 171.5, videoEnd: 182.3, text: '自分の腕を見てほしいんですけれども 例えば手のひらを垂直にこう出した時に出して' },
+    { start: 182.3, end: 192.3, videoStart: 182.3, videoEnd: 192.3, text: '肘の部分を固定しますその時に自然に腕が折れるのはこうはなかなか折れない' },
+  ];
+  const armSlides: SlideEntry[] = [
+    { filename: 'slide_018.png', videoTime: 134.3, reason: 'change' },
+    { filename: 'slide_020.png', videoTime: 175.2, reason: 'change' },
+  ];
+
+  it('画像の境目をまたぐ長い文は、区間の途中の文の切れ目で分ける（前の話題の締めを次の画像の後ろに送らない）', () => {
+    const out = assignSlides(arm(), armSlides);
+    expect(out.map((s) => [s.slide, s.text.slice(0, 8)])).toEqual([
+      ['slide_018.png', 'アイデアというも'],
+      ['slide_018.png', 'できるということ'],
+      ['slide_020.png', '次に'],
+      ['slide_020.png', '自分の腕を見てほ'],
+      ['slide_020.png', '肘の部分を固定し'],
+    ]);
+    // 分けた位置の時刻は文字数の比で見積もる。もとの区間の範囲に収まり、隙間なく続く
+    expect(out[1]!.videoStart).toBe(160.1);
+    expect(out[1]!.videoEnd).toBeCloseTo(out[2]!.videoStart, 6);
+    expect(out[2]!.videoEnd).toBe(171.5);
+    expect(out[1]!.videoEnd).toBeGreaterThan(160.1);
+    expect(out[1]!.videoEnd).toBeLessThan(171.5);
+    // 分けなかった区間はそのまま
+    expect(out[0]!.text).toBe(arm()[0]!.text);
+  });
+
+  it('分けた部分が短い（時刻の誤差で倒れやすい）なら分けない', () => {
+    // 「続いてCです」はスライドが変わった直後に言う短い文。分けると前のスライドに付いてしまう
+    const out = assignSlides([{ ...seg(58, '続いてCです 何が違うでしょうか'), videoEnd: 66 }], slides);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.slide).toBe('slide_002.png');
+  });
+
+  it('次の話題の前置きで始まる文は、時刻の上で前の画像の間でも次の画像に付ける', () => {
+    const intro = [
+      { start: 40, end: 52, videoStart: 40, videoEnd: 52, text: '前のスライドの話をここまでしてきましたので覚えておいてください' },
+      { start: 52, end: 72, videoStart: 52, videoEnd: 72, text: 'もう一つものの見方としてお話ししたいことは輪郭ですね輪郭というものをよく見てほしいんですけれどもこの影の部分というのは背景よりも濃くなっているはずです' },
+    ];
+    const out = assignSlides(intro, slides);
+    expect(out.map((s) => s.slide)).toEqual(['slide_001.png', 'slide_002.png']);
+    expect(out[1]!.text.startsWith('もう一つ')).toBe(true);
+  });
+
+  it('境目をまたがない文は、区間の途中に文の切れ目があっても分けない', () => {
+    const out = assignSlides([{ ...seg(20, '一つ目です。二つ目です。三つ目です'), videoEnd: 40 }], slides);
+    expect(out).toHaveLength(1);
+  });
+});
+
+describe('innerSentenceEnds', () => {
+  it('句点と丁寧形の文末の直後を返し、区間の末尾は含めない', () => {
+    const text = 'なりますなのでデッサンを覚えておいてほしいと思っています次に';
+    expect(innerSentenceEnds(text).map((at) => text.slice(0, at).slice(-4))).toEqual(['なります', 'ています']);
+    expect(innerSentenceEnds('一つ目。二つ目。')).toEqual([4]);
+  });
+
+  it('文が続く形（ですから・ますので・ですが・ですかというと）では切らない', () => {
+    expect(innerSentenceEnds('珍しい昆虫ですからメスを見つけるのも大変')).toEqual([]);
+    expect(innerSentenceEnds('見ることができますので発想できる')).toEqual([]);
+    expect(innerSentenceEnds('そうなんですが実は違う')).toEqual([]);
+    expect(innerSentenceEnds('なぜでしょうかというと構造です')).toEqual([]);
+  });
+
+  it('「ですかね」「ましょうか」は付いた語まで含めて切る', () => {
+    const text = 'こんな感じですかね一応わかりやすくします';
+    expect(innerSentenceEnds(text).map((at) => text.slice(0, at))).toEqual(['こんな感じですかね']);
+  });
+
+  it('言いよどみの「ですね」（助詞の直後）では切らない', () => {
+    expect(innerSentenceEnds('今度はですねこの参考に今ここね')).toEqual([]);
+    expect(innerSentenceEnds('さらにですね1978年の空港')).toEqual([]);
+    const text = 'お話ししたいことは輪郭ですね輪郭を見てください';
+    expect(innerSentenceEnds(text).map((at) => text.slice(0, at))).toEqual(['お話ししたいことは輪郭ですね']);
   });
 });
 

@@ -66,10 +66,83 @@ export function sentenceUnits<T extends { videoStart: number; videoEnd?: number;
   return units;
 }
 
+/** 丁寧形の文末のあとに続いて、文が終わっていないことを示す語（「〜ますので」「〜ですから」「〜ですかというと」など） */
+const CONTINUES_AFTER_POLITE = /^\s*(?:が|けど|けれど|ので|のに|から|し|と|って|よう|[、,])/;
+const POLITE_END = /(?:です|ます|ません|でした|ました|ましょう|でしょう|ください)/g;
+/**
+ * 言いよどみの「ですね」（「今度は**ですね**、この…」「さらに**ですね**」）。助詞や「に・と」で終わる副詞の直後の「ですね」は
+ * 文の終わりではない（2026-10-02。ここで切ると、文の途中で画像が挟まった）
+ */
+const FILLER_DESUNE = /[はがをにでもとへやの]$/;
+const PUNCT_END = /[。．！？!?][」』）)]*/g;
+
+/**
+ * 区間の本文の途中にある文の終わり（その直後で切ってよい文字位置）。区間の末尾は sentenceUnits が見るので含めない。
+ * 句点のほか、丁寧形の文末（です・ます・ました…）に「か」「ね」「よ」などが付いた形で、そのあとに
+ * 「が・ので・から・と」などが続かない位置。「だ・た・ない」で終わる普通体は文の途中にもよく現れる
+ * （「ただ」「ないと」）ので、区間の途中では見ない
+ */
+export function innerSentenceEnds(text: string): number[] {
+  const cuts = new Set<number>();
+  for (const m of text.matchAll(PUNCT_END)) cuts.add(m.index + m[0].length);
+  for (const m of text.matchAll(POLITE_END)) {
+    let at = m.index + m[0].length;
+    if (CONTINUES_AFTER_POLITE.test(text.slice(at))) continue; // 「ですから」「ますので」
+    if (m[0] === 'です' && text.startsWith('ね', at) && FILLER_DESUNE.test(text.slice(0, m.index))) continue; // 「今度はですね」
+    at += /^か?(?:よね|ね|よ)?/.exec(text.slice(at))![0].length; // 「ですかね」「ましょうか」「ですよね」
+    if (CONTINUES_AFTER_POLITE.test(text.slice(at))) continue; // 「ですかというと」
+    at += /^[。．！？!?]?[」』）)]*/.exec(text.slice(at))![0].length;
+    cuts.add(at);
+  }
+  return [...cuts].filter((at) => at > 0 && text.slice(at).trim() !== '').sort((a, b) => a - b);
+}
+
+/** 区間の一部（本文の [from, to) の文字）を、文字数の比で見積もった時刻で切り出す */
+function slicePart<T extends { videoStart: number; videoEnd?: number; text?: string }>(segment: T, from: number, to: number): T {
+  const text = segment.text ?? '';
+  const ratio = (at: number) => (text.length === 0 ? 0 : at / text.length);
+  const lerp = (a: number, b: number, r: number) => a + (b - a) * r;
+  const end = segment.videoEnd ?? segment.videoStart;
+  const part = { ...segment, text: text.slice(from, to).trim(), videoStart: lerp(segment.videoStart, end, ratio(from)) } as T & {
+    start?: number;
+    end?: number;
+  };
+  if (segment.videoEnd !== undefined) part.videoEnd = lerp(segment.videoStart, end, ratio(to));
+  // 録音の時刻（start / end）があれば同じ比で切る
+  const rec = segment as unknown as { start?: number; end?: number };
+  if (typeof rec.start === 'number' && typeof rec.end === 'number') {
+    part.start = lerp(rec.start, rec.end, ratio(from));
+    part.end = lerp(rec.start, rec.end, ratio(to));
+  }
+  return part;
+}
+
+/**
+ * 画像の境目をまたぐ文を、区間の途中の文の切れ目で分けるときに、分けた前後それぞれに要る長さ（秒）。
+ * 短い部分は時刻の見積もり（文字数の比・切り替えの検知の遅れ）の誤差で反対側に倒れやすい。
+ * 実例: スライドが変わった直後に言う「続いてCです」（約 1 秒）が前のスライドの節に移った。
+ * 1 章 GD I-4 の腕の実演は、前（前の話題の締め）が約 11 秒、後ろ（腕の話）が約 21 秒（2026-10-02）
+ */
+export const SPLIT_MIN_SEC = 5;
+
+/**
+ * 次の話題の前置き（「次に」「続いて」「もう一つ」「それでは」など）で始まる文は、画像が切り替わる直前に言うことが多い。
+ * 時刻の上では前の画像の間でも、次の画像の側に付ける（実例: 「もう一つものの見方としてお話ししたいことは輪郭ですね」が
+ * 輪郭の画像の 1 秒前に終わり、前の話題の末尾に移った。2026-10-02）
+ */
+const NEXT_TOPIC_CUE = /^\s*(?:次に|次は|続いて|続きまして|もう一つ|もうひとつ|それでは|では|さて|ここからは|最後に)/;
+
 /**
  * 各区間に表示中のスライドを割り当てる。
  * 1 つの文（sentenceUnits）は同じスライドに付ける。文の途中でスライドが変わっていたら、
- * その文の間に長く映っていた方のスライドに文ごと付ける（画像が文の途中に挟まらないように）
+ * その文の間に長く映っていた方のスライドに文ごと付ける（画像が文の途中に挟まらないように）。
+ *
+ * ただし、区間の末尾だけで文の切れ目を見ると、WhisperKit が「…覚えておいてほしいと思っています次に」のように
+ * 前の話題の締めと次の話題の書き出しを 1 区間にまとめたとき、前の話題の締めが次の話題の文とつながり、
+ * 次の画像の後ろに送られる（1 章 GD I-4 の腕の実演。2026-10-02）。そこで、画像の境目をまたぐ文だけは
+ * 区間の本文の途中の文の切れ目（innerSentenceEnds）でも分け直し、分けた部分ごとに同じ規則で割り当てる。
+ * 分けた部分がどれも SPLIT_MIN_SEC 以上あるときだけ採る（短い部分は時刻の誤差で倒れやすい）。
+ * 区間の途中で分けた位置の時刻は文字数の比で見積もる。そのため、返す配列は入力より長くなることがある
  */
 export function assignSlides<T extends { videoStart: number; videoEnd?: number; text?: string }>(
   segments: readonly T[],
@@ -86,13 +159,8 @@ export function assignSlides<T extends { videoStart: number; videoEnd?: number; 
     }
     return current;
   };
-  const out: Array<T & { slide?: string }> = segments.map((segment) => ({ ...segment }));
-  for (const [from, to] of sentenceUnits(segments)) {
-    const first = segments[from]!;
-    const last = segments[to - 1]!;
-    const unitStart = first.videoStart;
-    const unitEnd = Math.max(unitStart, last.videoEnd ?? last.videoStart);
-    // 文の間を、映っていたスライドごとの区間に分け、いちばん長い区間のスライドを選ぶ（同じ長さなら先のもの）
+  /** [unitStart, unitEnd] の間にいちばん長く映っていたスライド（同じ長さなら先のもの） */
+  const longestShown = (unitStart: number, unitEnd: number): SlideEntry | undefined => {
     let best = shownAt(unitStart);
     let bestCover = -1;
     let current = best;
@@ -109,9 +177,76 @@ export function assignSlides<T extends { videoStart: number; videoEnd?: number; 
       current = ordered[i];
     }
     if (unitEnd - at > bestCover) best = current;
-    for (let i = from; i < to; i++) {
-      if (best) out[i]!.slide = best.filename;
+    return best;
+  };
+  const spanOf = <S extends { videoStart: number; videoEnd?: number }>(list: readonly S[]) => {
+    const first = list[0]!;
+    const last = list[list.length - 1]!;
+    return [first.videoStart, Math.max(first.videoStart, last.videoEnd ?? last.videoStart)] as const;
+  };
+  const crossesBoundary = (from: number, to: number) => starts.some((s) => s > from && s < to);
+
+  const out: Array<T & { slide?: string }> = [];
+  const withSlide = <S extends T>(part: S, slide: SlideEntry | undefined): S & { slide?: string } => (slide ? { ...part, slide: slide.filename } : { ...part });
+  for (const [from, to] of sentenceUnits(segments)) {
+    const unit = segments.slice(from, to);
+    const [unitStart, unitEnd] = spanOf(unit);
+    const whole = longestShown(unitStart, unitEnd);
+    // 画像の境目をまたぐ文だけ、区間の途中の文の切れ目で分け直してみる
+    if (crossesBoundary(unitStart, unitEnd)) {
+      const pieces: Array<{ index: number; from: number; to: number; part: T }> = [];
+      unit.forEach((segment, i) => {
+        const text = segment.text ?? '';
+        const cuts = [0, ...innerSentenceEnds(text), text.length];
+        for (let c = 0; c + 1 < cuts.length; c++) {
+          pieces.push({ index: i, from: cuts[c]!, to: cuts[c + 1]!, part: cuts.length === 2 ? segment : slicePart(segment, cuts[c]!, cuts[c + 1]!) });
+        }
+      });
+      // 分けた文ごとにスライドを決め、同じスライドが続く部分にまとめる
+      const owner: Array<SlideEntry | undefined> = Array.from({ length: pieces.length }, () => undefined);
+      const parts = pieces.map((p) => p.part);
+      for (const [a, b] of sentenceUnits(parts)) {
+        const [s, e] = spanOf(parts.slice(a, b));
+        const slide = longestShown(s, e);
+        for (let k = a; k < b; k++) owner[k] = slide;
+      }
+      const runsOf = () => {
+        const runs: Array<[number, number]> = [];
+        for (let k = 0; k < pieces.length; k++) {
+          const last = runs[runs.length - 1];
+          if (last && owner[last[0]] === owner[k]) last[1] = k + 1;
+          else runs.push([k, k + 1]);
+        }
+        return runs;
+      };
+      // 次の話題の前置きで始まる部分は、次の画像の側に付け直す（後ろから見て、続けて付け直せるように）
+      const initial = runsOf();
+      for (let r = initial.length - 2; r >= 0; r--) {
+        const [a, b] = initial[r]!;
+        if (!NEXT_TOPIC_CUE.test(parts[a]!.text ?? '')) continue;
+        const next = owner[initial[r + 1]![0]];
+        for (let k = a; k < b; k++) owner[k] = next;
+      }
+      const runs = runsOf();
+      const longEnough = runs.every(([a, b]) => {
+        const [s, e] = spanOf(parts.slice(a, b));
+        return e - s >= SPLIT_MIN_SEC;
+      });
+      if (runs.length > 1 && longEnough) {
+        // 同じ区間の部分が同じスライドに付いたら、もとの 1 区間に戻す
+        for (let k = 0; k < pieces.length; ) {
+          const { index } = pieces[k]!;
+          let j = k;
+          while (j < pieces.length && pieces[j]!.index === index && owner[j] === owner[k]) j++;
+          const segment = unit[index]!;
+          const isWhole = pieces[k]!.from === 0 && pieces[j - 1]!.to === (segment.text ?? '').length;
+          out.push(withSlide(isWhole ? segment : slicePart(segment, pieces[k]!.from, pieces[j - 1]!.to), owner[k]));
+          k = j;
+        }
+        continue;
+      }
     }
+    for (const segment of unit) out.push(withSlide(segment, whole));
   }
   return out;
 }
