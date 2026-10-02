@@ -196,4 +196,21 @@ describe('話の途中の決まり文句', () => {
     expect(dropped.map((s) => s.start)).toEqual([172.0, 334.0]);
     expect(kept.map((s) => s.start)).toEqual([170.2, 174.5, 332.3, 349.6, 352.0]);
   });
+
+  it('最後に直前へぴったり続く「チャンネル登録をお願いいたします」は捨てる（言い回しの違いも決まり文句に数える）', () => {
+    // 実例（1 章 GD I-4、2026-10-02）: 音声の最後の区間で、直前の区間の終わりと同じ時刻に始まる
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 782.92, end: 784.8, text: '個人的にデッサンをやってみることも' },
+      { start: 784.8, end: 786.8, text: 'お勧めしたいというふうに思います' },
+      { start: 786.8, end: 788.58, text: 'チャンネル登録をお願いいたします。' },
+    ]);
+    expect(dropped.map((s) => s.text)).toEqual(['チャンネル登録をお願いいたします。']);
+    expect(kept).toHaveLength(2);
+    // 少し間を空けて言ったものは、本当に言った締めかもしれないので残す（既存の規則のまま）
+    const spaced = dropWindowArtifacts([
+      { start: 784.8, end: 786.8, text: 'お勧めしたいというふうに思います' },
+      { start: 787.5, end: 789.3, text: 'チャンネル登録よろしくお願いします' },
+    ]);
+    expect(spaced.dropped).toHaveLength(0);
+  });
 });
