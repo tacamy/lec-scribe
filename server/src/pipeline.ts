@@ -6,7 +6,7 @@ import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
@@ -476,7 +476,17 @@ export class Pipeline {
             ),
           );
           // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
-          const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides: [...slides] };
+          // 割り当ては 1 回だけ。節は mapped の slide のまま束ね、lecture.md・notes.md で同じ節を使う。区間の数はもとの区間で数える
+          const sections = groupAssigned(mapped, slides);
+          const lectureInput = {
+            title: session?.title,
+            url: session?.url,
+            startedAt: session?.startedAt,
+            segments: mapped,
+            slides: [...slides],
+            sections,
+            segmentCount: segsWithVideoTime.length,
+          };
           await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
           const rawNotes = buildLectureMarkdown({
             ...lectureInput,
@@ -484,15 +494,15 @@ export class Pipeline {
           });
           return {
             mapped,
-            sections: groupSections(mapped, slides),
+            sections,
             rawNotes,
             hiddenSlides: allSlides.length > slides.length ? allSlides.length - slides.length : undefined,
           };
         };
         const built = await build(shownOnly);
         const mapped = built.mapped;
-        // 字幕のファイルは画像の並びに依らないので 1 度だけ書く
-        const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
+        // 字幕のファイルは画像の並びに依らないので 1 度だけ書く。画像の境目で分けた区間（§13.4）ではなく、もとの区間で書く
+        const forSubtitles: Segment[] = segsWithVideoTime.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
         await writeFile(workPath(dir, 'transcript.srt'), toSrt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.vtt'), toVtt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.txt'), toTxt(forSubtitles));
@@ -506,7 +516,8 @@ export class Pipeline {
         const pickerInput: PickerInput = { segments: segsWithVideoTime, allSlides, shown: shownOnly, decisions, texts };
         return {
           summary: {
-            segments: mapped.length,
+            // もとの区間の数（画像の境目で分けた区間は数えない。救出で並びが変わっても変わらない）
+            segments: segsWithVideoTime.length,
             durationSec: Math.round(mapped[mapped.length - 1]!.end),
             hasTimeline: events !== null,
             slides: allSlides.length,

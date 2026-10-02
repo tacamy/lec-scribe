@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -33,10 +33,10 @@ beforeAll(async () => {
   await mkdir(path.join(tmp, 'bin'));
   // ffmpeg スタブ: 入力をそのまま出力にコピーする
   const ffmpeg = await writeStub('ffmpeg', 'out=""; for a in "$@"; do out="$a"; done; in=""; prev=""; for a in "$@"; do if [ "$prev" = "-i" ]; then in="$a"; fi; prev="$a"; done; cp "$in" "$out"');
-  // whisperkit-cli スタブ: --report-path に report JSON を書く
+  // whisperkit-cli スタブ: --report-path に report JSON を書く。report-override.json があればその中身を書く（区間を変えたい試験用）
   const whisperkit = await writeStub(
     'whisperkit-cli',
-    'dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; printf \'%s\' \'{"segments":[{"start":0,"end":5.5,"text":"<|ja|> 最初の区間 "},{"start":5.5,"end":12,"text":"次の区間"}]}\' > "$dir/audio.json"; echo transcribed',
+    `dir=""; prev=""; for a in "$@"; do if [ "$prev" = "--report-path" ]; then dir="$a"; fi; prev="$a"; done; mkdir -p "$dir"; if [ -f "${path.join(tmp, 'report-override.json')}" ]; then cp "${path.join(tmp, 'report-override.json')}" "$dir/audio.json"; else printf '%s' '{"segments":[{"start":0,"end":5.5,"text":"<|ja|> 最初の区間 "},{"start":5.5,"end":12,"text":"次の区間"}]}' > "$dir/audio.json"; fi; echo transcribed`,
   );
   // open スタブ: 開こうとしたパスを記録する
   const open = await writeStub('open', `printf '%s' "$1" > "${path.join(tmp, 'opened.txt')}"`);
@@ -136,6 +136,67 @@ describe('local server', () => {
     const preflight = await fetch(`${base}/sessions`, { method: 'OPTIONS', headers: { origin: ORIGIN } });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get('access-control-allow-private-network')).toBe('true');
+  });
+
+  it('画像の境目をまたぐ区間を文の切れ目で分けても、字幕と区間の数はもとの区間のまま（§13.4）', async () => {
+    // 区間 1 の途中（「なります」）で前の話題が終わり、14 秒に次の画像が出る
+    await writeFile(
+      path.join(tmp, 'report-override.json'),
+      JSON.stringify({
+        segments: [
+          { start: 0, end: 30, text: '前の話題をまとめると大事なことはここまでになります次に新しい図の話をしていきますのでよく見てください' },
+          { start: 30, end: 35, text: '以上です' },
+        ],
+      }),
+    );
+    try {
+      const sessionId = '20261002-120000-sp01';
+      const created = await fetch(`${base}/sessions`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, title: '分割の試験', startedAt: '2026-10-02T03:00:00.000Z' }),
+      });
+      const { outputDir } = (await created.json()) as { outputDir: string };
+      const put = (name: string, body: string | Uint8Array) => fetch(`${base}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
+      await put('audio.webm', new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 9, 9, 9, 9]));
+      await put('slides/slide_001.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+      await put('slides/slide_002.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2]));
+      await put(
+        'slides.json',
+        JSON.stringify([
+          { filename: 'slide_001.png', videoTime: 0, t: 0, reason: 'initial' },
+          { filename: 'slide_002.png', videoTime: 14, t: 14, reason: 'manual' },
+        ]),
+      );
+      expect((await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers })).status).toBe(202);
+      let status: { stage: string; error?: string; result?: { segments: number } } = { stage: 'queued' };
+      for (let i = 0; i < 50 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        status = (await (await fetch(`${base}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+      }
+      expect(status.stage).toBe('done');
+      // 区間の数は Whisper の区間（2）
+      expect(status.result).toMatchObject({ segments: 2 });
+      const lecture = await readFile(path.join(outputDir, '.lecscribe', 'lecture.md'), 'utf8');
+      expect(lecture).toContain('文字起こし: 2 区間');
+      // 前の話題の締めは slide_001 の節、「次に」からは slide_002 の節
+      const before = lecture.indexOf('ここまでになります');
+      const image = lecture.indexOf('![slide_002]');
+      const after = lecture.indexOf('次に新しい図の話を');
+      expect(before).toBeGreaterThan(-1);
+      expect(before).toBeLessThan(image);
+      expect(image).toBeLessThan(after);
+      // transcript.json だけは分けた区間（3 つ）。字幕はもとの 2 区間
+      const transcript = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'transcript.json'), 'utf8')) as {
+        segments: Array<{ slide?: string; text: string }>;
+      };
+      expect(transcript.segments.map((s) => s.slide)).toEqual(['slide_001.png', 'slide_002.png', 'slide_002.png']);
+      const srt = await readFile(path.join(outputDir, '.lecscribe', 'transcript.srt'), 'utf8');
+      expect(srt.match(/-->/g)).toHaveLength(2);
+      expect(srt).toContain('前の話題をまとめると大事なことはここまでになります次に新しい図の話を');
+    } finally {
+      await rm(path.join(tmp, 'report-override.json'), { force: true });
+    }
   });
 
   it('runs a session through upload, finalize and the pipeline', async () => {
