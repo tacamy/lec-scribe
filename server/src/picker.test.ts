@@ -7,12 +7,16 @@ import {
   PICK_MAX_CANDIDATES,
   PICK_MIN_SPACING_SEC,
   acceptPicks,
+  acceptResponse,
+  acceptSwaps,
+  applySwaps,
   buildPickPrompt,
   findPickRegions,
   parsePicks,
   pickCap,
   pickRegion,
   pickerCacheKey,
+  sceneGroups,
   withRescued,
   type PickRegion,
 } from './picker.ts';
@@ -150,7 +154,11 @@ describe('parsePicks / prompt / cache key', () => {
   it('壊れた返答は投げ、形の崩れた要素は黙って除く', () => {
     expect(() => parsePicks('not json')).toThrow();
     expect(() => parsePicks('{"nope":1}')).toThrow();
-    expect(parsePicks('{"picks":[{"image":1,"after_paragraph":2,"reason":"r"},{"image":"x"}]}')).toHaveLength(1);
+    const parsed = parsePicks('{"picks":[{"image":1,"after_paragraph":2,"reason":"r"},{"image":"x"}],"swaps":[{"from":1,"to":2,"reason":"r"},{"from":"x"}]}');
+    expect(parsed.picks).toHaveLength(1);
+    expect(parsed.swaps).toHaveLength(1);
+    // swaps の無い古い形（またはモデルが省いた形）も読める
+    expect(parsePicks('{"picks":[]}').swaps).toEqual([]);
   });
 
   it('プロンプトに段落・時刻・掲載の別が入る', () => {
@@ -190,6 +198,21 @@ describe('parsePicks / prompt / cache key', () => {
     expect(withRescued(shown, all, []).map((s) => s.filename)).toEqual(['slide_001.png', 'slide_003.png']);
   });
 
+  it('sceneGroups は sameSceneAs を載っている画像まで辿る', () => {
+    const decisions: SceneDecision[] = [
+      { filename: 'a.png', shown: false, reason: 'text', sameSceneAs: 'b.png' }, // b はあとで譲って外れた
+      { filename: 'b.png', shown: false, reason: 'superseded', sameSceneAs: 'c.png' },
+      { filename: 'c.png', shown: true },
+      { filename: 'd.png', shown: false, reason: 'identical', sameSceneAs: 'c.png' }, // identical は差し替え先にしない
+      { filename: 'e.png', shown: false, reason: 'blank' }, // 行き先なし
+    ];
+    const groups = sceneGroups(decisions);
+    expect(groups.get('a.png')).toBe('c.png');
+    expect(groups.get('b.png')).toBe('c.png');
+    expect(groups.has('d.png')).toBe(false);
+    expect(groups.has('e.png')).toBe(false);
+  });
+
   it('withRescued は、繰り上げ区間に救った画像が入る代表を本来の時刻に戻す', () => {
     const all = [slide('slide_001.png', 10), slide('slide_002.png', 20), slide('slide_003.png', 30)];
     // slide_003 が slide_001 の位置（10 秒）に繰り上げられて載っている（standsFor）
@@ -200,6 +223,81 @@ describe('parsePicks / prompt / cache key', () => {
     // 繰り上げ区間の外の救出なら、代表はそのまま
     const out2 = withRescued([anchored], [...all, slide('slide_004.png', 40)], ['slide_004.png']);
     expect(out2[0]!.videoTime).toBe(10);
+  });
+});
+
+describe('acceptSwaps / acceptResponse / applySwaps', () => {
+  const region: PickRegion = {
+    start: 90,
+    end: 300,
+    chunks: [
+      { start: 100, text: '段落 1。' },
+      { start: 150, text: '段落 2。' },
+      { start: 200, text: '段落 3。' },
+    ],
+    candidates: [
+      { filename: 'slide_001.png', videoTime: 100, shown: true },
+      { filename: 'slide_002.png', videoTime: 110, shown: false, group: 'slide_001.png' },
+      { filename: 'slide_003.png', videoTime: 160, shown: false, group: 'slide_005.png' },
+      { filename: 'slide_004.png', videoTime: 170, shown: false },
+      { filename: 'slide_005.png', videoTime: 210, shown: true },
+    ],
+  };
+
+  it('差し替えは「掲載済み → 同じまとまりの未掲載」だけを通す', () => {
+    const { swaps, rejected } = acceptSwaps(region, [
+      { from: 1, to: 2, reason: '' }, // slide_001 → slide_002（同じまとまり）
+      { from: 1, to: 3, reason: '' }, // from は使用済み（無視）
+      { from: 5, to: 4, reason: '' }, // slide_004 はまとまりに属さない
+      { from: 5, to: 1, reason: '' }, // 掲載済みへの差し替えは不可
+      { from: 2, to: 4, reason: '' }, // from が未掲載
+      { from: 9, to: 2, reason: '' }, // 範囲外
+    ]);
+    expect(swaps).toEqual([{ from: 'slide_001.png', to: 'slide_002.png' }]);
+    expect(rejected.map((r) => r.why)).toContain('slide_005.png と同じまとまりではない');
+    expect(rejected.map((r) => r.why)).toContain('差し替えは掲載済み→未掲載だけ');
+  });
+
+  it('字幕の写った代表を、文字のない（少ない）画像に差し替えない', () => {
+    const subtitled: PickRegion = {
+      ...region,
+      candidates: [
+        { filename: 'slide_016.png', videoTime: 130, shown: true, textLen: 13 },
+        { filename: 'slide_014.png', videoTime: 120, shown: false, group: 'slide_016.png' },
+        { filename: 'slide_015.png', videoTime: 125, shown: false, group: 'slide_016.png', textLen: 12 },
+      ],
+    };
+    const { swaps, rejected } = acceptSwaps(subtitled, [
+      { from: 1, to: 2, reason: '' }, // 文字 13 → 0: 弾く
+      { from: 1, to: 3, reason: '' }, // 文字 13 → 12: 通す
+    ]);
+    expect(rejected.map((r) => r.why)).toContain('slide_016.png より写っている文字が減る');
+    expect(swaps).toEqual([{ from: 'slide_016.png', to: 'slide_015.png' }]);
+  });
+
+  it('acceptResponse は差し替え先を掲載扱いにしてから picks を見る', () => {
+    const { accepted, swaps, rejected } = acceptResponse(region, {
+      swaps: [{ from: 1, to: 2, reason: '' }],
+      picks: [
+        { image: 2, after_paragraph: 1, reason: '' }, // 差し替え先 → 掲載済みとして落ちる
+        { image: 4, after_paragraph: 2, reason: '' },
+      ],
+    });
+    expect(swaps).toHaveLength(1);
+    expect(accepted.map((a) => a.filename)).toEqual(['slide_004.png']);
+    expect(rejected.map((r) => r.why)).toContain('掲載済み');
+  });
+
+  it('applySwaps は位置を保ったまま画像だけ入れ替える', () => {
+    const all = [slide('slide_001.png', 100), { ...slide('slide_002.png', 110), seq: 2, width: 1280, height: 720 }];
+    // 代表が 90 秒に繰り上げられている
+    const anchoredRep = { ...all[0]!, videoTime: 90 };
+    const out = applySwaps([anchoredRep], all, [{ from: 'slide_001.png', to: 'slide_002.png' }]);
+    expect(out[0]!.filename).toBe('slide_002.png');
+    expect(out[0]!.videoTime).toBe(90); // 位置は代表のまま
+    expect(out[0]!.width).toBe(1280);
+    // 差し替え先が見つからなければそのまま
+    expect(applySwaps([anchoredRep], all, [{ from: 'slide_001.png', to: 'slide_009.png' }])[0]!.filename).toBe('slide_001.png');
   });
 });
 
