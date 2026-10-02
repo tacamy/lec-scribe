@@ -1011,6 +1011,9 @@ try {
 
   // §12.1d: ポートをほかのアプリが使っているとき。設定画面の「接続テスト」はそのアプリを止めるよう案内し、
   // サーバーは相手の名前をログに書いて試し直し、相手が終われば何もしなくても待ち受けを始める
+  // この間はわざとサーバーを止めるので、開いたままのサイドパネルが問い合わせると「つながらない」がコンソールに出る。
+  // それはタイミングしだいで出たり出なかったりするので、この間に出た分だけ数えない（2026-10-02。たまに smoke が落ちていた）
+  const portPhaseStart = errors.length;
   localServer.kill();
   await new Promise((r) => setTimeout(r, 500));
   const foreign = createServer((_req, res) => {
@@ -1049,6 +1052,7 @@ try {
     if (!upAgain) await new Promise((r) => setTimeout(r, 200));
   }
   assert.ok(upAgain, `server did not start after the port was freed:\n${serverLog}`);
+  errors.splice(portPhaseStart, Infinity, ...errors.slice(portPhaseStart).filter((e) => !e.includes('net::ERR_CONNECTION_REFUSED')));
   console.log('port: a foreign app on the port is named in the server log and the options page; the server starts once it is gone');
 
   assert.deepEqual(errors, [], `page errors: ${errors.join('\n')}`);
