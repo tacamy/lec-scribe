@@ -94,7 +94,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     llm: parseLlm(pick('llm', 'LEC_SCRIBE_LLM', 'none')),
     llmModel: pick('llm-model', 'LEC_SCRIBE_LLM_MODEL', ''),
     llmCheckModel: pick('llm-check-model', 'LEC_SCRIBE_LLM_CHECK_MODEL', ''),
-    llmPickModel: pick('llm-pick-model', 'LEC_SCRIBE_LLM_PICK_MODEL', 'gpt-5.6-luna'),
+    llmPickModel: pick('llm-pick-model', 'LEC_SCRIBE_LLM_PICK_MODEL', 'gpt-5.6-terra'),
     settingsFile: expandHome(pick('settings-file', 'LEC_SCRIBE_SETTINGS_FILE', path.join(home, '.lec-scribe', 'settings.json'))),
     codexBin: pick('codex', 'LEC_SCRIBE_CODEX', 'codex'),
     openaiApiKey: env['OPENAI_API_KEY'] ?? '',
