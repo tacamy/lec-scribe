@@ -476,7 +476,16 @@ export class Pipeline {
             ),
           );
           // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
-          const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides: [...slides] };
+          // 割り当ては 1 回だけ（mapped の slide をそのまま使う）。区間の数はもとの区間で数える
+          const lectureInput = {
+            title: session?.title,
+            url: session?.url,
+            startedAt: session?.startedAt,
+            segments: mapped,
+            slides: [...slides],
+            assigned: true,
+            segmentCount: segsWithVideoTime.length,
+          };
           await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
           const rawNotes = buildLectureMarkdown({
             ...lectureInput,
@@ -484,7 +493,7 @@ export class Pipeline {
           });
           return {
             mapped,
-            sections: groupSections(mapped, slides),
+            sections: groupSections(mapped, slides, undefined, true),
             rawNotes,
             hiddenSlides: allSlides.length > slides.length ? allSlides.length - slides.length : undefined,
           };
@@ -506,7 +515,8 @@ export class Pipeline {
         const pickerInput: PickerInput = { segments: segsWithVideoTime, allSlides, shown: shownOnly, decisions, texts };
         return {
           summary: {
-            segments: mapped.length,
+            // もとの区間の数（画像の境目で分けた区間は数えない。救出で並びが変わっても変わらない）
+            segments: segsWithVideoTime.length,
             durationSec: Math.round(mapped[mapped.length - 1]!.end),
             hasTimeline: events !== null,
             slides: allSlides.length,

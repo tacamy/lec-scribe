@@ -112,8 +112,14 @@ describe('assignSlides', () => {
     expect(out[0]!.text).toBe(arm()[0]!.text);
   });
 
-  it('分けた部分が短い（時刻の誤差で倒れやすい）なら分けない', () => {
-    // 「続いてCです」はスライドが変わった直後に言う短い文。分けると前のスライドに付いてしまう
+  it('分けた部分が短い（時刻の誤差で倒れやすい）なら分けず、文全体を長く映っていた方に付ける', () => {
+    // 前置きの語を含まない文で、境目（60 秒）の手前の部分が 5 秒未満
+    const out = assignSlides([{ ...seg(57, 'そうなります。これはとても大事な話なので最後までよく聞いておいてください'), videoEnd: 75 }], slides);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.slide).toBe('slide_002.png');
+  });
+
+  it('前置きの語で始まる短い文も、次の画像に付く', () => {
     const out = assignSlides([{ ...seg(58, '続いてCです 何が違うでしょうか'), videoEnd: 66 }], slides);
     expect(out).toHaveLength(1);
     expect(out[0]!.slide).toBe('slide_002.png');
@@ -127,6 +133,64 @@ describe('assignSlides', () => {
     const out = assignSlides(intro, slides);
     expect(out.map((s) => s.slide)).toEqual(['slide_001.png', 'slide_002.png']);
     expect(out[1]!.text.startsWith('もう一つ')).toBe(true);
+  });
+
+  it('前置きの文が区間の途中にあっても、次の画像に寄せる（まとめて 1 つになっても前の画像に戻さない）', () => {
+    const ab: SlideEntry[] = [
+      { filename: 'slide_a.png', videoTime: 0, reason: 'manual' },
+      { filename: 'slide_b.png', videoTime: 30, reason: 'manual' },
+    ];
+    const out = assignSlides([{ start: 10, end: 45, videoStart: 10, videoEnd: 45, text: 'まえのスライドの話はここまでになりますもう一つお話ししたいのは輪郭ですね輪郭というものは背景との関係で決まるのでよく見てほしいと思います' }], ab);
+    expect(out.map((s) => [s.slide, s.text.slice(0, 4)])).toEqual([
+      ['slide_a.png', 'まえのス'],
+      ['slide_b.png', 'もう一つ'],
+    ]);
+    // 前置きの文と、そのあとの文が 1 つの区間でも、全体が前の画像（長く映っていた方）に戻らない
+    const whole = assignSlides([{ start: 22, end: 40, videoStart: 22, videoEnd: 40, text: 'もう一つお話ししたいのは輪郭ですね輪郭は背景との関係で決まります' }], ab);
+    expect(whole.every((s) => s.slide === 'slide_b.png')).toBe(true);
+  });
+
+  it('前置きは 1 枚先の画像までしか寄せない（スライドを飛ばさない）', () => {
+    const zab: SlideEntry[] = [
+      { filename: 'slide_z.png', videoTime: 0, reason: 'manual' },
+      { filename: 'slide_a.png', videoTime: 10, reason: 'manual' },
+      { filename: 'slide_b.png', videoTime: 40, reason: 'manual' },
+    ];
+    const out = assignSlides([{ start: 5, end: 60, videoStart: 5, videoEnd: 60, text: 'まえの話になりますでは左の図を見てくださいここが大事なところですこの線の太さをよく見ておいてくださいこの写真は別の例になります' }], zab);
+    const a = out.filter((s) => s.slide === 'slide_a.png').map((s) => s.text).join('');
+    expect(a).toContain('では左の図を見てください');
+  });
+
+  it('「ですかね」で分けた文は、そこで文が切れたものとして割り当てる', () => {
+    const ab: SlideEntry[] = [
+      { filename: 'slide_a.png', videoTime: 0, reason: 'manual' },
+      { filename: 'slide_b.png', videoTime: 30, reason: 'manual' },
+    ];
+    const out = assignSlides([{ start: 14, end: 51, videoStart: 14, videoEnd: 51, text: '前のスライドの話はここまでで大体こんな感じですかねそれから新しい図の話をしていきたいと思いますのでよく見てください' }], ab);
+    expect(out.map((s) => s.slide)).toEqual(['slide_a.png', 'slide_b.png']);
+  });
+
+  it('短い部分が 1 つでもあれば、ほかの部分が長くても分けない（短い部分だけ寄せる形は実データで悪くなった）', () => {
+    const abc: SlideEntry[] = [
+      { filename: 'slide_a.png', videoTime: 0, reason: 'manual' },
+      { filename: 'slide_b.png', videoTime: 19, reason: 'manual' },
+      { filename: 'slide_c.png', videoTime: 23, reason: 'manual' },
+    ];
+    const out = assignSlides([{ start: 0, end: 43, videoStart: 0, videoEnd: 43, text: 'Aの話をずっとしています長い説明です。Bです。Cの話をこれからずっとしていきます長い説明です' }], abc);
+    expect(out).toHaveLength(1);
+  });
+
+  it('返した区間の slide を使って束ねれば、もう一度かけ直したときと同じ節になる', () => {
+    const zab: SlideEntry[] = [
+      { filename: 'slide_z.png', videoTime: 0, reason: 'manual' },
+      { filename: 'slide_a.png', videoTime: 10, reason: 'manual' },
+      { filename: 'slide_b.png', videoTime: 40, reason: 'manual' },
+    ];
+    const once = assignSlides([{ start: 5, end: 60, videoStart: 5, videoEnd: 60, text: 'まえの話になります次に新しい図を見てくださいここが大事ですこの写真の話をしますね今度は別のことをお話しします' }], zab);
+    const twice = assignSlides(once, zab);
+    expect(twice.map((s) => s.slide)).toEqual(once.map((s) => s.slide));
+    const sections = groupSections(once as MergedSegment[], zab, undefined, true);
+    expect(sections.map((s) => s.texts.join(''))).toEqual(['まえの話になります', ...['slide_a.png', 'slide_b.png'].map((f) => once.filter((s) => s.slide === f).map((s) => s.text).join(''))]);
   });
 
   it('境目をまたがない文は、区間の途中に文の切れ目があっても分けない', () => {
@@ -154,7 +218,23 @@ describe('innerSentenceEnds', () => {
     expect(innerSentenceEnds(text).map((at) => text.slice(0, at))).toEqual(['こんな感じですかね']);
   });
 
+  it('「ませんでした」「ましたら」「ですら」「〜」という」「ますます」「ますでしょうか」「ですかどうか」は文の途中', () => {
+    const show = (t: string) => innerSentenceEnds(t).map((at) => t.slice(0, at));
+    expect(show('わかりませんでしたなので次に')).toEqual(['わかりませんでした']);
+    expect(show('わかりませんでしたがそれでも続けます')).toEqual([]);
+    expect(show('描き終わりましたら次に進みます')).toEqual([]);
+    expect(show('専門家ですらわからない問題です')).toEqual([]);
+    expect(show('「よく見てください」という話をしました次に')).toEqual(['「よく見てください」という話をしました']);
+    expect(show('「はい。」と言って始めます')).toEqual([]);
+    expect(show('ますます面白くなります')).toEqual([]);
+    expect(show('できますでしょうかと聞きます')).toEqual([]);
+    expect(show('これでいいですかどうか確かめます')).toEqual([]);
+    // 句点のあとは「し」で始まっても切る（「しかし」など）
+    expect(show('そうなります。しかし違います')).toEqual(['そうなります。']);
+  });
+
   it('言いよどみの「ですね」（助詞の直後）では切らない', () => {
+    expect(innerSentenceEnds('今度は ですね この参考に')).toEqual([]);
     expect(innerSentenceEnds('今度はですねこの参考に今ここね')).toEqual([]);
     expect(innerSentenceEnds('さらにですね1978年の空港')).toEqual([]);
     const text = 'お話ししたいことは輪郭ですね輪郭を見てください';
