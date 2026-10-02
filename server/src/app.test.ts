@@ -71,6 +71,8 @@ beforeAll(async () => {
     llm: 'codex',
     llmModel: '',
     llmCheckModel: '',
+    // 統合テストの ffmpeg スタブではサムネイルが作れず場面の判定が空になるので、画像の救出も動かない。切っておく
+    llmPickModel: '',
     codexBin: codex,
     openaiApiKey: '',
     ollamaUrl: 'http://127.0.0.1:1',

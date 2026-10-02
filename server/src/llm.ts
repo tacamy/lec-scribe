@@ -327,7 +327,7 @@ export function parseCodexDefaults(configText: string): CodexDefaults {
 }
 
 /** `$CODEX_HOME/config.toml`（既定は ~/.codex/config.toml）から既定を読む。読めなければ空 */
-async function readCodexDefaults(): Promise<CodexDefaults> {
+export async function readCodexDefaults(): Promise<CodexDefaults> {
   const home = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
   try {
     return parseCodexDefaults(await readFile(path.join(home, 'config.toml'), 'utf8'));
@@ -345,7 +345,7 @@ async function readCodexDefaults(): Promise<CodexDefaults> {
  * その代わり、モデルと推論の強さは明示する: モデルはサーバーの設定（`--llm-model`）を優先し、なければ利用者の既定を引き継ぐ。
  * 推論の強さも利用者の既定を引き継ぐ。どちらも今までと同じ値で呼ぶので、ノートの出来は変わらない
  */
-export function codexArgs(opts: { dir: string; schemaFile: string; outFile: string; prompt: string } & CodexDefaults): string[] {
+export function codexArgs(opts: { dir: string; schemaFile: string; outFile: string; prompt: string; images?: readonly string[] } & CodexDefaults): string[] {
   const args = [
     'exec',
     '--skip-git-repo-check',
@@ -364,6 +364,10 @@ export function codexArgs(opts: { dir: string; schemaFile: string; outFile: stri
   ];
   if (opts.model) args.push('--model', opts.model);
   if (opts.effort) args.push('-c', `model_reasoning_effort="${opts.effort}"`);
+  for (const image of opts.images ?? []) args.push('-i', image);
+  // -i は可変長で、直後の prompt を画像の続きとして飲み込む（codex 0.153 で確認）。-- で区切る。
+  // 画像なしの呼び出し（整え・要点・校正）は今までどおり区切りなしにして、挙動を変えない
+  if ((opts.images ?? []).length > 0) args.push('--');
   args.push(opts.prompt);
   return args;
 }

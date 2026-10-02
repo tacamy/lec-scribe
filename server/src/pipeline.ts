@@ -7,7 +7,8 @@ import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
-import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
+import { findPickRegions, pickRegion, pickerCacheKey, readPickerCache, withRescued, writePickerCache, type Rejected } from './picker.ts';
+import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
@@ -219,16 +220,16 @@ export class Pipeline {
    * 映像中心の画面で同じ場面が続く画像を notes.md から外す。サムネイルは ffmpeg で作る。
    * 取れなければ何も外さない。判断は .lecscribe/scenes.json に残す
    */
-  private async pickScenes(dir: string, slides: SlideEntry[], signal?: AbortSignal): Promise<SlideEntry[]> {
+  private async pickScenes(dir: string, slides: SlideEntry[], signal?: AbortSignal): Promise<{ slides: SlideEntry[]; decisions: SceneDecision[] }> {
     // sceneColor が 0 でも、中身が同じ画像を外す判定は残す（scenes.ts）
-    if (slides.length < 2) return [...slides];
+    if (slides.length < 2) return { slides: [...slides], decisions: [] };
     const thumbs = new Map<string, Uint8Array>();
     for (const s of slides) {
-      if (signal?.aborted) return [...slides];
+      if (signal?.aborted) return { slides: [...slides], decisions: [] };
       const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename), signal);
       if (thumb) thumbs.set(s.filename, thumb);
     }
-    if (thumbs.size === 0) return [...slides];
+    if (thumbs.size === 0) return { slides: [...slides], decisions: [] };
     // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
     const measure = usesVision(this.config)
       ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
@@ -249,7 +250,73 @@ export class Pipeline {
     ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
     if (hidden.length > 0) this.log(`notes.md から外した画像（同じ場面・ほぼ一色）: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
-    return shownSlides(slides, decisions);
+    return { slides: shownSlides(slides, decisions), decisions };
+  }
+
+  /**
+   * 映像・板書の節で外された画像から、本文の助けになる瞬間を LLM に選ばせて足す（SPEC §13.4c）。
+   * codex のときだけ動き、失敗しても処理は止めず載せる画像も変えない。
+   * 選択は picker-cache.json に残し、文字起こしと画像の集まりが同じやり直しでは呼び直さない
+   */
+  private async rescueImages(
+    dir: string,
+    segments: readonly MergedSegment[],
+    allSlides: readonly SlideEntry[],
+    shown: readonly SlideEntry[],
+    decisions: readonly SceneDecision[],
+    signal: AbortSignal,
+  ): Promise<SlideEntry[]> {
+    const model = this.config.llmPickModel;
+    if (this.config.llm !== 'codex' || !model || signal.aborted) return [...shown];
+    try {
+      const regions = findPickRegions(segments, allSlides, decisions);
+      if (regions.length === 0) return [...shown];
+      const key = pickerCacheKey(regions, model);
+      const cached = await readPickerCache(dir);
+      let accepted: string[] = [];
+      let rejected: Rejected[] = [];
+      let errors: string[] = [];
+      let usedModel = model;
+      if (cached && cached.key === key && (cached.errors ?? []).length === 0) {
+        accepted = cached.accepted;
+        rejected = cached.rejected ?? [];
+        usedModel = cached.model;
+        this.log(`画像の救出: 前回の選択を使い回します（${cached.generatedAt}）`);
+      } else {
+        const slidesDir = path.join(dir, SLIDES_DIR);
+        for (const region of regions) {
+          if (signal.aborted) break;
+          const r = await pickRegion(
+            slidesDir,
+            region,
+            { codexBin: this.config.codexBin, model, fallbackModel: this.config.llmModel, signal },
+            this.log,
+          );
+          usedModel = r.model;
+          accepted.push(...r.accepted.map((c) => c.filename));
+          rejected.push(...r.rejected);
+          if (r.error) errors.push(r.error);
+        }
+        // 途中で止めたときは書かない（部分的な選択を次回に使い回さない）
+        if (!signal.aborted) {
+          await writePickerCache(dir, { key, generatedAt: new Date().toISOString(), model: usedModel, accepted, rejected, errors });
+        }
+      }
+      for (const e of errors) this.log(`画像の救出に失敗（ノートはそのまま作ります）: ${e}`);
+      if (accepted.length > 0) this.log(`画像の救出 (${usedModel}): ${accepted.length} 枚を足しました（${accepted.join(', ')}）`);
+      // scenes.json にも残す（外した判断と同じ場所で追えるように）。pickScenes が書いた直後なので読めるはず
+      try {
+        const scenes = JSON.parse(await readFile(workPath(dir, 'scenes.json'), 'utf8')) as Record<string, unknown>;
+        scenes['picker'] = { model: usedModel, accepted, rejected, errors, generatedAt: new Date().toISOString() };
+        await writeFile(workPath(dir, 'scenes.json'), JSON.stringify(scenes, null, 2));
+      } catch {
+        // scenes.json が無い・読めないときは記録だけ諦める
+      }
+      return withRescued(shown, allSlides, accepted);
+    } catch (error) {
+      this.log(`画像の救出に失敗（ノートはそのまま作ります）: ${error instanceof Error ? error.message : String(error)}`);
+      return [...shown];
+    }
   }
 
   /** audio.webm → wav → whisperkit-cli。report の区間を返す */
@@ -381,18 +448,18 @@ export class Pipeline {
           this.log(`slides.json の形が違う（画像の名前が slide_001.png の形でないなど）ので、画像なしでノートを作ります: ${dir}`);
         }
         // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
-        const slides = await this.pickScenes(dir, allSlides, signal);
+        const { slides: shownOnly, decisions } = await this.pickScenes(dir, allSlides, signal);
+        const segsWithVideoTime = segments.map((s) => ({
+          ...s,
+          videoStart: events ? toVideoTime(events, s.start) : s.start,
+          videoEnd: events ? toVideoTime(events, s.end) : s.end,
+        }));
+        // 映像・板書の節では、外した画像から本文の助けになる瞬間を救い出して足す（§13.4c）
+        const slides = await this.rescueImages(dir, segsWithVideoTime, allSlides, shownOnly, decisions, job.llm.signal);
         const session = (await readJson(workPath(dir, 'session.json'))) as
           | { title?: string; url?: string; startedAt?: string }
           | undefined;
-        const mapped: MergedSegment[] = assignSlides(
-          segments.map((s) => ({
-            ...s,
-            videoStart: events ? toVideoTime(events, s.start) : s.start,
-            videoEnd: events ? toVideoTime(events, s.end) : s.end,
-          })),
-          slides,
-        );
+        const mapped: MergedSegment[] = assignSlides(segsWithVideoTime, slides);
         const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
         await writeFile(
           workPath(dir, 'transcript.json'),
