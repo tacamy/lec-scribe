@@ -68,80 +68,25 @@ function normalizePhrase(text: string): string {
 }
 
 /**
- * Whisper が無音や区切りの悪い窓で出す決まり文句（学習データの動画の締めの言葉）。
- * 本物の発話でも言い得るので、これだけでは落とさず、窓いっぱい（15 秒以上）の区間のときだけ落とす。
- * 長い順に並べるのは、前方一致で短いほうに先に食われないようにするため
+ * Whisper が無音・音楽・区切りの悪い窓で出す決まり文句（学習データの動画の締めの言葉）。言い回しの違いもまとめて当てる
+ * （「ご視聴いただきありがとうございました」「チャンネル登録をよろしくお願いいたします」など）
  */
-/**
- * 日常的にも言う言い回し。幻覚として落とすには「遅すぎる」か「直前に密着している」という形の証拠が要る
- * （話の途中というだけでは落とさない。講師が実際にお礼を言う場面があるため）
- */
-const EVERYDAY_PHRASES = ['ありがとうございました', 'ありがとうございます'];
-
-function isEverydayPhrase(text: string): boolean {
-  return EVERYDAY_PHRASES.includes(normalizePhrase(text));
-}
-
-// 「チャンネル登録」は「お願いいたします」「よろしくお願いします」の形でも出る（1 章 GD I-4 の最後に、直前の区間に
-// ぴったり続く「チャンネル登録をお願いいたします。」が入っていた。2026-10-02）
-const KNOWN_HALLUCINATIONS = [
-  'ご視聴ありがとうございました',
-  'ご視聴ありがとうございます',
-  'ありがとうございました',
-  'チャンネル登録お願いします',
-  'チャンネル登録をお願いします',
-  'チャンネル登録お願いいたします',
-  'チャンネル登録をお願いいたします',
-  'チャンネル登録よろしくお願いします',
-  'チャンネル登録をよろしくお願いします',
-  'チャンネル登録よろしくお願いいたします',
-  'チャンネル登録をよろしくお願いいたします',
-  '最後までご視聴ありがとうございました',
-  'おやすみなさい',
-]
-  .map(normalizePhrase)
-  .sort((a, b) => b.length - a.length);
+const STOCK_PHRASES =
+  /(?:最後まで)?ご視聴(?:いただき|頂き)?(?:まして)?(?:誠に|本当に)?ありがとうございま(?:した|す)|(?:高評価(?:と|や)?)?チャンネル登録(?:と高評価)?を?(?:よろしく)?お願い(?:いた)?します|ありがとうございま(?:した|す)|おやすみなさい/g;
+/** 決まり文句の前後に付いても、区間に中身があることにはならない言葉（「それではご視聴ありがとうございました」） */
+const STOCK_FILLERS = /^(?:それでは|では|はい|皆さん|みなさん|えー|あの)*$/;
 
 /**
- * 本文が決まり文句だけでできているか。Whisper は同じ文を何度も繰り返して出すことがあるので、
- * 「ご視聴ありがとうございました。ご視聴ありがとうございました。」のような繰り返しも 1 つとみなす
+ * 本文が決まり文句（と「それでは」「はい」程度）だけでできているか。Whisper は同じ文を何度も繰り返して出すことがあるので、
+ * 「ご視聴ありがとうございました。ご視聴ありがとうございました。」のような繰り返しも決まり文句だけとみなす。
+ * 「含む」ではなく「それだけ」で見る: 本物の発話と同じ区間に付いて出たとき（「本日はここまでです。ご視聴…。次回は…」）に、
+ * 本物ごと捨てないため
  */
-function isStockPhraseOnly(text: string): boolean {
-  let rest = normalizePhrase(text);
-  if (!rest) return false;
-  while (rest.length > 0) {
-    let matched = '';
-    for (const phrase of KNOWN_HALLUCINATIONS) {
-      if (rest.startsWith(phrase)) {
-        matched = phrase;
-        break;
-      }
-    }
-    if (!matched) return false;
-    rest = rest.slice(matched.length);
-  }
-  return true;
+export function isStockPhraseOnly(text: string): boolean {
+  const normalized = normalizePhrase(text);
+  const rest = normalized.replace(STOCK_PHRASES, '');
+  return rest !== normalized && STOCK_FILLERS.test(rest);
 }
-
-/**
- * 決まり文句だけの区間が「長すぎる」か。日本語の話し言葉は 1 文字あたり 0.15〜0.2 秒なので、
- * 0.35 秒/文字を超えるなら実際には言っていない（無音の窓に埋められた）とみなす。
- * 「ご視聴ありがとうございました」（14 文字）なら 4.9 秒以上が対象
- */
-function isTooSlow(s: Segment): boolean {
-  const chars = normalizePhrase(s.text).length;
-  const seconds = s.end - s.start;
-  return chars > 0 && seconds >= Math.max(PHRASE_MIN_SEC, chars * PHRASE_MAX_SEC_PER_CHAR);
-}
-
-/** 音声の終わりからこの秒数の中にある決まり文句は、本当に言っている締めの言葉かもしれないので残す */
-const CLOSING_WINDOW_SEC = 60;
-/** 直前の区間の終わりからこの秒数以内に始まる = 同じ窓の末尾に付け足された */
-const GLUED_SEC = 0.02;
-
-/** これより短ければ、本当に言っている可能性があるので残す */
-const PHRASE_MIN_SEC = 3;
-const PHRASE_MAX_SEC_PER_CHAR = 0.35;
 
 /** 30 秒の窓いっぱいの区間とみなす長さ */
 const WINDOW_ARTIFACT_SEC = 20;
@@ -155,7 +100,7 @@ export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol'
  * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
  * （実例: 59.6〜89.6 秒の「ご視聴ありがとうございました」が 61〜86 秒の発話と重なる）。
  * 1 本の音声で区間が重なることはないので、長い区間が他の区間と大きく重なっていれば捨てる。
- * 決まり文句だけの長い区間も捨てる。
+ * 決まり文句だけの区間も捨てる。
  *
  * 重なりは「まだ残っている区間」とだけ数え、長い区間から順に見る。単純に全区間と比べると、
  * 幻覚の窓に巻き込まれた本物の長い区間まで一緒に消えてしまうため（幻覚の窓のほうが長い）
@@ -174,23 +119,13 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   if (speech.length === 0) return { kept: [...segments], dropped: [] };
   for (const s of symbols) dropped.push({ ...s, reason: 'symbol' });
 
-  // 決まり文句だけの区間は、(a) しゃべる速さから考えて長すぎる、または (b) 話の途中に出てくる
-  // （締めの言葉は最後にしか言わない）なら捨てる。実例: 5 章で「ありがとうございました」が
-  // 2.0 秒ちょうどの区間として話の途中に 3 回入っていた（直前の区間の終わりと同じ時刻に始まる）。
-  // 「音声の終わり」は発話の終わり: 記号区間（エンディングの音楽）まで含めると、本当に最後に言った
-  // 締めの言葉が「話の途中」扱いになって捨てられる（2026-10-01 のレビュー）
-  const talkEnd = speech.reduce((m, s) => Math.max(m, s.end), 0);
-  const sorted = [...speech].sort((a, b) => a.start - b.start);
+  // 決まり文句だけの区間は、いつでも捨てる（2026-10-02）。以前は「話の途中・直前の区間に密着・しゃべる速さから考えて長すぎる」の
+  // どれかのときだけ捨て、最後に間を空けて言ったものは本物の締めかもしれないので残していた。50 セッションで残っていた 3 区間
+  // （GD I-3 8 章・14 章の最後の「ありがとうございました。」と、7 章の途中の宣伝映像の音楽の上の 25 秒の
+  // 「それではご視聴ありがとうございました」）を録音の音量で確かめると、2 つはほぼ無音（-70 dB 前後。直前の発話は -37 dB）、
+  // 1 つは音楽だけで、どれも幻覚だった。本物の締めの言葉を捨てても、ノートの中身は何も失われない
   const survivors = speech.filter((s) => {
     if (!isStockPhraseOnly(s.text)) return true;
-    const midTalk = talkEnd - s.end > CLOSING_WINDOW_SEC;
-    // 直前の区間の終わりにぴったり続く決まり文句は、窓の末尾に付け足された幻覚（本物の発話は VAD の区切りで少し間が空く）
-    const prev = sorted[sorted.indexOf(s) - 1];
-    const glued = prev !== undefined && Math.abs(s.start - prev.end) < GLUED_SEC;
-    // 「ありがとうございました」のように本当に言うことがある短い言い回しは、話の途中というだけでは落とさない
-    // （遅すぎる・直前に密着している、という幻覚らしい形のときだけ）。「ご視聴ありがとうございました」等は途中でも落とす
-    const everyday = isEverydayPhrase(s.text);
-    if (!isTooSlow(s) && !glued && (everyday || !midTalk)) return true;
     dropped.push({ ...s, reason: 'phrase' });
     return false;
   });
