@@ -382,6 +382,11 @@ describe('buildNotesMarkdown', () => {
     const kept = buildNotesMarkdown({ sections: mixed, polished: new Map([['slide_001', { text: '' }]]) });
     expect(kept).toContain('（整えられなかったため文字起こしのまま）\n\n一枚目の話。');
     expect(kept).not.toContain('♪');
+    // 言いよどみの音だけの節（実例: 2 章 GD I-4 の最後の「ん」「ん」「ん」）は、整えて空になっても画像だけにする
+    const fillerOnly = [{ ...sections[0]!, texts: ['ん', 'ん', 'ん'] }];
+    const filler = buildNotesMarkdown({ sections: fillerOnly, polished: new Map([['slide_001', { text: '' }]]) });
+    expect(filler).not.toContain('整えられなかったため');
+    expect(filler).not.toContain('ん\n');
   });
 
   it('leaves a silent slide as the image alone', () => {

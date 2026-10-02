@@ -460,7 +460,7 @@ export function buildNotesMarkdown(input: {
     }
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
-    // 記号だけの文（「♪」等。この対策より前に作った transcript に残っていることがある）は発話ではないので除き、
+    // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、
     // 発話が 1 つもなければ注意書きも本文も出さない（2026-10-01）
     const polished = input.polished.get(section.id)?.text;
     const spoken = section.texts.filter((t) => hasSpeechText(t));
