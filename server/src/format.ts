@@ -6,9 +6,22 @@ export type Segment = {
 };
 
 /** 00:00:00,000（SRT）/ 00:00:00.000（VTT） */
-/** 発話といえる文字（文字・数字）を 1 つでも含むか。記号だけ（動画の最後の音楽の「♪」など）は発話ではない（2026-10-01） */
+/**
+ * 言いよどみ・相づちの音だけの文（「ん」「うん」「えー」「あー」）か。仮名「ん・う・あ・え・お・ー・〜・っ」だけでできていて、
+ * 「ん」か「ー」を含むか 1 文字のもの。「おお」「うえ」のように語になりうる組は含めない。
+ * Whisper は締めの音楽や小さな物音を「ん」と書き起こすことがある（2 章 GD I-4 の最後に、2 秒ずつの「ん」が 3 つ。2026-10-02）
+ */
+export function isFillerOnly(text: string): boolean {
+  const t = text.replace(/[\s。、.,!！?？…‥]/g, '');
+  return /^[んうあえおー〜っ]+$/.test(t) && (/[んー]/.test(t) || t.length === 1);
+}
+
+/**
+ * 発話といえる文字（文字・数字）を 1 つでも含むか。記号だけ（動画の最後の音楽の「♪」など。2026-10-01）と、
+ * 言いよどみの音だけ（「ん」「えー」。2026-10-02）は発話ではない
+ */
 export function hasSpeechText(text: string): boolean {
-  return /[\p{L}\p{N}]/u.test(text);
+  return /[\p{L}\p{N}]/u.test(text) && !isFillerOnly(text);
 }
 
 export function formatTimestamp(seconds: number, separator: ',' | '.' = ','): string {

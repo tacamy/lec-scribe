@@ -1,4 +1,4 @@
-import { hasSpeechText, type Segment } from './format.ts';
+import { hasSpeechText, isFillerOnly, type Segment } from './format.ts';
 
 /**
  * whisperkit-cli の呼び出しと report JSON の正規化（SPEC §13.1）。
@@ -94,7 +94,7 @@ const WINDOW_ARTIFACT_SEC = 20;
 const OVERLAP_ARTIFACT_SEC = 5;
 
 /** 捨てた区間。なぜ捨てたかをログに残せるように reason を付ける */
-export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' };
+export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' | 'filler' };
 
 /**
  * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
@@ -109,15 +109,16 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
   const dropped: DroppedSegment[] = [];
   const duration = (s: Segment) => s.end - s.start;
 
-  // 文字（文字・数字）を 1 つも含まない区間は発話ではない（動画の最後の音楽が「♪」と書き起こされる等。2026-10-01）。
-  // 残すと「発話があるのに整えると空」になり、notes.md に「（整えられなかったため文字起こしのまま）」と ♪ だけが載る。
+  // 文字（文字・数字）を 1 つも含まない区間と、言いよどみの音だけの区間は発話ではない（動画の最後の音楽が「♪」や「ん」と
+  // 書き起こされる等。2026-10-01、2026-10-02）。残すと「発話があるのに整えると空」になり、notes.md に
+  // 「（整えられなかったため文字起こしのまま）」と ♪ や「んんん」だけが載る。
   // 出力からは外すが、時間帯としては実在する音（音楽の帯）なので、下の「重なり」の判定には証拠として残す。
   // 発話が 1 つもない録音（音楽だけの動画など）は、全部を失敗にしないため何も捨てずそのまま返す
   const speech: Segment[] = [];
   const symbols: Segment[] = [];
   for (const s of segments) (hasSpeechText(s.text) ? speech : symbols).push(s);
   if (speech.length === 0) return { kept: [...segments], dropped: [] };
-  for (const s of symbols) dropped.push({ ...s, reason: 'symbol' });
+  for (const s of symbols) dropped.push({ ...s, reason: isFillerOnly(s.text) ? 'filler' : 'symbol' });
 
   // 決まり文句だけの区間は、いつでも捨てる（2026-10-02）。以前は「話の途中・直前の区間に密着・しゃべる速さから考えて長すぎる」の
   // どれかのときだけ捨て、最後に間を空けて言ったものは本物の締めかもしれないので残していた。50 セッションで残っていた 3 区間

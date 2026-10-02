@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatClock, formatTimestamp, slugify, toSrt, toTxt, toVtt } from './format.ts';
+import { formatClock, formatTimestamp, hasSpeechText, isFillerOnly, slugify, toSrt, toTxt, toVtt } from './format.ts';
 
 const segments = [
   { start: 0, end: 8.5, text: '今日はデザインについて説明します。' },
@@ -44,5 +44,22 @@ describe('slugify', () => {
     expect(slugify('a/b\\c:d*e?f"g<h>i|j')).toBe('a_b_c_d_e_f_g_h_i_j');
     expect(slugify(undefined)).toBe('');
     expect(slugify('x'.repeat(100)).length).toBe(60);
+  });
+});
+
+describe('isFillerOnly / hasSpeechText', () => {
+  it('言いよどみ・相づちの音だけの文は発話とみなさない', () => {
+    for (const t of ['ん', 'んん', 'うん', 'ううん', 'えー', 'あー', 'んー', 'あ', 'え。', ' ん ']) {
+      expect(isFillerOnly(t)).toBe(true);
+      expect(hasSpeechText(t)).toBe(false);
+    }
+  });
+
+  it('語になりうる仮名の組や、中身のある文は発話', () => {
+    for (const t of ['おお', 'うえ', 'あお', 'うんと大きい', 'えーと、まず', 'はい', '線を引きます']) {
+      expect(isFillerOnly(t)).toBe(false);
+      expect(hasSpeechText(t)).toBe(true);
+    }
+    expect(hasSpeechText('♪')).toBe(false);
   });
 });

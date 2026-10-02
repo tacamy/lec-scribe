@@ -70,6 +70,15 @@ describe('dropWindowArtifacts', () => {
     const { kept, dropped } = dropWindowArtifacts(segments);
     expect(kept.map((s) => s.text)).toEqual(['アイデアの基礎の科目を担当します']);
     expect(dropped.map((d) => d.reason)).toEqual(['symbol', 'symbol']);
+    // 言いよどみの音だけの区間も捨てる（実例: 2 章 GD I-4 の最後に、締めの音楽の上で 2 秒ずつの「ん」が 3 つ）
+    const fillers = dropWindowArtifacts([
+      { start: 400.8, end: 402.96, text: '不備のないように注意してください' },
+      { start: 406.9, end: 408.9, text: 'ん' },
+      { start: 409.9, end: 411.9, text: 'ん' },
+      { start: 411.9, end: 413.9, text: 'ん' },
+    ]);
+    expect(fillers.kept.map((s) => s.text)).toEqual(['不備のないように注意してください']);
+    expect(fillers.dropped.map((d) => d.reason)).toEqual(['filler', 'filler', 'filler']);
     // 発話が 1 つもない録音（音楽だけの動画など）は、全部を失敗にしないため何も捨てない
     const musicOnly = dropWindowArtifacts([{ start: 0, end: 5, text: '♪' }, { start: 5, end: 9, text: '🎵' }]);
     expect(musicOnly.kept).toHaveLength(2);
