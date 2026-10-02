@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from './exec.ts';
 import { workPath } from './layout.ts';
-import { codexArgs, isModelUnavailable, readCodexDefaults } from './llm.ts';
+import { createBackend, isModelUnavailable } from './llm.ts';
 import { slideStart, type SlideEntry } from './merge.ts';
 import type { SceneDecision } from './scenes.ts';
 
@@ -14,7 +14,8 @@ import type { SceneDecision } from './scenes.ts';
  * 場面まとめは見た目の近さでしか判断できないので、腕の実演やホワイトボードに描いている途中の状態のような
  * 「動きこそが内容」の画像を、同じ場面として 1 枚に畳んでしまう（1 章 GD I-4 の腕の実演で確認）。
  * そこで、スライドではない画面（stillFraction < 0.976）の外された画像を文字起こしと一緒に LLM に見せ、
- * 本文に対応する動作が写っているものだけをノートに足す。足すだけで、規則が載せた画像は動かさない。
+ * (1) 本文に対応する動作が写っているものを足し（picks）、(2) 載っている代表より同じまとまりの外された画像の方が
+ * 本文の動作を見せているなら差し替える（swaps）。どちらも規則が載せた画像を減らさない（差し替えは同じまとまりの中だけ）。
  *
  * モデルは gpt-5.6-terra を既定にする（2026-10-02 の実測）。選んだものの質は luna・terra・astra とも
  * 間違いなしだが、luna には拾い漏れがあり（腕の実演の 2 ポーズ目を 3 回中 2 回逃す。採用 3 枚に対し
@@ -41,6 +42,10 @@ export const PICK_MIN_SPACING_SEC = 12;
 export const PICK_CHUNK_TOLERANCE_SEC = 90;
 /** 1 回の呼び出しに付ける画像の上限。超えたら節を時間で半分に割る */
 export const PICK_MAX_CANDIDATES = 60;
+/** 代表にこの文字数以上の文字（字幕・説明）が写っていたら、文字が減る差し替えを弾く */
+export const SWAP_TEXT_MIN = 4;
+/** 差し替え先の文字がこの割合を下回ったら「文字が減る」とみなす */
+export const SWAP_TEXT_KEEP = 0.6;
 
 export type PickChunk = { start: number; text: string };
 export type PickCandidate = {
@@ -88,6 +93,7 @@ export function sceneGroups(decisions: readonly SceneDecision[]): Map<string, st
   return out;
 }
 
+/** プロンプトに載せる時刻（MM:SS）。実測はこの形で行ったので変えない */
 function clockOf(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
@@ -158,7 +164,9 @@ export function findPickRegions(
     regions.push({ start, end, chunks, candidates });
   }
 
-  // 候補が多すぎる節は時間で半分に割る（1 回の呼び出しが重くなりすぎないように）
+  // 候補が多すぎる節は時間で半分に割る（1 回の呼び出しが重くなりすぎないように）。
+  // 前半は [start, mid)、後半は [mid, end] にして、境目の候補と段落を両方に入れない（2026-10-02 のレビュー。
+  // 両方に入れると同じ画像が 2 回選ばれ、notes.md に同じ節が 2 つできた）
   const sized: PickRegion[] = [];
   const split = (region: PickRegion) => {
     if (region.candidates.length <= PICK_MAX_CANDIDATES || region.chunks.length < 2) {
@@ -166,15 +174,19 @@ export function findPickRegions(
       return;
     }
     const mid = region.candidates[Math.floor(region.candidates.length / 2)]!.videoTime;
-    const half = (lo: number, hi: number): PickRegion => ({
-      start: lo,
-      end: hi,
-      chunks: region.chunks.filter((c) => c.start >= lo && c.start <= hi),
-      candidates: region.candidates.filter((c) => c.videoTime >= lo && c.videoTime <= hi),
-    });
-    const a = half(region.start, mid);
-    const b = half(mid, region.end);
-    if (a.chunks.length === 0 || b.chunks.length === 0) {
+    const a: PickRegion = {
+      start: region.start,
+      end: mid,
+      chunks: region.chunks.filter((c) => c.start < mid),
+      candidates: region.candidates.filter((c) => c.videoTime < mid),
+    };
+    const b: PickRegion = {
+      start: mid,
+      end: region.end,
+      chunks: region.chunks.filter((c) => c.start >= mid),
+      candidates: region.candidates.filter((c) => c.videoTime >= mid),
+    };
+    if (a.chunks.length === 0 || b.chunks.length === 0 || a.candidates.length === 0) {
       sized.push(region);
       return;
     }
@@ -306,7 +318,7 @@ export function acceptSwaps(region: PickRegion, proposals: readonly SwapProposal
     // 字幕・説明の文字が写っている代表を、文字のない（少ない）画像に差し替えない。
     // 「はじめに」（自然を観る）で、字幕の出た代表 016 を字幕の無い 014 に差し替える提案が実際に出た（2026-10-02）
     const fromLen = from.textLen ?? 0;
-    if (fromLen >= 4 && (to.textLen ?? 0) < fromLen * 0.6) {
+    if (fromLen >= SWAP_TEXT_MIN && (to.textLen ?? 0) < fromLen * SWAP_TEXT_KEEP) {
       rejected.push({ filename: to.filename, why: `${from.filename} より写っている文字が減る` });
       continue;
     }
@@ -334,15 +346,16 @@ export function acceptResponse(region: PickRegion, response: PickResponse): { ac
 }
 
 /**
- * 機械的な歯止め。モデルによらず同じ規律を守らせる:
+ * 足す画像（picks）の機械的な歯止め。モデルによらず同じ規律を守らせる:
  * - 未掲載の候補だけ（掲載済み・範囲外の番号は捨てる）
+ * - 段落の番号が整数で、0（冒頭）か実在する段落であること。範囲外・小数は答えの崩れとみなして捨てる
  * - 選んだ段落と画像の時刻が大きくずれていたら見間違いとみなす
- * - 載っている画像・ほかの採用から 15 秒以上離す（近い画像はほぼ同じ場面）
+ * - 載っている画像・ほかの採用から PICK_MIN_SPACING_SEC（12 秒）以上離す（近い画像はほぼ同じ場面）
  * - 採用は段落 3 つにつき 2 枚まで
  */
 export function acceptPicks(region: PickRegion, picks: readonly Pick[]): { accepted: PickCandidate[]; rejected: Rejected[] } {
   const rejected: Rejected[] = [];
-  const chosen: Array<{ candidate: PickCandidate; pick: Pick }> = [];
+  const chosen: PickCandidate[] = [];
   const seen = new Set<string>();
   for (const pick of picks) {
     const candidate = region.candidates[pick.image - 1];
@@ -356,19 +369,24 @@ export function acceptPicks(region: PickRegion, picks: readonly Pick[]): { accep
     }
     if (seen.has(candidate.filename)) continue;
     seen.add(candidate.filename);
-    const anchor = pick.after_paragraph <= 0 ? region.start : (region.chunks[pick.after_paragraph - 1]?.start ?? region.start);
-    if (Math.abs(candidate.videoTime - anchor) > PICK_CHUNK_TOLERANCE_SEC) {
-      rejected.push({ filename: candidate.filename, why: `段落${pick.after_paragraph}と時刻が離れすぎ` });
+    const p = pick.after_paragraph;
+    if (!Number.isInteger(p) || p < 0 || p > region.chunks.length) {
+      rejected.push({ filename: candidate.filename, why: `段落の番号が不正（${p}）` });
       continue;
     }
-    chosen.push({ candidate, pick });
+    const anchor = p === 0 ? region.start : region.chunks[p - 1]!.start;
+    if (Math.abs(candidate.videoTime - anchor) > PICK_CHUNK_TOLERANCE_SEC) {
+      rejected.push({ filename: candidate.filename, why: `段落${p}と時刻が離れすぎ` });
+      continue;
+    }
+    chosen.push(candidate);
   }
   // 時間順に、載っている画像とほかの採用から十分離れているものだけを通す
-  chosen.sort((a, b) => a.candidate.videoTime - b.candidate.videoTime);
+  chosen.sort((a, b) => a.videoTime - b.videoTime);
   const shownTimes = region.candidates.filter((c) => c.shown).map((c) => c.videoTime);
   const cap = pickCap(region);
   const accepted: PickCandidate[] = [];
-  for (const { candidate } of chosen) {
+  for (const candidate of chosen) {
     const near = [...shownTimes, ...accepted.map((a) => a.videoTime)].some((t) => Math.abs(candidate.videoTime - t) < PICK_MIN_SPACING_SEC);
     if (near) {
       rejected.push({ filename: candidate.filename, why: '載っている画像か別の採用に近すぎ' });
@@ -383,23 +401,35 @@ export function acceptPicks(region: PickRegion, picks: readonly Pick[]): { accep
   return { accepted, rejected };
 }
 
-/** 候補画像を 512px の JPEG に縮小する（macOS の sips）。失敗したら元の PNG をそのまま使う */
+/**
+ * 候補画像を一時フォルダに 001.jpg… の名前で用意する（sips で 512px の JPEG に縮小。失敗したら元の PNG を写す）。
+ * セッションのフォルダ名はページのタイトルから付くので、元のパスをそのまま codex に渡さない:
+ * カンマを含むパスは codex が読み込めず、しかもエラーにならずに画像が黙って欠け、番号がずれる（2026-10-02 に確認）
+ */
 async function prepareImages(slidesDir: string, region: PickRegion, outDir: string, signal?: AbortSignal): Promise<string[]> {
   const files: string[] = [];
   for (const [i, c] of region.candidates.entries()) {
     const src = path.join(slidesDir, c.filename);
-    const dst = path.join(outDir, `${String(i + 1).padStart(3, '0')}.jpg`);
-    const r = await run('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '70', '-Z', '512', src, '--out', dst], { signal }).catch(
+    const base = path.join(outDir, String(i + 1).padStart(3, '0'));
+    const r = await run('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '70', '-Z', '512', src, '--out', `${base}.jpg`], { signal }).catch(
       () => ({ code: 1 }),
     );
-    files.push(r.code === 0 ? dst : src);
+    // sips は元のファイルが無いと警告だけ出して 0 で終わり、何も書かない。終了コードではなく出力の有無で見る
+    const made = r.code === 0 && (await stat(`${base}.jpg`).then((s) => s.size > 0).catch(() => false));
+    if (made) {
+      files.push(`${base}.jpg`);
+    } else {
+      // 写せなければ投げる（1 枚欠けると番号が全部ずれるので、この節は諦める）
+      await copyFile(src, `${base}.png`);
+      files.push(`${base}.png`);
+    }
   }
   return files;
 }
 
 export type PickerSettings = {
   codexBin: string;
-  /** 救出に使うモデル。'' なら機能ごと止める */
+  /** 救出に使うモデル。'' なら codex の既定 */
   model: string;
   /** モデルが使えないときのやり直し先（整えのモデル）。'' なら codex の既定 */
   fallbackModel: string;
@@ -415,48 +445,77 @@ export async function pickRegion(
   settings: PickerSettings,
   log: (line: string) => void,
 ): Promise<RegionResult> {
-  const callOnce = async (model: string): Promise<{ accepted: PickCandidate[]; swaps: Swap[]; rejected: Rejected[] }> => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-pick-'));
-    try {
-      const images = await prepareImages(slidesDir, region, tmp, settings.signal);
-      const schemaFile = path.join(tmp, 'schema.json');
-      const outFile = path.join(tmp, 'last-message.txt');
-      await writeFile(schemaFile, JSON.stringify(PICK_SCHEMA));
-      const defaults = await readCodexDefaults();
-      const args = codexArgs({
-        dir: tmp,
-        schemaFile,
-        outFile,
-        prompt: buildPickPrompt(region),
-        model: model || defaults.model,
-        effort: defaults.effort,
-        images,
-      });
-      const r = await run(settings.codexBin, args, { signal: settings.signal });
-      if (r.code !== 0) {
-        throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
-      }
-      const response = parsePicks(await readFile(outFile, 'utf8'));
-      return acceptResponse(region, response);
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  };
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-pick-'));
   try {
-    return { ...(await callOnce(settings.model)), model: settings.model };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (isModelUnavailable(message) && settings.fallbackModel !== settings.model && !settings.signal?.aborted) {
-      log(`画像の救出のモデル（${settings.model || '既定'}）が使えないため、整えのモデルでやり直します: ${message}`);
-      try {
-        return { ...(await callOnce(settings.fallbackModel)), model: settings.fallbackModel };
-      } catch (retryError) {
-        const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
-        return { accepted: [], swaps: [], rejected: [], error: retryMessage, model: settings.fallbackModel };
+    // 画像は 1 度だけ用意する（モデルの受け皿でやり直すときも使い回す）
+    const images = await prepareImages(slidesDir, region, tmp, settings.signal);
+    const prompt = buildPickPrompt(region);
+    const callOnce = async (model: string) => {
+      const backend = createBackend({
+        kind: 'codex',
+        model,
+        codexBin: settings.codexBin,
+        openaiApiKey: '',
+        ollamaUrl: '',
+        charsPerCall: 0,
+        ...(settings.signal ? { signal: settings.signal } : {}),
+      })!;
+      return acceptResponse(region, parsePicks(await backend.complete(prompt, PICK_SCHEMA, { images })));
+    };
+    try {
+      return { ...(await callOnce(settings.model)), model: settings.model };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isModelUnavailable(message) && settings.fallbackModel !== settings.model && !settings.signal?.aborted) {
+        log(`画像の救出のモデル（${settings.model || '既定'}）が使えないため、整えのモデルでやり直します: ${message}`);
+        try {
+          return { ...(await callOnce(settings.fallbackModel)), model: settings.fallbackModel };
+        } catch (retryError) {
+          const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
+          return { accepted: [], swaps: [], rejected: [], error: retryMessage, model: settings.fallbackModel };
+        }
       }
+      return { accepted: [], swaps: [], rejected: [], error: message, model: settings.model };
     }
-    return { accepted: [], swaps: [], rejected: [], error: message, model: settings.model };
+  } catch (error) {
+    // 画像を用意できなかった
+    return { accepted: [], swaps: [], rejected: [], error: error instanceof Error ? error.message : String(error), model: settings.model };
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
+}
+
+/**
+ * 節ごとの結果をまとめる。節をまたいだ重複と近さもここで見直す
+ * （節は時間で分かれているが、割った境目の両側で 12 秒以内の画像が別々に選ばれうる）
+ */
+export function mergeRegionResults(regions: readonly PickRegion[], results: readonly RegionResult[]): { accepted: string[]; swaps: Swap[]; rejected: Rejected[] } {
+  const swaps: Swap[] = [];
+  const usedFrom = new Set<string>();
+  const usedTo = new Set<string>();
+  for (const r of results) {
+    for (const s of r.swaps) {
+      if (usedFrom.has(s.from) || usedTo.has(s.to)) continue;
+      usedFrom.add(s.from);
+      usedTo.add(s.to);
+      swaps.push(s);
+    }
+  }
+  const shownTimes = new Map<string, number>();
+  for (const region of regions) for (const c of region.candidates) if (c.shown || usedTo.has(c.filename)) shownTimes.set(c.filename, c.videoTime);
+  const rejected: Rejected[] = results.flatMap((r) => r.rejected);
+  const accepted: PickCandidate[] = [];
+  const all = results.flatMap((r) => r.accepted).sort((a, b) => a.videoTime - b.videoTime);
+  for (const c of all) {
+    if (accepted.some((a) => a.filename === c.filename) || shownTimes.has(c.filename)) continue;
+    const near = [...shownTimes.values(), ...accepted.map((a) => a.videoTime)].some((t) => Math.abs(c.videoTime - t) < PICK_MIN_SPACING_SEC);
+    if (near) {
+      rejected.push({ filename: c.filename, why: '載っている画像か別の採用に近すぎ（節の境目）' });
+      continue;
+    }
+    accepted.push(c);
+  }
+  return { accepted: accepted.map((c) => c.filename), swaps, rejected };
 }
 
 export const PICKER_CACHE_FILE = 'picker-cache.json';
@@ -472,13 +531,31 @@ export type PickerCache = {
   errors: string[];
 };
 
-/** 節（段落と候補）とモデルから鍵を作る。文字起こし・画像の集まり・まとまり・歯止めの間隔が変われば呼び直す */
+/** 歯止めの線。キャッシュは歯止めを通したあとの結果なので、線を変えたら呼び直す */
+const PICKER_RULES = JSON.stringify({
+  still: PICK_STILL_SLIDE,
+  gap: PICK_REGION_GAP_SEC,
+  pad: PICK_REGION_PAD_SEC,
+  chunk: PICK_CHUNK_GAP_SEC,
+  spacing: PICK_MIN_SPACING_SEC,
+  tolerance: PICK_CHUNK_TOLERANCE_SEC,
+  max: PICK_MAX_CANDIDATES,
+  textMin: SWAP_TEXT_MIN,
+  textKeep: SWAP_TEXT_KEEP,
+  cap: '2/3',
+  schema: PICK_SCHEMA,
+});
+
+/**
+ * 節（プロンプトの全文と候補）・モデル・歯止めの線から鍵を作る。
+ * 文字起こし・画像の集まり・まとまり・プロンプトの文言・歯止めのどれかが変われば呼び直す
+ */
 export function pickerCacheKey(regions: readonly PickRegion[], model: string): string {
   const hash = createHash('sha256');
-  hash.update(`${model}\0spacing:${PICK_MIN_SPACING_SEC}\0swaps\n`);
+  hash.update(`${model}\0${PICKER_RULES}\n`);
   for (const r of regions) {
-    for (const c of r.chunks) hash.update(`c\0${Math.round(c.start)}\0${c.text}\n`);
-    for (const c of r.candidates) hash.update(`i\0${c.filename}\0${Math.round(c.videoTime)}\0${c.shown ? 1 : 0}\0${c.group ?? ''}\0${c.textLen ?? ''}\n`);
+    hash.update(`p\0${buildPickPrompt(r)}\n`);
+    for (const c of r.candidates) hash.update(`i\0${c.filename}\0${c.group ?? ''}\0${c.textLen ?? ''}\n`);
   }
   return hash.digest('hex').slice(0, 32);
 }
@@ -497,39 +574,102 @@ export async function writePickerCache(dir: string, cache: PickerCache): Promise
   await writeFile(workPath(dir, PICKER_CACHE_FILE), JSON.stringify(cache, null, 2)).catch(() => undefined);
 }
 
+export type PickerRun = {
+  accepted: string[];
+  swaps: Swap[];
+  rejected: Rejected[];
+  errors: string[];
+  model: string;
+  /** 前回の選択を使い回した */
+  reused: boolean;
+};
+
 /**
- * 採用した画像を載せる並びに差し込む。
- * 場面まとめの代表画像は、まとまりの先頭の時刻に繰り上げて置かれていることがある（§13.4b の standsFor。
- * まとまり全体の発話を代表の下に置くため）。救い出した画像がその繰り上げ区間に入るときは、
- * 代表を本来の撮影時刻に戻す。先頭側の発話は救った画像（実際にその時刻の画面）に付くので、むしろ正しくなる。
- * 戻さないと、あとの時刻の代表が先に並んで順序が逆転する（1 章 GD I-4 の 020/024 で確認）
+ * 節ごとに選ばせて、結果をまとめる。前回と鍵が同じで失敗が残っていなければ、呼ばずに前回の選択を返す。
+ * 途中で止めたときは何も採らず、キャッシュも書かない（部分的な選択を次回に使い回さない）
  */
-/**
- * 代表の差し替えを適用する。位置（繰り上げを含む）とまとまりの役割は代表のまま、見せる画像だけ入れ替える。
- * 発話の割り当ては変わらないので、まとまりの中のどの瞬間を見せるかだけが変わる
- */
-export function applySwaps(shown: readonly SlideEntry[], all: readonly SlideEntry[], swaps: readonly Swap[]): SlideEntry[] {
-  if (swaps.length === 0) return [...shown];
-  const byName = new Map(all.map((s) => [s.filename, s]));
-  const map = new Map(swaps.map((s) => [s.from, s.to]));
-  return shown.map((s) => {
-    const to = map.get(s.filename);
-    const raw = to ? byName.get(to) : undefined;
-    if (!raw) return s;
-    return { ...s, filename: raw.filename, seq: raw.seq, width: raw.width, height: raw.height };
-  });
+export async function runPicker(input: {
+  dir: string;
+  slidesDir: string;
+  regions: readonly PickRegion[];
+  settings: PickerSettings;
+  log: (line: string) => void;
+}): Promise<PickerRun> {
+  const { dir, slidesDir, regions, settings, log } = input;
+  const key = pickerCacheKey(regions, settings.model);
+  const cached = await readPickerCache(dir);
+  if (cached && cached.key === key && (cached.errors ?? []).length === 0) {
+    return { accepted: cached.accepted, swaps: cached.swaps ?? [], rejected: cached.rejected ?? [], errors: [], model: cached.model, reused: true };
+  }
+  const results: RegionResult[] = [];
+  let model = settings.model;
+  for (const region of regions) {
+    if (settings.signal?.aborted) break;
+    const r = await pickRegion(slidesDir, region, settings, log);
+    model = r.model;
+    results.push(r);
+  }
+  if (settings.signal?.aborted) return { accepted: [], swaps: [], rejected: [], errors: [], model, reused: false };
+  const merged = mergeRegionResults(regions, results);
+  const errors = results.flatMap((r) => (r.error ? [r.error] : []));
+  await writePickerCache(dir, { key, generatedAt: new Date().toISOString(), model, accepted: merged.accepted, swaps: merged.swaps, rejected: merged.rejected, errors });
+  return { ...merged, errors, model, reused: false };
 }
 
-export function withRescued(shown: readonly SlideEntry[], all: readonly SlideEntry[], accepted: readonly string[]): SlideEntry[] {
-  if (accepted.length === 0) return [...shown];
-  const byName = new Map(all.map((s) => [s.filename, s]));
-  const extra = accepted.map((f) => byName.get(f)).filter((s): s is SlideEntry => s !== undefined);
-  const adjusted = shown.map((s) => {
-    const raw = byName.get(s.filename);
-    if (!raw || raw.videoTime === s.videoTime) return s;
-    const anchored = Math.min(s.videoTime, raw.videoTime);
-    const own = Math.max(s.videoTime, raw.videoTime);
-    return extra.some((r) => r.videoTime >= anchored && r.videoTime <= own) ? raw : s;
-  });
-  return [...adjusted, ...extra].sort((a, b) => slideStart(a) - slideStart(b));
+/**
+ * 載せる画像の並びを作る（差し替えと救出を反映。§13.4c）。
+ *
+ * まとまり（場面まとめの代表と、そこへ辿れる外された画像）ごとに、見せる画像（代表か差し替え先、救った画像）を
+ * 撮影時刻の順に並べ、いちばん早いものに代表の位置（まとまりの先頭への繰り上げ standsFor を含む）を渡し、
+ * 残りは自分の撮影時刻に置く。こうするとまとまりの発話は、前の別の場面の画像に流れずにまとまりの画像の下に入る。
+ * 何も変わらないまとまりは、代表をそのまま返す（2026-10-02 のレビュー。代表を本来の時刻に戻すだけだと、
+ * 繰り上げ区間の発話が前の別のスライドに付いた）
+ */
+export function arrangeImages(
+  shown: readonly SlideEntry[],
+  all: readonly SlideEntry[],
+  decisions: readonly SceneDecision[],
+  accepted: readonly string[],
+  swaps: readonly Swap[],
+): SlideEntry[] {
+  if (accepted.length === 0 && swaps.length === 0) return [...shown];
+  const raw = new Map(all.map((s) => [s.filename, s]));
+  const repOf = sceneGroups(decisions);
+  const swapTo = new Map(swaps.map((s) => [s.from, s.to]));
+  const shownNames = new Set(shown.map((s) => s.filename));
+  // まとまりの終わり（代表と、そこへ辿れる画像のうち最も遅い撮影時刻）
+  const groupEnd = new Map<string, number>();
+  for (const s of shown) groupEnd.set(s.filename, raw.get(s.filename)?.videoTime ?? s.videoTime);
+  for (const [member, rep] of repOf) {
+    const t = raw.get(member)?.videoTime;
+    if (t !== undefined && groupEnd.has(rep)) groupEnd.set(rep, Math.max(groupEnd.get(rep)!, t));
+  }
+  // 救った画像の行き先: まとまりが分かればその代表、分からなければ代表の位置〜まとまりの終わりに入るか
+  const rescuedBy = new Map<string, SlideEntry[]>();
+  const standalone: SlideEntry[] = [];
+  for (const name of accepted) {
+    const entry = raw.get(name);
+    if (!entry) continue;
+    let rep = repOf.get(name);
+    if (!rep || !shownNames.has(rep)) {
+      rep = shown.find((s) => entry.videoTime >= s.videoTime && entry.videoTime <= (groupEnd.get(s.filename) ?? s.videoTime))?.filename;
+    }
+    if (rep) rescuedBy.set(rep, [...(rescuedBy.get(rep) ?? []), entry]);
+    else standalone.push(entry);
+  }
+  const out: SlideEntry[] = [];
+  for (const s of shown) {
+    const display = raw.get(swapTo.get(s.filename) ?? '') ?? raw.get(s.filename) ?? s;
+    const extras = rescuedBy.get(s.filename) ?? [];
+    if (display.filename === s.filename && extras.length === 0) {
+      out.push(s);
+      continue;
+    }
+    const members = [display, ...extras].sort((a, b) => a.videoTime - b.videoTime);
+    const [first, ...rest] = members;
+    out.push({ ...s, filename: first!.filename, seq: first!.seq, width: first!.width, height: first!.height });
+    out.push(...rest);
+  }
+  out.push(...standalone);
+  return out.sort((a, b) => slideStart(a) - slideStart(b));
 }

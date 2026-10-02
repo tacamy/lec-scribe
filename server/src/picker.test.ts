@@ -1,7 +1,8 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { assignSlides } from './merge.ts';
 import type { SlideEntry } from './merge.ts';
 import {
   PICK_MAX_CANDIDATES,
@@ -9,15 +10,16 @@ import {
   acceptPicks,
   acceptResponse,
   acceptSwaps,
-  applySwaps,
+  arrangeImages,
   buildPickPrompt,
   findPickRegions,
   parsePicks,
   pickCap,
   pickRegion,
+  mergeRegionResults,
   pickerCacheKey,
+  runPicker,
   sceneGroups,
-  withRescued,
   type PickRegion,
 } from './picker.ts';
 import type { SceneDecision } from './scenes.ts';
@@ -82,6 +84,12 @@ describe('findPickRegions', () => {
     const regions = findPickRegions(segs, slides, decisions);
     expect(regions.length).toBeGreaterThan(1);
     for (const r of regions) expect(r.candidates.length).toBeLessThanOrEqual(PICK_MAX_CANDIDATES);
+    // 境目の候補と段落はどちらか一方にだけ入る（両方に入ると同じ画像が 2 回選ばれる。2026-10-02 のレビュー）
+    const names = regions.flatMap((r) => r.candidates.map((c) => c.filename));
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toHaveLength(slides.length);
+    const starts = regions.flatMap((r) => r.chunks.map((c) => c.start));
+    expect(new Set(starts).size).toBe(starts.length);
   });
 });
 
@@ -130,6 +138,14 @@ describe('acceptPicks', () => {
     const { accepted, rejected } = acceptPicks(far, [{ image: 1, after_paragraph: 1, reason: '' }]);
     expect(accepted).toHaveLength(0);
     expect(rejected[0]!.why).toContain('離れすぎ');
+  });
+
+  it('段落の番号が範囲外・小数なら捨てる（節の開始で検算しない）', () => {
+    const r: PickRegion = { start: 90, end: 400, chunks: [{ start: 100, text: 'a' }, { start: 300, text: 'b' }], candidates: [{ filename: 'x.png', videoTime: 310, shown: false }] };
+    expect(acceptPicks(r, [{ image: 1, after_paragraph: 3, reason: '' }]).rejected[0]!.why).toContain('段落の番号が不正');
+    expect(acceptPicks(r, [{ image: 1, after_paragraph: 1.5, reason: '' }]).rejected[0]!.why).toContain('段落の番号が不正');
+    expect(acceptPicks(r, [{ image: 1, after_paragraph: -1, reason: '' }]).rejected[0]!.why).toContain('段落の番号が不正');
+    expect(acceptPicks(r, [{ image: 1, after_paragraph: 2, reason: '' }]).accepted.map((a) => a.filename)).toEqual(['x.png']);
   });
 
   it('上限（段落 3 つにつき 2 枚）を超えた分は捨てる', () => {
@@ -188,14 +204,9 @@ describe('parsePicks / prompt / cache key', () => {
     expect(pickerCacheKey([region], 'm2')).not.toBe(base);
     expect(pickerCacheKey([{ ...region, chunks: [{ start: 10, text: 'b' }] }], 'm1')).not.toBe(base);
     expect(pickerCacheKey([{ ...region, candidates: [{ filename: 's.png', videoTime: 20, shown: true }] }], 'm1')).not.toBe(base);
+    expect(pickerCacheKey([{ ...region, candidates: [{ filename: 's.png', videoTime: 20, shown: false, textLen: 5 }] }], 'm1')).not.toBe(base);
+    expect(pickerCacheKey([{ ...region, candidates: [{ filename: 's.png', videoTime: 20, shown: false, group: 'r.png' }] }], 'm1')).not.toBe(base);
     expect(pickerCacheKey([region], 'm1')).toBe(base);
-  });
-
-  it('withRescued は時刻順に差し込む', () => {
-    const all = [slide('slide_001.png', 10), slide('slide_002.png', 20), slide('slide_003.png', 30)];
-    const shown = [all[0]!, all[2]!];
-    expect(withRescued(shown, all, ['slide_002.png']).map((s) => s.filename)).toEqual(['slide_001.png', 'slide_002.png', 'slide_003.png']);
-    expect(withRescued(shown, all, []).map((s) => s.filename)).toEqual(['slide_001.png', 'slide_003.png']);
   });
 
   it('sceneGroups は sameSceneAs を載っている画像まで辿る', () => {
@@ -212,21 +223,9 @@ describe('parsePicks / prompt / cache key', () => {
     expect(groups.has('d.png')).toBe(false);
     expect(groups.has('e.png')).toBe(false);
   });
-
-  it('withRescued は、繰り上げ区間に救った画像が入る代表を本来の時刻に戻す', () => {
-    const all = [slide('slide_001.png', 10), slide('slide_002.png', 20), slide('slide_003.png', 30)];
-    // slide_003 が slide_001 の位置（10 秒）に繰り上げられて載っている（standsFor）
-    const anchored = { ...all[0]!, filename: 'slide_003.png' };
-    const out = withRescued([anchored], all, ['slide_002.png']);
-    expect(out.map((s) => s.filename)).toEqual(['slide_002.png', 'slide_003.png']);
-    expect(out[1]!.videoTime).toBe(30);
-    // 繰り上げ区間の外の救出なら、代表はそのまま
-    const out2 = withRescued([anchored], [...all, slide('slide_004.png', 40)], ['slide_004.png']);
-    expect(out2[0]!.videoTime).toBe(10);
-  });
 });
 
-describe('acceptSwaps / acceptResponse / applySwaps', () => {
+describe('acceptSwaps / acceptResponse', () => {
   const region: PickRegion = {
     start: 90,
     end: 300,
@@ -288,22 +287,100 @@ describe('acceptSwaps / acceptResponse / applySwaps', () => {
     expect(rejected.map((r) => r.why)).toContain('掲載済み');
   });
 
-  it('applySwaps は位置を保ったまま画像だけ入れ替える', () => {
-    const all = [slide('slide_001.png', 100), { ...slide('slide_002.png', 110), seq: 2, width: 1280, height: 720 }];
-    // 代表が 90 秒に繰り上げられている
-    const anchoredRep = { ...all[0]!, videoTime: 90 };
-    const out = applySwaps([anchoredRep], all, [{ from: 'slide_001.png', to: 'slide_002.png' }]);
-    expect(out[0]!.filename).toBe('slide_002.png');
-    expect(out[0]!.videoTime).toBe(90); // 位置は代表のまま
-    expect(out[0]!.width).toBe(1280);
-    // 差し替え先が見つからなければそのまま
-    expect(applySwaps([anchoredRep], all, [{ from: 'slide_001.png', to: 'slide_009.png' }])[0]!.filename).toBe('slide_001.png');
+});
+
+describe('mergeRegionResults', () => {
+  it('節の境目をまたいだ重複と近さを落とす', () => {
+    const a: PickRegion = { start: 0, end: 100, chunks: [{ start: 10, text: 'a' }], candidates: [{ filename: 'x.png', videoTime: 97, shown: false }] };
+    const b: PickRegion = { start: 100, end: 200, chunks: [{ start: 110, text: 'b' }], candidates: [{ filename: 'y.png', videoTime: 103, shown: false }] };
+    const merged = mergeRegionResults(
+      [a, b],
+      [
+        { accepted: [a.candidates[0]!], swaps: [], rejected: [], model: 'm' },
+        { accepted: [b.candidates[0]!, a.candidates[0]!], swaps: [], rejected: [], model: 'm' },
+      ],
+    );
+    expect(merged.accepted).toEqual(['x.png']);
+    expect(merged.rejected.some((r) => r.filename === 'y.png' && r.why.includes('境目'))).toBe(true);
   });
 });
 
-describe('pickRegion（codex スタブ）', () => {
+describe('arrangeImages', () => {
+  const seg = (t: number) => ({ start: t, end: t + 5, videoStart: t, videoEnd: t + 5, text: `${t}` });
+  const segs = [105, 115, 125, 135, 165].map(seg);
+  const owners = (slides: SlideEntry[]) => assignSlides(segs, slides).map((m) => m.slide);
+  const P = slide('slide_001.png', 0);
+
+  it('何も選ばれなければ、載せる並びをそのまま返す', () => {
+    const shown = [P, slide('slide_002.png', 100)];
+    expect(arrangeImages(shown, shown, [], [], [])).toEqual(shown);
+  });
+
+  it('繰り上げられた代表のまとまりに救った画像が入っても、まとまりの発話は前の別の場面に流れない', () => {
+    // 代表 R=160 秒が、まとまりの先頭 A=100 秒の位置に繰り上げられて載っている（sceneKeep: last）。X=130 秒を救う
+    const A = slide('slide_002.png', 100);
+    const X = slide('slide_003.png', 130);
+    const R = slide('slide_004.png', 160);
+    const decisions: SceneDecision[] = [
+      { filename: 'slide_001.png', shown: true },
+      { filename: 'slide_002.png', shown: false, reason: 'superseded', sameSceneAs: 'slide_004.png' },
+      { filename: 'slide_003.png', shown: false, reason: 'text', sameSceneAs: 'slide_002.png' },
+      { filename: 'slide_004.png', shown: true, standsFor: 'slide_002.png' },
+    ];
+    const anchoredR = { ...A, filename: R.filename };
+    const out = arrangeImages([P, anchoredR], [P, A, X, R], decisions, ['slide_003.png'], []);
+    expect(out.map((s) => s.filename)).toEqual(['slide_001.png', 'slide_003.png', 'slide_004.png']);
+    // 105〜135 秒は救った X、165 秒は R。前の slide_001 には付かない
+    expect(owners(out)).toEqual(['slide_003.png', 'slide_003.png', 'slide_003.png', 'slide_003.png', 'slide_004.png']);
+  });
+
+  it('差し替えと救出が同じまとまりに重なっても、まとまりの先頭の位置を保つ（sceneKeep: first）', () => {
+    // 代表 R=100 秒（繰り上げなし）を T=160 秒に差し替え、X=130 秒を救う
+    const R = slide('slide_002.png', 100);
+    const X = slide('slide_003.png', 130);
+    const T = slide('slide_004.png', 160);
+    const decisions: SceneDecision[] = [
+      { filename: 'slide_001.png', shown: true },
+      { filename: 'slide_002.png', shown: true },
+      { filename: 'slide_003.png', shown: false, reason: 'text', sameSceneAs: 'slide_002.png' },
+      { filename: 'slide_004.png', shown: false, reason: 'text', sameSceneAs: 'slide_002.png' },
+    ];
+    const out = arrangeImages([P, R], [P, R, X, T], decisions, ['slide_003.png'], [{ from: 'slide_002.png', to: 'slide_004.png' }]);
+    expect(out.map((s) => s.filename)).toEqual(['slide_001.png', 'slide_003.png', 'slide_004.png']);
+    expect(owners(out)).toEqual(['slide_003.png', 'slide_003.png', 'slide_003.png', 'slide_003.png', 'slide_004.png']);
+  });
+
+  it('差し替えだけなら、位置は代表のまま画像だけが入れ替わる', () => {
+    const A = slide('slide_002.png', 100);
+    const T = { ...slide('slide_003.png', 130), seq: 3, width: 1280, height: 720 };
+    const R = slide('slide_004.png', 160);
+    const decisions: SceneDecision[] = [
+      { filename: 'slide_002.png', shown: false, reason: 'superseded', sameSceneAs: 'slide_004.png' },
+      { filename: 'slide_003.png', shown: false, reason: 'text', sameSceneAs: 'slide_004.png' },
+      { filename: 'slide_004.png', shown: true, standsFor: 'slide_002.png' },
+    ];
+    const anchoredR = { ...A, filename: R.filename };
+    const out = arrangeImages([anchoredR], [A, T, R], decisions, [], [{ from: 'slide_004.png', to: 'slide_003.png' }]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.filename).toBe('slide_003.png');
+    expect(out[0]!.videoTime).toBe(100);
+    expect(out[0]!.width).toBe(1280);
+  });
+
+  it('まとまりの外で救った画像は自分の撮影時刻に入る', () => {
+    const shown = [P, slide('slide_002.png', 100)];
+    const Y = slide('slide_009.png', 300);
+    const out = arrangeImages(shown, [...shown, Y], [], ['slide_009.png'], []);
+    expect(out.map((s) => s.filename)).toEqual(['slide_001.png', 'slide_002.png', 'slide_009.png']);
+  });
+});
+
+describe('pickRegion / runPicker（codex スタブ）', () => {
   let tmp: string;
+  let slidesDir: string;
   let argsFile: string;
+  let callsFile: string;
+  let savedCodexHome: string | undefined;
 
   const region: PickRegion = {
     start: 90,
@@ -325,36 +402,59 @@ describe('pickRegion（codex スタブ）', () => {
     return file;
   }
 
+  /** 呼ばれた回数を callsFile に足し、引数を argsFile に残し、answer を返す codex */
+  const answering = (answer: string) =>
+    writeStub(
+      'codex',
+      `echo x >> "${callsFile}"; printf '%s\\n' "$@" > "${argsFile}"; out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; printf '%s' '${answer}' > "$out"`,
+    );
+  const calls = async () => (await readFile(callsFile, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+
   beforeAll(async () => {
     tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-pick-test-'));
+    // 利用者の ~/.codex/config.toml を読まない（モデルと推論の強さが開発者の設定で変わらないように）
+    savedCodexHome = process.env['CODEX_HOME'];
+    process.env['CODEX_HOME'] = path.join(tmp, 'codex-home');
     argsFile = path.join(tmp, 'args.txt');
-    await mkdir(path.join(tmp, 'slides'), { recursive: true });
+    callsFile = path.join(tmp, 'calls.txt');
+    // フォルダ名にカンマを入れる（ページのタイトルから付くので起こりうる。codex にはこのパスを渡さない）
+    slidesDir = path.join(tmp, 'Lecture 1, Part 2', 'slides');
+    await mkdir(slidesDir, { recursive: true });
+    await mkdir(path.join(tmp, 'Lecture 1, Part 2', '.lecscribe'), { recursive: true });
+    // 中身は PNG ではないので sips は失敗し、一時フォルダへの写しに落ちる
+    for (const c of region.candidates) await writeFile(path.join(slidesDir, c.filename), 'not a png');
   });
 
-  it('画像を -i で渡し、返ってきた選択を歯止めに通す', async () => {
-    const codex = await writeStub(
-      'codex',
-      `printf '%s\\n' "$@" > "${argsFile}"; out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; printf '{"picks":[{"image":2,"after_paragraph":1,"reason":"実演"}]}' > "$out"`,
-    );
-    const log: string[] = [];
-    const result = await pickRegion(path.join(tmp, 'slides'), region, { codexBin: codex, model: 'pick-model', fallbackModel: '' }, (l) => log.push(l));
+  afterAll(async () => {
+    if (savedCodexHome === undefined) delete process.env['CODEX_HOME'];
+    else process.env['CODEX_HOME'] = savedCodexHome;
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('画像は一時フォルダの写しを -i で渡し、返ってきた選択を歯止めに通す', async () => {
+    const codex = await answering('{"picks":[{"image":2,"after_paragraph":1,"reason":"実演"}],"swaps":[]}');
+    const result = await pickRegion(slidesDir, region, { codexBin: codex, model: 'pick-model', fallbackModel: '' }, () => {});
     expect(result.error).toBeUndefined();
     expect(result.accepted.map((c) => c.filename)).toEqual(['slide_002.png']);
     const args = (await readFile(argsFile, 'utf8')).split('\n');
-    // 候補の数だけ -i が付く（画像ファイルが無いので sips は失敗し、元のパスが渡る）
-    expect(args.filter((a) => a === '-i')).toHaveLength(2);
-    expect(args).toContain('--model');
+    const images = args.flatMap((a, i) => (a === '-i' ? [args[i + 1]!] : []));
+    expect(images).toHaveLength(2);
+    // セッションのフォルダ（カンマを含む）ではなく、一時フォルダの 001.png・002.png
+    for (const image of images) expect(image).not.toContain(',');
+    expect(images.map((f) => path.basename(f))).toEqual(['001.png', '002.png']);
     expect(args).toContain('pick-model');
+    // prompt は -i の後ろの -- のあとに来る（-i が prompt を画像として飲み込まないように）
+    expect(args.slice(args.indexOf('--') + 1).join('\n')).toContain('腕を見てください');
   });
 
   it('モデルが使えないときは整えのモデルでやり直す', async () => {
     const codex = await writeStub(
       'codex',
       'for a in "$@"; do if [ "$a" = "gone-model" ]; then echo "ERROR: The model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
-        + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; printf \'{"picks":[]}\' > "$out"',
+        + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; printf \'{"picks":[],"swaps":[]}\' > "$out"',
     );
     const log: string[] = [];
-    const result = await pickRegion(path.join(tmp, 'slides'), region, { codexBin: codex, model: 'gone-model', fallbackModel: 'polish-model' }, (l) => log.push(l));
+    const result = await pickRegion(slidesDir, region, { codexBin: codex, model: 'gone-model', fallbackModel: 'polish-model' }, (l) => log.push(l));
     expect(result.error).toBeUndefined();
     expect(result.model).toBe('polish-model');
     expect(log.some((l) => l.includes('使えない'))).toBe(true);
@@ -362,8 +462,59 @@ describe('pickRegion（codex スタブ）', () => {
 
   it('ほかの失敗は受け皿に行かず、エラーとして返す', async () => {
     const codex = await writeStub('codex', 'echo "temporarily rate limited" >&2; exit 1');
-    const result = await pickRegion(path.join(tmp, 'slides'), region, { codexBin: codex, model: 'pick-model', fallbackModel: 'polish-model' }, () => {});
+    const result = await pickRegion(slidesDir, region, { codexBin: codex, model: 'pick-model', fallbackModel: 'polish-model' }, () => {});
     expect(result.error).toContain('rate limited');
     expect(result.accepted).toHaveLength(0);
+  });
+
+  it('画像を用意できなければ、その節は呼ばずにエラーにする（番号がずれた画像を渡さない）', async () => {
+    const codex = await answering('{"picks":[],"swaps":[]}');
+    const before = await calls();
+    const missing: PickRegion = { ...region, candidates: [...region.candidates, { filename: 'slide_404.png', videoTime: 200, shown: false }] };
+    const result = await pickRegion(slidesDir, missing, { codexBin: codex, model: 'm', fallbackModel: '' }, () => {});
+    expect(result.error).toBeDefined();
+    expect(await calls()).toBe(before);
+  });
+
+  it('runPicker は結果を残し、同じ入力の次の回は呼ばずに使い回す', async () => {
+    const dir = path.dirname(slidesDir);
+    await rm(path.join(dir, '.lecscribe', 'picker-cache.json'), { force: true });
+    const codex = await answering('{"picks":[{"image":2,"after_paragraph":1,"reason":"実演"}],"swaps":[]}');
+    const settings = { codexBin: codex, model: 'm', fallbackModel: '' };
+    const before = await calls();
+    const first = await runPicker({ dir, slidesDir, regions: [region], settings, log: () => {} });
+    expect(first.reused).toBe(false);
+    expect(first.accepted).toEqual(['slide_002.png']);
+    expect(await calls()).toBe(before + 1);
+    const second = await runPicker({ dir, slidesDir, regions: [region], settings, log: () => {} });
+    expect(second.reused).toBe(true);
+    expect(second.accepted).toEqual(['slide_002.png']);
+    expect(await calls()).toBe(before + 1);
+  });
+
+  it('runPicker は失敗が残った結果を使い回さない', async () => {
+    const dir = path.dirname(slidesDir);
+    await rm(path.join(dir, '.lecscribe', 'picker-cache.json'), { force: true });
+    const failing = await writeStub('codex', `echo x >> "${callsFile}"; echo "temporarily rate limited" >&2; exit 1`);
+    const failed = await runPicker({ dir, slidesDir, regions: [region], settings: { codexBin: failing, model: 'm', fallbackModel: '' }, log: () => {} });
+    expect(failed.errors).toHaveLength(1);
+    const codex = await answering('{"picks":[{"image":2,"after_paragraph":1,"reason":"実演"}],"swaps":[]}');
+    const before = await calls();
+    const retried = await runPicker({ dir, slidesDir, regions: [region], settings: { codexBin: codex, model: 'm', fallbackModel: '' }, log: () => {} });
+    expect(retried.reused).toBe(false);
+    expect(retried.accepted).toEqual(['slide_002.png']);
+    expect(await calls()).toBe(before + 1);
+  });
+
+  it('runPicker は止められたら何も採らず、結果も残さない', async () => {
+    const dir = path.dirname(slidesDir);
+    const cacheFile = path.join(dir, '.lecscribe', 'picker-cache.json');
+    await rm(cacheFile, { force: true });
+    const codex = await answering('{"picks":[{"image":2,"after_paragraph":1,"reason":"実演"}],"swaps":[]}');
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runPicker({ dir, slidesDir, regions: [region], settings: { codexBin: codex, model: 'm', fallbackModel: '', signal: controller.signal }, log: () => {} });
+    expect(result.accepted).toEqual([]);
+    expect(await stat(cacheFile).then(() => true).catch(() => false)).toBe(false);
   });
 });

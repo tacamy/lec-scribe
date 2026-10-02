@@ -289,8 +289,11 @@ export function batchSections(sections: readonly PolishInput[], charsPerCall: nu
 
 export interface LlmBackend {
   readonly name: string;
-  /** prompt を送り、schema に従う JSON の文字列を返す */
-  complete(prompt: string, schema: JsonSchema): Promise<string>;
+  /**
+   * prompt を送り、schema に従う JSON の文字列を返す。
+   * images は codex だけが使う（画像の救出、§13.4c）。ほかの呼び出し先は無視する
+   */
+  complete(prompt: string, schema: JsonSchema, options?: { images?: readonly string[] }): Promise<string>;
 }
 
 export function createBackend(settings: LlmSettings): LlmBackend | null {
@@ -327,7 +330,7 @@ export function parseCodexDefaults(configText: string): CodexDefaults {
 }
 
 /** `$CODEX_HOME/config.toml`（既定は ~/.codex/config.toml）から既定を読む。読めなければ空 */
-export async function readCodexDefaults(): Promise<CodexDefaults> {
+async function readCodexDefaults(): Promise<CodexDefaults> {
   const home = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
   try {
     return parseCodexDefaults(await readFile(path.join(home, 'config.toml'), 'utf8'));
@@ -376,14 +379,22 @@ export function codexArgs(opts: { dir: string; schemaFile: string; outFile: stri
 function codexBackend(settings: LlmSettings): LlmBackend {
   return {
     name: `codex${settings.model ? ` (${settings.model})` : ''}`,
-    async complete(prompt, schema) {
+    async complete(prompt, schema, options) {
       const tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-codex-'));
       try {
         const schemaFile = path.join(tmp, 'schema.json');
         const outFile = path.join(tmp, 'last-message.txt');
         await writeFile(schemaFile, JSON.stringify(schema));
         const defaults = await readCodexDefaults();
-        const args = codexArgs({ dir: tmp, schemaFile, outFile, prompt, model: settings.model || defaults.model, effort: defaults.effort });
+        const args = codexArgs({
+          dir: tmp,
+          schemaFile,
+          outFile,
+          prompt,
+          model: settings.model || defaults.model,
+          effort: defaults.effort,
+          ...(options?.images ? { images: options.images } : {}),
+        });
         const r = await run(settings.codexBin, args, { signal: settings.signal });
         if (r.code !== 0) {
           throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
