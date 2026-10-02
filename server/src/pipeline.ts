@@ -7,7 +7,8 @@ import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupSections, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
-import { pickShownSlides, readThumbnail, shownSlides } from './scenes.ts';
+import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
+import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
 import { dropWindowArtifacts, normalizeReport, whisperkitArgs } from './whisperkit.ts';
@@ -110,6 +111,15 @@ export async function writeStatus(dir: string, status: PipelineStatus): Promise<
   await writeFile(workPath(dir, PIPELINE_FILE), JSON.stringify(status, null, 2));
   return status;
 }
+
+/** 画像の救出（§13.4c）に渡す、場面まとめまでの結果 */
+type PickerInput = {
+  segments: readonly { videoStart: number; videoEnd: number; text: string }[];
+  allSlides: readonly SlideEntry[];
+  shown: readonly SlideEntry[];
+  decisions: readonly SceneDecision[];
+  texts: ReadonlyMap<string, string>;
+};
 
 type Job = {
   controller: AbortController;
@@ -219,16 +229,20 @@ export class Pipeline {
    * 映像中心の画面で同じ場面が続く画像を notes.md から外す。サムネイルは ffmpeg で作る。
    * 取れなければ何も外さない。判断は .lecscribe/scenes.json に残す
    */
-  private async pickScenes(dir: string, slides: SlideEntry[], signal?: AbortSignal): Promise<SlideEntry[]> {
+  private async pickScenes(
+    dir: string,
+    slides: SlideEntry[],
+    signal?: AbortSignal,
+  ): Promise<{ slides: SlideEntry[]; decisions: SceneDecision[]; texts: Map<string, string> }> {
     // sceneColor が 0 でも、中身が同じ画像を外す判定は残す（scenes.ts）
-    if (slides.length < 2) return [...slides];
+    if (slides.length < 2) return { slides: [...slides], decisions: [], texts: new Map() };
     const thumbs = new Map<string, Uint8Array>();
     for (const s of slides) {
-      if (signal?.aborted) return [...slides];
+      if (signal?.aborted) return { slides: [...slides], decisions: [], texts: new Map() };
       const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename), signal);
       if (thumb) thumbs.set(s.filename, thumb);
     }
-    if (thumbs.size === 0) return [...slides];
+    if (thumbs.size === 0) return { slides: [...slides], decisions: [], texts: new Map() };
     // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
     const measure = usesVision(this.config)
       ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
@@ -249,7 +263,58 @@ export class Pipeline {
     ).catch(() => undefined);
     const hidden = decisions.filter((d) => !d.shown);
     if (hidden.length > 0) this.log(`notes.md から外した画像（同じ場面・ほぼ一色）: ${hidden.length} 枚（${hidden.map((d) => d.filename).join(', ')}）`);
-    return shownSlides(slides, decisions);
+    // Vision が読んだ文字は画像の救出（§13.4c）の歯止めにも使う（字幕の写った代表を文字のない画像に差し替えない）
+    const texts = new Map<string, string>();
+    if (measure) {
+      slides.forEach((s, i) => {
+        const text = measure.text(i);
+        if (text) texts.set(s.filename, text);
+      });
+    }
+    return { slides: shownSlides(slides, decisions), decisions, texts };
+  }
+
+  /**
+   * 映像・板書の節で外された画像から、本文の助けになる瞬間を LLM に選ばせて足す・差し替える（SPEC §13.4c）。
+   * codex のときだけ動く。失敗しても処理は止めない。載せる画像が変わらなければ null を返す。
+   * ノート作成の段階（polishing）で呼ぶ: LLM の呼び出しなので、初回の処理の「中止」が録音ごと消さずに
+   * ノート作成だけを止める扱いになるように（§11.3。2026-10-02 のレビュー）
+   */
+  private async rescueImages(
+    dir: string,
+    input: PickerInput,
+    settings: { model: string; fallbackModel: string; signal: AbortSignal },
+  ): Promise<SlideEntry[] | null> {
+    if (!settings.model || settings.signal.aborted) return null;
+    try {
+      const regions = findPickRegions(input.segments, input.allSlides, input.decisions, input.texts);
+      if (regions.length === 0) return null;
+      const run = await runPicker({
+        dir,
+        slidesDir: path.join(dir, SLIDES_DIR),
+        regions,
+        settings: { codexBin: this.config.codexBin, model: settings.model, fallbackModel: settings.fallbackModel, signal: settings.signal },
+        log: this.log,
+      });
+      if (settings.signal.aborted) return null;
+      if (run.reused) this.log('画像の救出: 前回の選択を使い回します');
+      for (const e of run.errors) this.log(`画像の救出に失敗（ノートはそのまま作ります）: ${e}`);
+      if (run.accepted.length > 0) this.log(`画像の救出 (${run.model}): ${run.accepted.length} 枚を足しました（${run.accepted.join(', ')}）`);
+      for (const s of run.swaps) this.log(`画像の差し替え (${run.model}): ${s.from} → ${s.to}（同じまとまりの中で、本文に合う瞬間へ）`);
+      // scenes.json にも残す（外した判断と同じ場所で追えるように）
+      try {
+        const scenes = JSON.parse(await readFile(workPath(dir, 'scenes.json'), 'utf8')) as Record<string, unknown>;
+        scenes['picker'] = { model: run.model, accepted: run.accepted, swaps: run.swaps, rejected: run.rejected, errors: run.errors };
+        await writeFile(workPath(dir, 'scenes.json'), JSON.stringify(scenes, null, 2));
+      } catch {
+        // scenes.json が無い・読めないときは記録だけ諦める
+      }
+      if (run.accepted.length === 0 && run.swaps.length === 0) return null;
+      return arrangeImages(input.shown, input.allSlides, input.decisions, run.accepted, run.swaps);
+    } catch (error) {
+      this.log(`画像の救出に失敗（ノートはそのまま作ります）: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   /** audio.webm → wav → whisperkit-cli。report の区間を返す */
@@ -381,61 +446,77 @@ export class Pipeline {
           this.log(`slides.json の形が違う（画像の名前が slide_001.png の形でないなど）ので、画像なしでノートを作ります: ${dir}`);
         }
         // 同じ場面の画像は notes.md に並べない（§13.4b）。判断は scenes.json に残す
-        const slides = await this.pickScenes(dir, allSlides, signal);
+        const { slides: shownOnly, decisions, texts } = await this.pickScenes(dir, allSlides, signal);
+        const segsWithVideoTime = segments.map((s) => ({
+          ...s,
+          videoStart: events ? toVideoTime(events, s.start) : s.start,
+          videoEnd: events ? toVideoTime(events, s.end) : s.end,
+        }));
         const session = (await readJson(workPath(dir, 'session.json'))) as
           | { title?: string; url?: string; startedAt?: string }
           | undefined;
-        const mapped: MergedSegment[] = assignSlides(
-          segments.map((s) => ({
-            ...s,
-            videoStart: events ? toVideoTime(events, s.start) : s.start,
-            videoEnd: events ? toVideoTime(events, s.end) : s.end,
-          })),
-          slides,
-        );
+        /**
+         * 載せる画像の並びから transcript.json・lecture.md・節・文字起こしのままのノートを作る。
+         * 画像の救出（§13.4c）で並びが変わったら、ノート作成の段階で作り直す
+         */
+        const build = async (slides: readonly SlideEntry[]) => {
+          const mapped: MergedSegment[] = assignSlides(segsWithVideoTime, slides);
+          await writeFile(
+            workPath(dir, 'transcript.json'),
+            JSON.stringify(
+              {
+                language: this.config.language,
+                model: this.config.model,
+                generatedAt: now(),
+                timeBase: { start: 'recording seconds', videoStart: events ? 'video seconds (via timeline.json)' : 'same as start' },
+                segments: mapped,
+              },
+              null,
+              2,
+            ),
+          );
+          // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
+          const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides: [...slides] };
+          await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
+          const rawNotes = buildLectureMarkdown({
+            ...lectureInput,
+            note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
+          });
+          return {
+            mapped,
+            sections: groupSections(mapped, slides),
+            rawNotes,
+            hiddenSlides: allSlides.length > slides.length ? allSlides.length - slides.length : undefined,
+          };
+        };
+        const built = await build(shownOnly);
+        const mapped = built.mapped;
+        // 字幕のファイルは画像の並びに依らないので 1 度だけ書く
         const forSubtitles: Segment[] = mapped.map((s) => ({ start: s.videoStart, end: s.videoEnd, text: s.text }));
-        await writeFile(
-          workPath(dir, 'transcript.json'),
-          JSON.stringify(
-            {
-              language: this.config.language,
-              model: this.config.model,
-              generatedAt: now(),
-              timeBase: { start: 'recording seconds', videoStart: events ? 'video seconds (via timeline.json)' : 'same as start' },
-              segments: mapped,
-            },
-            null,
-            2,
-          ),
-        );
         await writeFile(workPath(dir, 'transcript.srt'), toSrt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.vtt'), toVtt(forSubtitles));
         await writeFile(workPath(dir, 'transcript.txt'), toTxt(forSubtitles));
-        // ノート（SPEC §13.4）: スライドごとに画像とその間の発話。作業フォルダに置く
-        const lectureInput = { title: session?.title, url: session?.url, startedAt: session?.startedAt, segments: mapped, slides };
-        await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
         // ユーザー向けの notes.md はまず文字起こしそのままで置き、LLM が使えれば整えた版で上書きする。
         // ただし前回の整えた notes.md が既にあるとき（やり直し）は触らない。途中で「中止」しても前回の結果が残るように。
         // ノート作成に失敗したときは、あとでこの本文を書き込む（前回の結果が残ったままにならないように）
         const notesFile = path.join(dir, NOTES_FILE);
-        const rawNotes = buildLectureMarkdown({
-          ...lectureInput,
-          note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
-        });
         const hasNotes = await stat(notesFile).then(() => true).catch(() => false);
-        if (!hasNotes || this.config.llm === 'none') await writeFile(notesFile, rawNotes);
+        if (!hasNotes || this.config.llm === 'none') await writeFile(notesFile, built.rawNotes);
         if (!this.config.keepWav) await rm(audioWav, { force: true });
+        const pickerInput: PickerInput = { segments: segsWithVideoTime, allSlides, shown: shownOnly, decisions, texts };
         return {
           summary: {
             segments: mapped.length,
             durationSec: Math.round(mapped[mapped.length - 1]!.end),
             hasTimeline: events !== null,
             slides: allSlides.length,
-            ...(allSlides.length > slides.length ? { hiddenSlides: allSlides.length - slides.length } : {}),
-          },
-          sections: groupSections(mapped, slides),
+            ...(built.hiddenSlides ? { hiddenSlides: built.hiddenSlides } : {}),
+          } as NonNullable<PipelineStatus['result']>,
+          sections: built.sections,
           session,
-          rawNotes,
+          rawNotes: built.rawNotes,
+          build,
+          pickerInput,
         };
       });
 
@@ -450,6 +531,7 @@ export class Pipeline {
       // モデルは処理の開始時に一度だけ写し取る（POST /settings は共有の config を書き換えるので、
       // 進行中の処理に混ぜるとキャッシュの記録と実際に使ったモデルが食い違う。2026-10-01 のレビュー）
       const llmCheckModel = this.config.llmCheckModel;
+      const llmPickModel = this.config.llmPickModel;
       const llmSettings = {
         kind: this.config.llm,
         model: this.config.llmModel,
@@ -465,6 +547,24 @@ export class Pipeline {
       const backend = createBackend(llmSettings);
       if (backend) {
         notes = await step('polishing', async () => {
+          // 映像・板書の節では、外した画像から本文の助けになる瞬間を救い出す・差し替える（§13.4c）。
+          // 画像の並びが変わったら transcript.json・lecture.md・節を作り直してから整える
+          if (llmSettings.kind === 'codex') {
+            const rescued = await this.rescueImages(dir, result.pickerInput, {
+              model: llmPickModel,
+              fallbackModel: llmSettings.model,
+              signal: job.llm.signal,
+            });
+            if (signal.aborted) throw new Error('cancelled');
+            if (notesStopped()) throw new Error('notes stopped');
+            if (rescued) {
+              const rebuilt = await result.build(rescued);
+              result.sections = rebuilt.sections;
+              result.rawNotes = rebuilt.rawNotes;
+              const { hiddenSlides: _previous, ...summary } = result.summary;
+              result.summary = { ...summary, ...(rebuilt.hiddenSlides ? { hiddenSlides: rebuilt.hiddenSlides } : {}) };
+            }
+          }
           // 整えのモデルが使えず指定なしに切り替えたとき、以降（要点・校正の受け皿）も同じ切り替え先を使う
           let activeBackend = backend;
           /** activeBackend が使っているモデル（受け皿に切り替えたら ''）。校正の受け皿を出すかの比較はこちらで行う */

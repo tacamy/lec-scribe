@@ -289,8 +289,11 @@ export function batchSections(sections: readonly PolishInput[], charsPerCall: nu
 
 export interface LlmBackend {
   readonly name: string;
-  /** prompt を送り、schema に従う JSON の文字列を返す */
-  complete(prompt: string, schema: JsonSchema): Promise<string>;
+  /**
+   * prompt を送り、schema に従う JSON の文字列を返す。
+   * images は codex だけが使う（画像の救出、§13.4c）。ほかの呼び出し先は無視する
+   */
+  complete(prompt: string, schema: JsonSchema, options?: { images?: readonly string[] }): Promise<string>;
 }
 
 export function createBackend(settings: LlmSettings): LlmBackend | null {
@@ -345,7 +348,7 @@ async function readCodexDefaults(): Promise<CodexDefaults> {
  * その代わり、モデルと推論の強さは明示する: モデルはサーバーの設定（`--llm-model`）を優先し、なければ利用者の既定を引き継ぐ。
  * 推論の強さも利用者の既定を引き継ぐ。どちらも今までと同じ値で呼ぶので、ノートの出来は変わらない
  */
-export function codexArgs(opts: { dir: string; schemaFile: string; outFile: string; prompt: string } & CodexDefaults): string[] {
+export function codexArgs(opts: { dir: string; schemaFile: string; outFile: string; prompt: string; images?: readonly string[] } & CodexDefaults): string[] {
   const args = [
     'exec',
     '--skip-git-repo-check',
@@ -364,6 +367,10 @@ export function codexArgs(opts: { dir: string; schemaFile: string; outFile: stri
   ];
   if (opts.model) args.push('--model', opts.model);
   if (opts.effort) args.push('-c', `model_reasoning_effort="${opts.effort}"`);
+  for (const image of opts.images ?? []) args.push('-i', image);
+  // -i は可変長で、直後の prompt を画像の続きとして飲み込む（codex 0.153 で確認）。-- で区切る。
+  // 画像なしの呼び出し（整え・要点・校正）は今までどおり区切りなしにして、挙動を変えない
+  if ((opts.images ?? []).length > 0) args.push('--');
   args.push(opts.prompt);
   return args;
 }
@@ -372,14 +379,22 @@ export function codexArgs(opts: { dir: string; schemaFile: string; outFile: stri
 function codexBackend(settings: LlmSettings): LlmBackend {
   return {
     name: `codex${settings.model ? ` (${settings.model})` : ''}`,
-    async complete(prompt, schema) {
+    async complete(prompt, schema, options) {
       const tmp = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-codex-'));
       try {
         const schemaFile = path.join(tmp, 'schema.json');
         const outFile = path.join(tmp, 'last-message.txt');
         await writeFile(schemaFile, JSON.stringify(schema));
         const defaults = await readCodexDefaults();
-        const args = codexArgs({ dir: tmp, schemaFile, outFile, prompt, model: settings.model || defaults.model, effort: defaults.effort });
+        const args = codexArgs({
+          dir: tmp,
+          schemaFile,
+          outFile,
+          prompt,
+          model: settings.model || defaults.model,
+          effort: defaults.effort,
+          ...(options?.images ? { images: options.images } : {}),
+        });
         const r = await run(settings.codexBin, args, { signal: settings.signal });
         if (r.code !== 0) {
           throw new Error(`codex exec failed (${r.code}): ${(r.stderr || r.stdout).trim().split('\n').slice(-5).join(' / ')}`);
