@@ -66,6 +66,11 @@ const MOTION_WINDOW = 200;
 const COLOR_BINS = 8;
 /** 静止部分がこの割合を超えるなら、スライド中心の画面とみなして「同じ場面」の判定は使わない */
 const FOOTAGE_MAX_STILL = 0.5;
+/**
+ * 人が動く帯の上限（§9.1f）。静止部分がこれ以上ならスライドの画面。サーバーの場面まとめ（§13.4b の手の帯）と同じ線。
+ * 帯（FOOTAGE_MAX_STILL 以上 BAND_MAX_STILL 未満）は、背景は止まっているが人が動く板書・書画カメラの画面
+ */
+const BAND_MAX_STILL = 0.976;
 /** 変化がどれだけ広い範囲に散っているかを見るための分割数（4×4） */
 const GRID = 4;
 /** 切り替えとみなすのに必要な「変化したマス目」の数。人が動いただけなら 1〜3 マスに収まる */
@@ -177,6 +182,11 @@ export class ChangeDetector {
     }
   }
 
+  /** 直前の比較で、人が動く帯（板書・書画カメラ）の画面だったか */
+  private get inBand(): boolean {
+    return this.stillFraction >= FOOTAGE_MAX_STILL && this.stillFraction < BAND_MAX_STILL;
+  }
+
   /** 再生中のサンプルを 1 つ処理する */
   sample(frame: Frame, now: number): Verdict {
     let diffPrev = 0;
@@ -192,8 +202,14 @@ export class ChangeDetector {
     if (this.state === 'watching') {
       // 画面全体としての変化が大きく、かつ広い範囲に散っているときだけ「切り替わった」とみなす。
       // 映像中心の画面では、カメラや被写体が動いているだけの連続したショットを撮り続けないよう、
-      // 1 サンプルで一気に変わったとき（カット）だけを拾う
-      const needed = this.stillFraction < FOOTAGE_MAX_STILL ? Math.max(this.cfg.changeThreshold, this.cfg.cutThreshold) : this.cfg.changeThreshold;
+      // 1 サンプルで一気に変わったとき（カット）だけを拾う。
+      // 人が動く帯（板書）では、人の動きのにじみ（静止部分に 2.5〜5% 乗る）で撮りすぎないよう、閾値を上げる（§9.1f）
+      const needed =
+        this.stillFraction < FOOTAGE_MAX_STILL
+          ? Math.max(this.cfg.changeThreshold, this.cfg.cutThreshold)
+          : this.inBand
+            ? this.cfg.bandChangeThreshold
+            : this.cfg.changeThreshold;
       if (diffPrev >= needed && this.changedCells >= MIN_CHANGED_CELLS) {
         this.state = 'stabilizing';
         this.stabilizeStart = now;
@@ -283,7 +299,8 @@ export class ChangeDetector {
       this.state = 'watching';
       return this.verdict(false, diffPrev, diffSaved);
     }
-    if (diffSaved < this.cfg.dedupeThreshold) {
+    // 人が動く帯では、人が少し場所を変えただけ（保存済みとの差 2〜5%）を撮り直さない（§9.1f）
+    if (diffSaved < (this.inBand ? this.cfg.bandDedupeThreshold : this.cfg.dedupeThreshold)) {
       // 最後に保存した画像と同じ（元に戻った、ちらつき）
       this.state = 'watching';
       return this.verdict(false, diffPrev, diffSaved);

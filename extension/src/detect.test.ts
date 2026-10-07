@@ -262,6 +262,63 @@ describe('diffFromSaved（動き続ける領域を除いた比較）', () => {
     expect(switched.state).toBe('stabilizing');
   });
 
+  it('人が動く帯（板書）では、静止部分の小さな変化（2.5〜5%）では撮らず、5% 以上なら撮る（§9.1f）', () => {
+    // 画面の 20% で人が動き続け（毎サンプル色が変わる）、残りは白板。静止部分は約 80% で帯に入る
+    const personFrom = Math.round(PIXELS * 0.8);
+    const board = (shade: number, changedRatio = 0) => {
+      const f = paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]);
+      paint(f, personFrom, PIXELS, [shade, shade, shade]);
+      // 静止部分の変化は 4×4 のマス目に散らす（1 マスにまとめると「人が動いただけ」の規則に当たる）
+      const changed = Math.round(personFrom * changedRatio);
+      for (let p = 0; p < changed; p++) paint(f, (p * 7919) % personFrom, ((p * 7919) % personFrom) + 1, [0, 0, 0]);
+      return f;
+    };
+    const warm = (detector: ChangeDetector) => {
+      detector.markSaved(board(10), 0);
+      for (let i = 0; i < 8; i++) detector.sample(board(10 + (i % 2) * 120), 1000 + i * 500);
+    };
+    // 3.5% の変化: スライドの画面なら切り替え（2.5% 以上）だが、帯では撮らない
+    const a = new ChangeDetector(cfg);
+    warm(a);
+    const small = a.sample(board(200, 0.035), 6000);
+    expect(small.stillFraction).toBeGreaterThanOrEqual(0.5);
+    expect(small.stillFraction).toBeLessThan(0.976);
+    expect(small.diffPrev).toBeGreaterThan(cfg.changeThreshold);
+    expect(small.state).toBe('watching');
+    // 6% の変化なら撮る
+    const b = new ChangeDetector(cfg);
+    warm(b);
+    expect(b.sample(board(200, 0.06), 6000).state).toBe('stabilizing');
+    // 帯でなければ（人が動いていない）従来どおり 2.5% で切り替えとみなす
+    const c = new ChangeDetector(cfg);
+    c.markSaved(board(10), 0);
+    for (let i = 0; i < 8; i++) c.sample(board(10), 1000 + i * 500);
+    expect(c.sample(board(10, 0.035), 6000).state).toBe('stabilizing');
+  });
+
+  it('人が動く帯では、保存済みとの差が 5% 未満なら撮り直さない（人が少し場所を変えただけ）', () => {
+    const personFrom = Math.round(PIXELS * 0.8);
+    const board = (shade: number, changedRatio = 0) => {
+      const f = paint(new Uint8ClampedArray(PIXELS * 4), 0, PIXELS, [255, 255, 255]);
+      paint(f, personFrom, PIXELS, [shade, shade, shade]);
+      const changed = Math.round(personFrom * changedRatio);
+      for (let p = 0; p < changed; p++) paint(f, (p * 7919) % personFrom, ((p * 7919) % personFrom) + 1, [0, 0, 0]);
+      return f;
+    };
+    const run = (ratio: number) => {
+      const detector = new ChangeDetector(cfg);
+      detector.markSaved(board(10), 0);
+      for (let i = 0; i < 8; i++) detector.sample(board(10 + (i % 2) * 120), 1000 + i * 500);
+      // 一度 6% 変えて切り替えを検知させ、安定したときの画面は保存済みと ratio だけ違う
+      detector.sample(board(200, 0.06), 6000);
+      let last = detector.sample(board(200, ratio), 6500);
+      for (let i = 0; i < 4 && !last.save && last.state === 'stabilizing'; i++) last = detector.sample(board(200, ratio), 7000 + i * 500);
+      return last;
+    };
+    expect(run(0.03).save).toBe(false);
+    expect(run(0.06).save).toBe(true);
+  });
+
   it('画面全体が動画のときはマスクを使わず全画素で比べる', () => {
     const detector = new ChangeDetector(cfg);
     // 毎サンプル全画素が変わる（風景の映像など）
