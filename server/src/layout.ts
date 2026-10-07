@@ -42,12 +42,13 @@ export function workPath(sessionDir: string, ...parts: string[]): string {
   return path.join(sessionDir, WORK_DIR, ...parts);
 }
 
-/** フォルダの中の、拡張が付けた名前（slide_001.png の形）の画像だけ */
+/** フォルダの中の、拡張が付けた名前（slide_001.png の形）の画像だけ。フォルダが無ければ空。読めない（権限など）なら投げる */
 async function slideFiles(dir: string): Promise<string[]> {
   try {
     return (await readdir(dir)).filter((name) => SLIDE_FILE.test(name)).sort();
-  } catch {
-    return [];
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw e;
   }
 }
 
@@ -77,17 +78,22 @@ export async function restoreUnusedSlides(sessionDir: string): Promise<number> {
   return restored;
 }
 
-/** notes.md が参照している slides/ の画像の名前 */
+/**
+ * ノートが参照している slides/ の画像の名前。`slides/slide_NNN.png` の出現を全部拾う（Markdown の `](slides/…)`、
+ * lecture.md の `](../slides/…)`、利用者が書き換えた `<img src="slides/…">` も）。余分に残す損はないので形は問わない
+ */
 export function slidesInNotes(notes: string): Set<string> {
   const used = new Set<string>();
-  for (const m of notes.matchAll(/\]\(slides\/(slide_[0-9]{3,}\.(?:png|jpg))\)/g)) used.add(m[1]!);
+  for (const m of notes.matchAll(/slides\/(slide_[0-9]{3,}\.(?:png|jpg))/g)) used.add(m[1]!);
   return used;
 }
 
 /**
  * notes.md に載せなかった画像を slides/ から .lecscribe/unused/ へ移す（§14）。利用者が slides/ を丸ごと
  * コピーしても、ノートに使った画像だけになるように。処理が終わるたびに呼び、「やり直す」で載せる画像が
- * 変わっても slides/ はいつも notes.md と対応する。notes.md が無ければ何もしない（null）
+ * 変わっても slides/ はいつも notes.md と対応する。notes.md が無ければ何もしない（null）。
+ * 作業ファイルの lecture.md が参照する画像も残す。普段は notes.md と同じ並びだが、やり直しを途中で中止すると
+ * notes.md は前回のまま、lecture.md は今回の並びになっていて、lecture.md のリンクを切らないため
  */
 export async function tidyUnusedSlides(sessionDir: string): Promise<{ moved: number; kept: number } | null> {
   let notes: string;
@@ -97,6 +103,8 @@ export async function tidyUnusedSlides(sessionDir: string): Promise<{ moved: num
     return null;
   }
   const used = slidesInNotes(notes);
+  const lecture = await readFile(workPath(sessionDir, 'lecture.md'), 'utf8').catch(() => '');
+  for (const name of slidesInNotes(lecture)) used.add(name);
   const slidesDir = path.join(sessionDir, SLIDES_DIR);
   const unusedDir = workPath(sessionDir, UNUSED_DIR);
   let moved = 0;

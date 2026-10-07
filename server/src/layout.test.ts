@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -21,9 +21,45 @@ describe('notes.md に載せなかった画像の片付け（§14）', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('notes.md が参照する画像の名前を拾う（png / jpg。lecture.md の ../slides/ も同じ形）', () => {
-    const notes = ['![slide_001](slides/slide_001.png)', 'text', '![slide_012](slides/slide_012.jpg)', '![x](slides/evil.sh)'].join('\n');
-    expect([...slidesInNotes(notes)]).toEqual(['slide_001.png', 'slide_012.jpg']);
+  it('ノートが参照する画像の名前を拾う（png / jpg。lecture.md の ../slides/ と、利用者が書き換えた <img> も）', () => {
+    const notes = [
+      '![slide_001](slides/slide_001.png)',
+      'text',
+      '![slide_012](slides/slide_012.jpg)',
+      '![x](slides/evil.sh)',
+      '![slide_020](../slides/slide_020.png)',
+      '<img src="slides/slide_033.png" width="400">',
+    ].join('\n');
+    expect([...slidesInNotes(notes)]).toEqual(['slide_001.png', 'slide_012.jpg', 'slide_020.png', 'slide_033.png']);
+  });
+
+  it('作業ファイルの lecture.md が参照する画像も残す（やり直しの中止で notes.md と並びが違うとき）', async () => {
+    for (const n of ['slide_001.png', 'slide_002.png', 'slide_003.png']) await put(slides(), n);
+    await writeFile(path.join(dir, NOTES_FILE), '![slide_001](slides/slide_001.png)\n');
+    await put(path.join(dir, WORK_DIR), 'lecture.md', '![slide_002](../slides/slide_002.png)\n');
+    expect(await tidyUnusedSlides(dir)).toEqual({ moved: 1, kept: 2 });
+    expect(await names(slides())).toEqual(['slide_001.png', 'slide_002.png']);
+    expect(await names(unused())).toEqual(['slide_003.png']);
+  });
+
+  it('unused/ に同じ名前が残っていても（送り直し → 待機中に中止）、slides/ の方で上書きする', async () => {
+    await put(unused(), 'slide_002.png', 'old');
+    await put(slides(), 'slide_001.png');
+    await put(slides(), 'slide_002.png', 'new');
+    await writeFile(path.join(dir, NOTES_FILE), '![slide_001](slides/slide_001.png)\n');
+    expect(await tidyUnusedSlides(dir)).toEqual({ moved: 1, kept: 1 });
+    expect(await names(unused())).toEqual(['slide_002.png']);
+    expect(await readFile(path.join(unused(), 'slide_002.png'), 'utf8')).toBe('new');
+  });
+
+  it('unused/ が読めない（権限）ときは黙って進まず投げる', async () => {
+    await put(unused(), 'slide_002.png');
+    await chmod(unused(), 0o000);
+    try {
+      await expect(restoreUnusedSlides(dir)).rejects.toThrow();
+    } finally {
+      await chmod(unused(), 0o700);
+    }
   });
 
   it('notes.md に無い画像だけを .lecscribe/unused/ へ移し、拡張の名前でないファイルは触らない', async () => {

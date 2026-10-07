@@ -69,6 +69,12 @@ export async function recoverInterrupted(outDir: string, log: (message: string) 
       error: `サーバーが再起動したため「${status.stage}」の途中で中断されました。一覧の「やり直す」で続きから作れます。`,
     });
     log(`recovered interrupted session (${status.stage}): ${dir}`);
+    // 処理の前に slides/ へ戻した画像が全部残っている。前回の notes.md があればそれに合わせて片付け直す（§14）
+    const tidied = await tidyUnusedSlides(dir).catch((e: unknown) => {
+      log(`画像を片付けられませんでした: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    });
+    if (tidied && tidied.moved > 0) log(`notes.md に載せなかった画像 ${tidied.moved} 枚を .lecscribe/unused/ へ移しました（slides/ は ${tidied.kept} 枚）`);
     recovered.push(dir);
   }
   return recovered;
