@@ -111,7 +111,11 @@ flowchart TB
 
 `~/LecScribe/<タイトル>_<日時>/` に、`notes.md` と `slides/` だけが見える形でできます。一覧の「フォルダを開く」で開けます。
 
-`slides/` にあるのは `notes.md` に載せた画像だけです。撮った画像は全部 `.lecscribe/slides/` に残っていて、「やり直す」で載せる画像が変わると `slides/` も入れ替わります。
+`slides/` にあるのは `notes.md` に載せた画像だけです。撮った画像は全部 `.lecscribe/slides/` に残っていて、「やり直す」で載せる画像が変わると `slides/` も入れ替わります。以前の講義（`slides/` に全画像が入っている）をまとめて同じ形にするには、サーバーが処理中でないときに次を実行します（`--dry-run` を付けると確認だけ）。
+
+```sh
+node --experimental-transform-types scripts/migrate-slides.mts
+```
 
 音声・文字起こし（json / srt / vtt / txt）・タイムラインなどの作業ファイルは、隠しフォルダ `.lecscribe/` にまとめてあります（Finder では Cmd+Shift+. で表示）。
 
