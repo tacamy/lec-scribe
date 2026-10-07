@@ -342,6 +342,19 @@ describe('local server', () => {
     expect(await readdir(path.join(dir, 'slides'))).toEqual([]);
   });
 
+  it('旧配置の講義を「やり直す」と、受け付けの時点で画像を正本へ移し、slides/ を前回の notes.md に合わせて写す（§14）', async () => {
+    const sessionId = '20260908-120000-old2';
+    const dir = path.join(config.outDir, `${sessionId}_old2`);
+    await mkdir(path.join(dir, 'slides'), { recursive: true });
+    for (const n of ['slide_001.png', 'slide_002.png', 'slide_003.png']) await writeFile(path.join(dir, 'slides', n), n);
+    await writeFile(path.join(dir, 'notes.md'), '# old\n\n![slide_002](slides/slide_002.png)\n');
+    await fetch(`${base}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'old2' }) });
+    expect((await readdir(path.join(dir, '.lecscribe', 'slides'))).sort()).toEqual(['slide_001.png', 'slide_002.png', 'slide_003.png']);
+    // 文字起こしが始まる前から slides/ はノートの画像だけになっている
+    expect(await readdir(path.join(dir, 'slides'))).toEqual(['slide_002.png']);
+    expect(await readFile(path.join(dir, 'slides', 'slide_002.png'), 'utf8')).toBe('slide_002.png');
+  });
+
   it('ノートを整えられなくても段階は done で、status の result に notes: false と理由が載る（拡張が一覧に注意書きを出す）', async () => {
     // Codex の利用上限に当たったときの形: codex が失敗して終わる
     const failing = await writeStub('codex-limit', 'echo "You have hit your usage limit. Try again later." >&2; exit 1');

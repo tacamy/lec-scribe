@@ -397,8 +397,6 @@ export function buildLectureMarkdown(input: {
   segments: readonly MergedSegment[];
   slides: readonly SlideEntry[];
   leadSec?: number;
-  /** 画像の相対パスの前置き。既定の "slides/" は notes.md（セッションフォルダ）からも lecture.md（.lecscribe/、隣に正本）からも合う */
-  imagePrefix?: string;
   /** 見出し下に添える注記 */
   note?: string;
   /** 束ね済みの節（groupAssigned の結果）。渡せば segments から作り直さない */
@@ -407,7 +405,6 @@ export function buildLectureMarkdown(input: {
   segmentCount?: number;
 }): string {
   const leadSec = input.leadSec ?? CHANGE_LEAD_SEC;
-  const imagePrefix = input.imagePrefix ?? 'slides/';
   const sections = input.sections ?? groupSections(input.segments, input.slides, leadSec);
 
   const lines: string[] = [`# ${input.title?.trim() || 'ノート'}`, ''];
@@ -418,9 +415,10 @@ export function buildLectureMarkdown(input: {
   if (input.note) lines.push(`- ${input.note}`);
   lines.push('');
 
-  // 節の見出しも区切り線も付けない。スライド画像そのものが区切りになる
+  // 節の見出しも区切り線も付けない。スライド画像そのものが区切りになる。
+  // 画像は slides/ で参照する。notes.md（セッションフォルダ）からは写し、lecture.md（.lecscribe/）からは隣の正本に合う（§14）
   for (const section of sections) {
-    if (section.slide) lines.push(`![${section.id}](${imagePrefix}${section.slide.filename})`, '');
+    if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話がなければ画像だけを置く（「発話はありません」の注記は出さない。画面が細かく変わる動画で邪魔になるため）
     if (section.texts.length > 0) lines.push(toParagraph(section.texts), '');
   }

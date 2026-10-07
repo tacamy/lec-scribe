@@ -116,9 +116,11 @@ export async function migrateLayout(sessionDir: string): Promise<string[]> {
  */
 export function slidesInNotes(notes: string): Set<string> {
   const used = new Set<string>();
-  for (const m of notes.matchAll(/slides\/(slide_[0-9]{3,}\.(?:png|jpg))/g)) used.add(m[1]!);
+  for (const m of notes.matchAll(SLIDE_IN_NOTES)) used.add(m[1]!);
   return used;
 }
+/** `slides/` に続く画像の名前（SLIDE_FILE と同じ形。定義を 1 つにして、拡張子などを変えたときにずれないように） */
+const SLIDE_IN_NOTES = new RegExp(`slides/(${SLIDE_FILE.source.replace(/^\^|\$$/g, '')})`, 'g');
 
 export type SlidesSync = {
   /** 正本から写した枚数 */
@@ -157,17 +159,25 @@ export async function syncSlides(sessionDir: string): Promise<SlidesSync | null>
   let notes: string;
   try {
     notes = await readFile(path.join(sessionDir, NOTES_FILE), 'utf8');
-  } catch {
-    return null;
+  } catch (e) {
+    // 無いときだけ「まだノートがない」。読めない（権限など）なら黙って古いままにせず投げる
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
   }
   const used = slidesInNotes(notes);
   const slidesDir = path.join(sessionDir, SLIDES_DIR);
   await mkdir(slidesDir, { recursive: true });
   const result: SlidesSync = { copied: 0, kept: 0, removed: 0, missing: 0 };
+  // 1 枚で失敗しても残りは続け、最後にまとめて投げる（途中で止めると残りが写らないまま）
+  const failed: string[] = [];
   for (const name of await slideFiles(slidesDir)) {
     if (used.has(name)) continue;
-    await rm(path.join(slidesDir, name), { force: true });
-    result.removed++;
+    try {
+      await rm(path.join(slidesDir, name), { force: true });
+      result.removed++;
+    } catch (e) {
+      failed.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   for (const name of [...used].sort()) {
     const src = slidesSourcePath(sessionDir, name);
@@ -182,10 +192,25 @@ export async function syncSlides(sessionDir: string): Promise<SlidesSync | null>
       result.kept++;
       continue;
     }
-    // クローンは既にあるファイルの上には作れないので先に消す
-    await rm(dst, { force: true });
-    await cloneFile(src, dst);
-    result.copied++;
+    try {
+      // クローンは既にあるファイルの上には作れないので先に消す
+      await rm(dst, { force: true });
+      await cloneFile(src, dst);
+      result.copied++;
+    } catch (e) {
+      failed.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
+  if (failed.length > 0) throw new Error(`${failed.length} 枚を写せませんでした（${failed.join(', ')}）`);
   return result;
+}
+
+/**
+ * 旧配置の移行のあと、画像を正本へ移していれば slides/ を notes.md に合わせる（移した直後は slides/ が空のため）。
+ * 受け付け（POST /sessions・/finalize）と処理の始めから呼ぶ
+ */
+export async function migrateLayoutAndSync(sessionDir: string): Promise<string[]> {
+  const moved = await migrateLayout(sessionDir);
+  if (moved.some((name) => name.startsWith(`${SLIDES_DIR}/`))) await syncSlides(sessionDir);
+  return moved;
 }

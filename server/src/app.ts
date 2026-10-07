@@ -7,7 +7,7 @@ import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
 import { visionStatus } from './vision.ts';
 import { slugify } from './format.ts';
-import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayout, workPath } from './layout.ts';
+import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayoutAndSync, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, snapshotDone, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { applyLlmOverrides, isValidModelName, readLlmOverrides, writeLlmOverrides, type LlmOverrides } from './settings.ts';
 import { isAuthorized } from './token.ts';
@@ -52,6 +52,17 @@ export function createApp(
   const pipeline = new Pipeline(config, log);
   /** 承認ダイアログは同時に 1 つだけ */
   let pairing = false;
+  /**
+   * 旧配置の移行（§14）。失敗しても受け付け（POST /sessions・/finalize）は続ける。読めないフォルダがあっても送信を
+   * 止めないため。処理の始めにもう一度移行するので、そこで失敗すれば pipeline.json の error として利用者に見える
+   */
+  const migrateQuietly = async (dir: string): Promise<void> => {
+    try {
+      await migrateLayoutAndSync(dir);
+    } catch (e) {
+      log(`旧配置の移行に失敗しました（処理のときに改めて試します）: ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   /** 共有トークンか、承認時に発行した拡張ごとのトークンが合えば通す */
   function authorized(req: IncomingMessage): boolean {
@@ -275,7 +286,7 @@ export function createApp(
         dirCache.set(meta.sessionId, dir);
       }
       await ensureLayout(dir);
-      await migrateLayout(dir);
+      await migrateQuietly(dir);
       await writeFile(workPath(dir, 'session.json'), JSON.stringify({ ...meta, receivedAt: new Date().toISOString() }, null, 2));
       log(`session ${meta.sessionId} → ${dir}`);
       sendJson(res, 201, { ok: true, sessionId: meta.sessionId, outputDir: dir });
@@ -322,7 +333,7 @@ export function createApp(
 
     // POST /sessions/:id/finalize
     if (req.method === 'POST' && parts[2] === 'finalize' && parts.length === 3) {
-      await migrateLayout(dir);
+      await migrateQuietly(dir);
       try {
         await stat(workPath(dir, 'audio.webm'));
       } catch {

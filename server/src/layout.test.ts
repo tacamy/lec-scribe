@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NOTES_FILE, SLIDES_DIR, WORK_DIR, migrateLayout, slidesInNotes, slidesSourcePath, syncSlides } from './layout.ts';
+import { NOTES_FILE, SLIDES_DIR, WORK_DIR, migrateLayout, migrateLayoutAndSync, slidesInNotes, slidesSourcePath, syncSlides } from './layout.ts';
 
 describe('slides/ には notes.md に載せた画像だけを写す（§14）', () => {
   let dir: string;
@@ -100,6 +100,37 @@ describe('slides/ には notes.md に載せた画像だけを写す（§14）', 
     expect(await names(slides())).toEqual(['slide_002.png']);
     // 新配置になったあとは、slides/ の写しは正本にもあるので移さない
     expect(await migrateLayout(dir)).toEqual([]);
+    expect(await names(slides())).toEqual(['slide_002.png']);
+  });
+
+  it('1 枚が写せなくても残りは写し、最後にまとめて投げる', async () => {
+    await put(source(), 'slide_001.png');
+    await mkdir(slidesSourcePath(dir, 'slide_002.png'), { recursive: true }); // 正本の名前がフォルダ（写せない）
+    await put(source(), 'slide_003.png');
+    await notes('slide_001.png', 'slide_002.png', 'slide_003.png');
+    await expect(syncSlides(dir)).rejects.toThrow(/1 枚を写せませんでした（slide_002\.png/);
+    expect(await names(slides())).toEqual(['slide_001.png', 'slide_003.png']);
+  });
+
+  it('notes.md が読めない（権限）ときは「無い」と扱わず投げる', async () => {
+    await put(source(), 'slide_001.png');
+    await notes('slide_001.png');
+    await chmod(path.join(dir, NOTES_FILE), 0o000);
+    try {
+      await expect(syncSlides(dir)).rejects.toThrow();
+    } finally {
+      await chmod(path.join(dir, NOTES_FILE), 0o600);
+    }
+  });
+
+  it('旧配置の移行で画像を移したときだけ、続けて slides/ を notes.md に合わせる', async () => {
+    for (const n of ['slide_001.png', 'slide_002.png']) await put(slides(), n);
+    await notes('slide_002.png');
+    expect(await migrateLayoutAndSync(dir)).toEqual(['slides/slide_001.png', 'slides/slide_002.png']);
+    expect(await names(slides())).toEqual(['slide_002.png']);
+    // 新配置で notes.md を書き換えただけでは、移行は何もしないので slides/ も触らない（合わせるのは notes.md を書く側）
+    await notes('slide_001.png');
+    expect(await migrateLayoutAndSync(dir)).toEqual([]);
     expect(await names(slides())).toEqual(['slide_002.png']);
   });
 

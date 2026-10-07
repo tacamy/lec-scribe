@@ -69,6 +69,8 @@ export async function recoverInterrupted(outDir: string, log: (message: string) 
       error: `サーバーが再起動したため「${status.stage}」の途中で中断されました。一覧の「やり直す」で続きから作れます。`,
     });
     log(`recovered interrupted session (${status.stage}): ${dir}`);
+    // notes.md を書いた直後に落ちていると slides/ の写しが途中なので、ここで合わせる（§14）
+    await syncSlides(dir).catch((e: unknown) => log(`slides/ を notes.md に合わせられませんでした: ${e instanceof Error ? e.message : String(e)}`));
     recovered.push(dir);
   }
   return recovered;
@@ -430,9 +432,11 @@ export class Pipeline {
     };
 
     try {
-      const migrated = await migrateLayout(dir);
-      // 旧配置から画像の正本を .lecscribe/slides/ へ移した直後は slides/ が空なので、前回の notes.md に合わせて写す（§14）
-      if (migrated.length > 0) await this.syncSlides(dir);
+      await migrateLayout(dir);
+      // 始めに slides/ を今の notes.md に合わせる（§14）。旧配置の移行は受け付け（POST /sessions）で済んでいることが多いので
+      // ここで移った数は当てにしない。前回の処理が notes.md を書いた直後に落ちて写しが途中だった場合もここで直る。
+      // 合っていれば何もしない（全部 kept）
+      await this.syncSlides(dir);
       const audioWebm = workPath(dir, 'audio.webm');
       const audioWav = workPath(dir, 'audio.wav');
       const reportDir = workPath(dir, 'whisperkit');
