@@ -16,6 +16,9 @@ import {
 import type { SlideMeta } from '../src/opfs/session-store';
 import { DETECT_STATUS_HEARTBEAT_MS, type VideoStatus } from '../src/probe';
 import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
+import { frameToRgb, packMember, type TraceKind, type TraceRecord } from '../src/trace';
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * 検知用 content script（SPEC §6.2, §8）。
@@ -39,6 +42,43 @@ const VIDEO_EVENTS = [
   'loadedmetadata',
   'emptied',
 ] as const;
+
+/** 検知の記録を 1 塊にまとめる生データの大きさ（160×90×3 ≒ 43 KB のフレームで約 46 枚、23 秒分） */
+const TRACE_BATCH_BYTES = 2_000_000;
+/** 停止時に記録を送り切るまで待つ上限（録音の停止を遅らせすぎない） */
+const TRACE_FLUSH_TIMEOUT_MS = 10_000;
+
+/**
+ * 検知の記録（SPEC §9.1e）。判定に使った縮小フレームと判定を塊ごとに gzip して offscreen に送る。
+ * 送信は順番に行う（塊が前後すると再生の順序が狂う）。失敗しても検知は止めない
+ */
+class TraceBuffer {
+  private records: TraceRecord[] = [];
+  private bytes = 0;
+  private queue: Promise<void> = Promise.resolve();
+
+  constructor(private readonly sessionId: string) {}
+
+  push(kind: TraceKind, now: number, videoTime: number, width: number, height: number, frame: Frame, verdict?: Verdict): void {
+    this.records.push({ kind, now, videoTime, width, height, rgb: frameToRgb(frame, width * height), ...(verdict ? { verdict } : {}) });
+    this.bytes += width * height * 3;
+    if (this.bytes >= TRACE_BATCH_BYTES) void this.flush();
+  }
+
+  flush(): Promise<void> {
+    const batch = this.records;
+    this.records = [];
+    this.bytes = 0;
+    if (batch.length === 0) return this.queue;
+    this.queue = this.queue
+      .then(async () => {
+        const member = await packMember(batch);
+        await sendToOffscreen.trace(this.sessionId, await blobToBase64(new Blob([member as BlobPart])));
+      })
+      .catch((e: unknown) => console.warn('LecScribe: trace send failed', e));
+    return this.queue;
+  }
+}
 
 type Session = {
   sessionId: string;
@@ -75,6 +115,8 @@ type Session = {
   /** フレーム取得中（同時に 2 枚は撮らない） */
   /** 保存は 1 枚ずつ順番に行う（サンプリングは止めない） */
   grabQueue: Promise<unknown>;
+  /** 検知の記録（開発用。DETECT_START の trace で有効） */
+  trace: TraceBuffer | null;
   onEvent: (event: Event) => void;
   onVisibility: () => void;
   onInitial: () => void;
@@ -176,6 +218,7 @@ function startDetection(msg: Extract<ToContent, { type: 'DETECT_START' }>): Dete
     heartbeat: 0,
     frameCallback: null,
     grabQueue: Promise.resolve(),
+    trace: msg.trace ? new TraceBuffer(msg.sessionId) : null,
     onInitial: () => void grabFrame(current, 'initial').catch(() => undefined),
     onEvent: (event) => {
       // 一時停止中に経過した時間を「非表示でフレームが止まった」と誤判定しないよう、
@@ -241,6 +284,13 @@ async function stopDetection(): Promise<object> {
   current.toastHost?.remove();
   // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
   await sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, 'stop')).catch(() => undefined);
+  if (current.trace) {
+    // 進行中の最終状態の上書きが「replaced」を書き足すのを待ってから送り切る（待たないと最後の塊に入らない）
+    for (let i = 0; current.finalizing && i < 100; i++) await sleep(50);
+    let timer = 0;
+    await Promise.race([current.trace.flush(), new Promise<void>((resolve) => (timer = window.setTimeout(resolve, TRACE_FLUSH_TIMEOUT_MS)))]);
+    window.clearTimeout(timer);
+  }
   return { verdicts: current.verdicts };
 }
 
@@ -325,9 +375,11 @@ function sampleOnce(current: Session): void {
   if (!canSample(current) || current.video.paused || current.video.ended) return;
   const frame = grayFrame(current);
   const wasWatching = current.lastVerdict === null || current.lastVerdict.state === 'watching';
-  const verdict = current.detector.sample(frame, Date.now());
+  const now = Date.now();
+  const verdict = current.detector.sample(frame, now);
   current.lastVerdict = verdict;
   logVerdict(current, 'sample', verdict);
+  current.trace?.push('sample', now, current.video.currentTime, current.detect.detectWidth, current.detect.detectHeight, frame, verdict);
   if (verdict.state === 'stabilizing' && wasWatching) {
     // 切り替わりを検知した瞬間: 直前まで静止していたフレームが前のスライドの最終状態
     current.switchVerdict = verdict;
@@ -415,6 +467,7 @@ async function finalizePrevious(current: Session): Promise<void> {
       return;
     }
     current.detector.replaceSaved(stable.frame);
+    current.trace?.push('replaced', stable.at, stable.videoTime, current.detect.detectWidth, current.detect.detectHeight, stable.frame);
     current.lastSaved = { seq: saved.seq, frame: stable.frame, at: stable.at };
     current.stable = null;
     showToast(current, thumb);
@@ -498,9 +551,11 @@ function flushDetection(current: Session): void {
   if (!canSample(current)) return;
   const frame = grayFrame(current);
   const wasWatching = current.lastVerdict === null || current.lastVerdict.state === 'watching';
-  const verdict = current.detector.flush(frame, Date.now());
+  const now = Date.now();
+  const verdict = current.detector.flush(frame, now);
   current.lastVerdict = verdict;
   logVerdict(current, 'flush', verdict);
+  current.trace?.push('flush', now, current.video.currentTime, current.detect.detectWidth, current.detect.detectHeight, frame, verdict);
   if (wasWatching && !verdict.save) {
     // 止まった画面がそのスライドの最終状態。保存済みと違えば上書きする
     rememberStable(current, frame);
@@ -595,6 +650,7 @@ async function grabFrameNow(current: Session, reason: SlideReason): Promise<Capt
     };
     // 手動や開始時の保存も「最後に保存した画像」として重複判定の基準にする
     current.detector.markSaved(savedFrame, capturedAt.getTime());
+    current.trace?.push('saved', capturedAt.getTime(), videoTime, current.detect.detectWidth, current.detect.detectHeight, savedFrame);
     current.lastSaved = { seq: saved.seq, frame: savedFrame, at: capturedAt.getTime() };
     // 保存中に取れた、より新しい静止フレームは残す（最終状態の上書きに使う）
     if (current.stable && current.stable.at <= capturedAt.getTime()) current.stable = null;

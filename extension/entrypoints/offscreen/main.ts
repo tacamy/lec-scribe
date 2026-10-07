@@ -36,6 +36,7 @@ import {
   type SlideMeta,
 } from '../../src/opfs/session-store';
 import type { TimelineEvent } from '../../src/timeline';
+import { TRACE_FILE } from '../../src/trace';
 import type { WriterRequest, WriterResponse } from '../../src/opfs/writer.worker';
 
 /**
@@ -128,6 +129,8 @@ type Capture = {
   timeline: TimelineEvent[];
   /** timeline.json の書き込みを直列にする（古い内容で上書きしないため） */
   timelineWrite: Promise<void>;
+  /** 検知の記録（trace.bin）。最初の塊が届いたときに開く（SPEC §9.1e） */
+  traceWriter: Promise<AudioFileWriter> | null;
   stopping: boolean;
 };
 
@@ -160,6 +163,8 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return updateSlide(msg);
     case 'TIMELINE_EVENT':
       return recordTimelineEvent(msg.sessionId, msg.event);
+    case 'TRACE':
+      return appendTrace(msg);
     case 'UPLOAD':
       return uploadSession(msg.sessionId, msg.server);
     case 'CANCEL_UPLOAD':
@@ -245,6 +250,7 @@ async function uploadWith(sessionId: string, dir: FileSystemDirectoryHandle, ser
     [SLIDES_FILE, SLIDES_FILE],
     [TIMELINE_FILE, TIMELINE_FILE],
     [STATUS_FILE, 'capture-status.json'],
+    [TRACE_FILE, TRACE_FILE],
   ] as const) {
     const file = await readFile(dir, source);
     if (file) files.push({ name: target, file });
@@ -453,6 +459,7 @@ async function startFromStream(stream: MediaStream, config: Config, meta: Sessio
     slidesWrite: Promise.resolve(),
     timeline: [],
     timelineWrite: Promise.resolve(),
+    traceWriter: null,
     stopping: false,
   };
   capture = current;
@@ -528,6 +535,8 @@ async function finishCaptureInner(current: Capture, error: string | undefined): 
   } catch (e) {
     storageError = toErrorInfo(e).message;
   }
+  // 検知の記録は録音の付録。閉じられなくても録音は失敗にしない
+  if (current.traceWriter) await current.traceWriter.then((w) => w.close()).catch(() => undefined);
   await current.timelineWrite;
   const durationMs = Date.now() - current.startedEpochMs;
 
@@ -595,6 +604,27 @@ function getStats(): CaptureStats {
     slideCount: current.slides.length,
     lastSlideVideoTime: current.slides[current.slides.length - 1]?.videoTime ?? null,
   };
+}
+
+/** 検知の記録の塊を trace.bin に書き足す（SPEC §9.1e）。塊は content script 側で gzip 済み */
+async function appendTrace(msg: Extract<ToOffscreen, { type: 'TRACE' }>): Promise<object> {
+  const current = capture;
+  if (!current || current.sessionId !== msg.sessionId) {
+    throw new LecError('NOT_CAPTURING', 'このセッションはキャプチャ中ではありません。');
+  }
+  current.traceWriter ??= (async () => {
+    const writer = new AudioFileWriter();
+    await writer.open([SESSIONS_DIR, current.sessionId, TRACE_FILE]);
+    return writer;
+  })().catch((e: unknown) => {
+    // 開けなかったら次の塊で開き直す（失敗した約束を持ち続けると、以後の塊が全部落ちる）
+    current.traceWriter = null;
+    throw e;
+  });
+  const writer = await current.traceWriter;
+  const bytes = await (await fetch(`data:application/octet-stream;base64,${msg.dataBase64}`)).blob();
+  writer.append(bytes, (e) => console.warn('LecScribe: trace write failed', e.message));
+  return {};
 }
 
 /** content script から届いたフレームを slides/ に書き、slides.json を更新する */

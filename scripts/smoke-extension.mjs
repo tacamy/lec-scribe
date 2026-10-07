@@ -82,7 +82,7 @@ try {
   // service worker を見つけた直後は chrome API がまだ生えていないことがある（まれに落ちていた）
   for (let i = 0; ; i++) {
     try {
-      await worker.evaluate((port) => chrome.storage.local.set({ config: { server: { port } } }), SERVER_PORT);
+      await worker.evaluate((port) => chrome.storage.local.set({ config: { server: { port } }, trace: true }), SERVER_PORT);
       break;
     } catch (e) {
       if (i >= 50) throw e;
@@ -360,7 +360,8 @@ try {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ['detector.js'] });
     return chrome.tabs.sendMessage(
       tabId,
-      { target: 'content', type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs: Date.now(), slide, detect },
+      // trace: 検知の記録（SPEC §9.1e）も残し、送られることを下で確かめる
+      { target: 'content', type: 'DETECT_START', sessionId, selector, index, recorderStartEpochMs: Date.now(), slide, detect, trace: true },
       { frameId },
     );
   }, { ...target, sessionId: frameSession, slide: slideConfig, detect: detectConfig });
@@ -543,9 +544,13 @@ try {
   // ユーザー向けは notes.md と slides/ だけ。作業ファイルは .lecscribe/ に入る
   assert.deepEqual(readdirSync(path.join(serverOut, outDir)).sort(), ['.lecscribe', 'notes.md', 'slides']);
   const produced = readdirSync(path.join(serverOut, outDir), { recursive: true }).map(String).sort();
-  for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'pipeline.json']) {
+  for (const f of ['audio.webm', 'slides.json', 'timeline.json', 'capture-status.json', 'transcript.json', 'transcript.srt', 'transcript.vtt', 'transcript.txt', 'lecture.md', 'pipeline.json', 'trace.bin']) {
     assert.ok(produced.includes(`.lecscribe/${f}`), `missing .lecscribe/${f} in ${produced}`);
   }
+  // 検知の記録は「u32 の長さ ＋ gzip」の塊の並び。先頭の塊だけ形を確かめる（中身の再生は scripts/replay-trace.mts）
+  const traceBin = readFileSync(path.join(serverOut, outDir, '.lecscribe', 'trace.bin'));
+  assert.ok(traceBin.length > 8 && traceBin.readUInt32LE(0) <= traceBin.length - 4 && traceBin[4] === 0x1f && traceBin[5] === 0x8b, `trace.bin: ${traceBin.length} bytes, head ${traceBin.subarray(0, 6).toString('hex')}`);
+  console.log(`trace: ${traceBin.length} bytes of detection trace uploaded`);
   assert.ok(produced.some((f) => f.endsWith('slide_001.png')), `slides uploaded: ${produced}`);
   const work = path.join(serverOut, outDir, '.lecscribe');
   const srt = readFileSync(path.join(work, 'transcript.srt'), 'utf8');
@@ -769,7 +774,12 @@ try {
   console.log(`options: ${visionLine}`);
   await optionsPage.close();
   // #8: サーバーに繋がらない送信失敗で、送信待ちの行列を捨てないこと。
-  // サーバーを止めて 2 本送ると、どちらも失敗して行列に残る。起動し直して手で送ると順に処理される
+  // サーバーを止めて 2 本送ると、どちらも失敗して行列に残る。起動し直して手で送ると順に処理される。
+  // ここから先はわざとサーバーを止める場面が続く（この試験と、最後のポートの試験）。開いたままのサイドパネルが
+  // その間に問い合わせると「つながらない」がコンソールに出るので、以後のその記録は最後の確認で数えない。
+  // コンソールの記録はサーバーが戻ったあとに遅れて届くこともあるので、止めた区間だけに絞ると取りこぼす。
+  // 代わりに、この行より後の場面では「つながらない」の有無は確かめない（ほかの種類のエラーは今までどおり数える）
+  const serverDownPhaseStart = errors.length;
   localServer.kill();
   await new Promise((r) => setTimeout(r, 500));
   const off4 = await context.newPage();
@@ -1014,7 +1024,6 @@ try {
   // この間はわざとサーバーを止めるので、開いたままのサイドパネルが問い合わせると「つながらない」がコンソールに出る。
   // それはタイミングしだいで出たり出なかったりし、コンソールの記録はサーバーが戻ったあとに遅れて届くこともあるので、
   // この試験を始めてから最後の確認までに出たその記録は数えない（2026-10-02。たまに smoke が落ちていた。CI でも再現）
-  const portPhaseStart = errors.length;
   localServer.kill();
   await new Promise((r) => setTimeout(r, 500));
   const foreign = createServer((_req, res) => {
@@ -1055,7 +1064,7 @@ try {
   assert.ok(upAgain, `server did not start after the port was freed:\n${serverLog}`);
   console.log('port: a foreign app on the port is named in the server log and the options page; the server starts once it is gone');
 
-  const unexpected = [...errors.slice(0, portPhaseStart), ...errors.slice(portPhaseStart).filter((e) => !e.includes('net::ERR_CONNECTION_REFUSED'))];
+  const unexpected = [...errors.slice(0, serverDownPhaseStart), ...errors.slice(serverDownPhaseStart).filter((e) => !e.includes('net::ERR_CONNECTION_REFUSED'))];
   assert.deepEqual(unexpected, [], `page errors: ${unexpected.join('\n')}`);
   console.log('smoke ok');
 } finally {
