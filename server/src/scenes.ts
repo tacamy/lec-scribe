@@ -6,8 +6,8 @@ import type { SlideEntry } from './merge.ts';
  *
  * 映像を追っているカメラは被写体が動くだけで画素が大きく変わるので、拡張の変化検知は
  * 同じ場面を何枚も撮る。ここでは保存済みの画像を全部見たうえで、最後に載せた画像と
- * 「同じ」と判断できるものを notes.md / lecture.md から外す。画像そのものは消さない
- * （載せなかった画像は処理の終わりに .lecscribe/unused/ へ移す。layout.ts、SPEC §14）。
+ * 「同じ」と判断できるものを notes.md / lecture.md から外す。画像の正本（.lecscribe/slides/）は全部残り、
+ * ユーザー向けの slides/ には notes.md に載せた分だけが写される（layout.ts、SPEC §14）。
  *
  * 判断の材料は、画素の差、macOS の Vision で測る見た目の距離、写っている文字（文字認識）、
  * 行ごとの色の並び（スクロール）、色の分布。色の分布は拡張が記録した trigger.stillFraction（動き続けている

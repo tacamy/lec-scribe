@@ -256,6 +256,7 @@ describe('local server', () => {
       '.lecscribe/timeline.json',
       '.lecscribe/session.json',
       '.lecscribe/pipeline.json',
+      '.lecscribe/slides/slide_001.png',
       'slides/slide_001.png',
       'notes.md',
     ]) {
@@ -263,7 +264,7 @@ describe('local server', () => {
     }
     const lecture = await readFile(path.join(outputDir, '.lecscribe', 'lecture.md'), 'utf8');
     expect(lecture).toContain('# テスト 動画/1');
-    expect(lecture).toContain('![slide_001](../slides/slide_001.png)');
+    expect(lecture).toContain('![slide_001](slides/slide_001.png)');
     expect(lecture).toContain('次の区間');
     // ノート（codex スタブ）
     expect(status.result).toMatchObject({ notes: true });
@@ -335,7 +336,10 @@ describe('local server', () => {
     await fetch(`${base}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'old' }) });
     const top = (await readdir(dir)).sort();
     expect(top).toEqual(['.lecscribe', 'slides']);
-    expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'timeline.json']);
+    expect((await readdir(path.join(dir, '.lecscribe'))).sort()).toEqual(['audio.webm', 'lecture.md', 'session.json', 'slides', 'timeline.json']);
+    // 画像の正本も .lecscribe/slides/ へ。notes.md が無いので slides/ には何も写らない（§14）
+    expect(await readdir(path.join(dir, '.lecscribe', 'slides'))).toEqual(['slide_001.png']);
+    expect(await readdir(path.join(dir, 'slides'))).toEqual([]);
   });
 
   it('ノートを整えられなくても段階は done で、status の result に notes: false と理由が載る（拡張が一覧に注意書きを出す）', async () => {

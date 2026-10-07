@@ -397,7 +397,7 @@ export function buildLectureMarkdown(input: {
   segments: readonly MergedSegment[];
   slides: readonly SlideEntry[];
   leadSec?: number;
-  /** 画像の相対パスの前置き。作業フォルダに置くときは "../slides/" */
+  /** 画像の相対パスの前置き。既定の "slides/" は notes.md（セッションフォルダ）からも lecture.md（.lecscribe/、隣に正本）からも合う */
   imagePrefix?: string;
   /** 見出し下に添える注記 */
   note?: string;

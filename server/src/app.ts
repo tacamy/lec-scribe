@@ -308,8 +308,9 @@ export function createApp(
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
         return;
       }
-      // 画像はユーザー向けの slides/ に、それ以外の作業ファイルは .lecscribe/ に置く
-      const target = isSlide ? path.join(dir, name) : workPath(dir, name);
+      // 画像の正本も作業ファイルも .lecscribe/ に置く（画像は .lecscribe/slides/。ユーザー向けの slides/ には
+      // notes.md に載せた分だけを処理が写す。§14）
+      const target = workPath(dir, name);
       const tmp = `${target}.part`;
       await mkdir(path.dirname(target), { recursive: true });
       await streamPipeline(req, createWriteStream(tmp));
