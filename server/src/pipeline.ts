@@ -3,7 +3,7 @@ import path from 'node:path';
 import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
-import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
+import { NOTES_FILE, SLIDES_DIR, migrateLayout, restoreUnusedSlides, tidyUnusedSlides, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
@@ -386,7 +386,21 @@ export class Pipeline {
     if (!exists) return status;
     if (restored) this.log(`やり直しを中止したので、やり直す前の状態に戻しました: ${dir}`);
     await rm(snapshotFile, { force: true }).catch(() => undefined);
+    // 処理の前に slides/ へ戻した画像を、残っている notes.md（前回のまま）に合わせて片付け直す
+    await this.tidySlides(dir);
     return writeStatus(dir, status).catch(() => status);
+  }
+
+  /** notes.md に載せなかった画像を .lecscribe/unused/ へ片付ける（§14）。処理の終わり（完了・失敗・中止）に呼ぶ */
+  private async tidySlides(dir: string): Promise<void> {
+    try {
+      const tidied = await tidyUnusedSlides(dir);
+      if (tidied && tidied.moved > 0) {
+        this.log(`notes.md に載せなかった画像 ${tidied.moved} 枚を .lecscribe/unused/ へ移しました（slides/ は ${tidied.kept} 枚）`);
+      }
+    } catch (e) {
+      this.log(`画像を片付けられませんでした: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private async process(dir: string, job: Job): Promise<PipelineStatus> {
@@ -409,6 +423,9 @@ export class Pipeline {
 
     try {
       await migrateLayout(dir);
+      // 前回の処理で片付けた画像を slides/ に戻す。場面まとめと救出は全画像から選ぶ（§14）
+      const restored = await restoreUnusedSlides(dir);
+      if (restored > 0) this.log(`片付けていた画像 ${restored} 枚を処理の間 slides/ に戻しました`);
       const audioWebm = workPath(dir, 'audio.webm');
       const audioWav = workPath(dir, 'audio.wav');
       const reportDir = workPath(dir, 'whisperkit');
@@ -727,6 +744,7 @@ export class Pipeline {
 
       // 最後まで進んだので、やり直す前の状態の控えはもう要らない
       await rm(workPath(dir, PREVIOUS_FILE), { force: true }).catch(() => undefined);
+      await this.tidySlides(dir);
       return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });
     } catch (e) {
       if (signal.aborted) return this.writeCancelled(dir, job);
@@ -734,6 +752,8 @@ export class Pipeline {
       this.log(`pipeline error: ${message}`);
       // 失敗で終わったら控えは捨てる（次の「やり直す」の中止で、失敗より前の状態に戻してしまわないように）
       await rm(workPath(dir, PREVIOUS_FILE), { force: true }).catch(() => undefined);
+      // notes.md があれば（前回のままか、文字起こしそのままの本文）それに合わせて画像を片付け直す
+      await this.tidySlides(dir);
       return writeStatus(dir, { ...status, stage: 'error', updatedAt: now(), error: message });
     }
   }

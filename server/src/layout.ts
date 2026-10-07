@@ -1,17 +1,19 @@
-import { mkdir, readdir, rename, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
  * セッションフォルダの配置（SPEC §14）。
  *
- *   <session>/notes.md      ユーザー向けのノート
- *   <session>/slides/       スライド画像（notes.md から相対参照）
- *   <session>/.lecscribe/   作業ファイル: 音声、文字起こし、timeline、session、pipeline など
+ *   <session>/notes.md          ユーザー向けのノート
+ *   <session>/slides/           notes.md に載せた画像（相対参照）
+ *   <session>/.lecscribe/       作業ファイル: 音声、文字起こし、timeline、session、pipeline など
+ *   <session>/.lecscribe/unused/  notes.md に載せなかった画像（処理の間は slides/ に戻す）
  *
  * 作業ファイルは隠しフォルダに寄せ、Finder で開いたときにノートと画像だけが見えるようにする。
  */
 export const WORK_DIR = '.lecscribe';
 export const SLIDES_DIR = 'slides';
+export const UNUSED_DIR = 'unused';
 /**
  * slides/ に置く画像の名前。拡張が付ける slide_001.png / .jpg の形だけ。受け取るときと slides.json を読むときに確かめる
  * （slides.json の名前はそのままパスにして ffmpeg や Vision に渡すので、フォルダの外を指させない）
@@ -38,6 +40,77 @@ export const WORK_FILES = [
 
 export function workPath(sessionDir: string, ...parts: string[]): string {
   return path.join(sessionDir, WORK_DIR, ...parts);
+}
+
+/** フォルダの中の、拡張が付けた名前（slide_001.png の形）の画像だけ */
+async function slideFiles(dir: string): Promise<string[]> {
+  try {
+    return (await readdir(dir)).filter((name) => SLIDE_FILE.test(name)).sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 片付けていた画像（.lecscribe/unused/）を slides/ に戻す。処理（場面まとめ・救出 §13.4b・c）は slides/ の
+ * 全画像を読むので、処理の前に呼ぶ。同じ名前が slides/ に既にある（「文字起こしする」で送り直された）ときは
+ * 片付けていた方を捨てる。戻した枚数を返す
+ */
+export async function restoreUnusedSlides(sessionDir: string): Promise<number> {
+  const unusedDir = workPath(sessionDir, UNUSED_DIR);
+  const names = await slideFiles(unusedDir);
+  if (names.length === 0) return 0;
+  const slidesDir = path.join(sessionDir, SLIDES_DIR);
+  await mkdir(slidesDir, { recursive: true });
+  let restored = 0;
+  for (const name of names) {
+    const from = path.join(unusedDir, name);
+    const to = path.join(slidesDir, name);
+    const exists = await stat(to).then(() => true).catch(() => false);
+    if (exists) {
+      await rm(from, { force: true });
+      continue;
+    }
+    await rename(from, to);
+    restored++;
+  }
+  return restored;
+}
+
+/** notes.md が参照している slides/ の画像の名前 */
+export function slidesInNotes(notes: string): Set<string> {
+  const used = new Set<string>();
+  for (const m of notes.matchAll(/\]\(slides\/(slide_[0-9]{3,}\.(?:png|jpg))\)/g)) used.add(m[1]!);
+  return used;
+}
+
+/**
+ * notes.md に載せなかった画像を slides/ から .lecscribe/unused/ へ移す（§14）。利用者が slides/ を丸ごと
+ * コピーしても、ノートに使った画像だけになるように。処理が終わるたびに呼び、「やり直す」で載せる画像が
+ * 変わっても slides/ はいつも notes.md と対応する。notes.md が無ければ何もしない（null）
+ */
+export async function tidyUnusedSlides(sessionDir: string): Promise<{ moved: number; kept: number } | null> {
+  let notes: string;
+  try {
+    notes = await readFile(path.join(sessionDir, NOTES_FILE), 'utf8');
+  } catch {
+    return null;
+  }
+  const used = slidesInNotes(notes);
+  const slidesDir = path.join(sessionDir, SLIDES_DIR);
+  const unusedDir = workPath(sessionDir, UNUSED_DIR);
+  let moved = 0;
+  let kept = 0;
+  for (const name of await slideFiles(slidesDir)) {
+    if (used.has(name)) {
+      kept++;
+      continue;
+    }
+    if (moved === 0) await mkdir(unusedDir, { recursive: true });
+    await rename(path.join(slidesDir, name), path.join(unusedDir, name));
+    moved++;
+  }
+  return { moved, kept };
 }
 
 export async function ensureLayout(sessionDir: string): Promise<void> {
