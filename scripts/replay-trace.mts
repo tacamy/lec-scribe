@@ -10,12 +10,13 @@ import { DEFAULT_CONFIG, type Config } from '../extension/src/config.ts';
 import { ChangeDetector, type Verdict } from '../extension/src/detect.ts';
 import { readTrace, rgbToFrame, type TraceRecord } from '../extension/src/trace.ts';
 
-const dir = process.argv[2];
+const args = process.argv.slice(2);
+const dir = args.find((a) => !a.startsWith('--'));
 if (!dir) {
-  console.error('usage: replay-trace.mts <session dir> [--check]');
+  console.error('usage: node --experimental-transform-types scripts/replay-trace.mts <session dir> [--check]');
   process.exit(2);
 }
-const check = process.argv.includes('--check');
+const check = args.includes('--check');
 const work = path.join(dir, '.lecscribe');
 const traceFile = path.join(work, 'trace.bin');
 if (!existsSync(traceFile)) {
@@ -23,8 +24,11 @@ if (!existsSync(traceFile)) {
   process.exit(1);
 }
 
-const session = JSON.parse(readFileSync(path.join(work, 'session.json'), 'utf8')) as { config?: Partial<Config> };
-const detect: Config['detect'] = { ...DEFAULT_CONFIG.detect, ...session.config?.detect };
+// 検知の設定は録画したときのもの（session.json）。無ければ既定で流す（結果が録画時と違いうるので断る）
+const sessionFile = path.join(work, 'session.json');
+const session = existsSync(sessionFile) ? (JSON.parse(readFileSync(sessionFile, 'utf8')) as { config?: Partial<Config> }) : null;
+if (!session) console.warn(`no session.json in ${work}; replaying with the default detect config`);
+const detect: Config['detect'] = { ...DEFAULT_CONFIG.detect, ...session?.config?.detect };
 const records = await readTrace(new Uint8Array(readFileSync(traceFile)));
 const slides = existsSync(path.join(work, 'slides.json')) ? (JSON.parse(readFileSync(path.join(work, 'slides.json'), 'utf8')) as Array<{ filename: string; videoTime: number; reason: string }>) : [];
 const scenes = existsSync(path.join(work, 'scenes.json')) ? (JSON.parse(readFileSync(path.join(work, 'scenes.json'), 'utf8')) as { decisions: Array<{ filename: string; shown: boolean }>; picker?: { accepted?: string[]; swaps?: Array<{ from: string; to: string }> } }) : null;
@@ -48,8 +52,10 @@ export function replay(records: readonly TraceRecord[], cfg: Config['detect'], c
   const detector = new ChangeDetector(cfg);
   const saves: number[] = [];
   let mismatches = 0;
+  const near = (x: number | undefined, y: number | undefined) => (x === undefined && y === undefined) || (x !== undefined && y !== undefined && Math.abs(x - y) < 1e-4);
+  // diffSaved も比べる: 「saved」「replaced」の基準フレームが再生で食い違うと、まずここに出る
   const same = (a: Verdict, b: NonNullable<TraceRecord['verdict']>) =>
-    a.save === b.save && a.state === b.state && Math.abs(a.diffPrev - b.diffPrev) < 1e-4 && a.cells === b.cells && Math.abs(a.stillFraction - b.stillFraction) < 1e-4;
+    a.save === b.save && a.state === b.state && near(a.diffPrev, b.diffPrev) && near(a.diffSaved, b.diffSaved) && a.cells === b.cells && near(a.stillFraction, b.stillFraction);
   for (const r of records) {
     const frame = rgbToFrame(r.rgb, r.width * r.height);
     switch (r.kind) {
@@ -74,17 +80,34 @@ export function replay(records: readonly TraceRecord[], cfg: Config['detect'], c
   return { saves, mismatches };
 }
 
-/** 使われた画像のうち、再生の保存から 2 秒以内に相当するものがいくつ残るか */
+/**
+ * 保存した画像の動画時刻（slides.json）→ その保存を決めたサンプルの動画時刻。
+ * 保存は判定のあと順番待ちと符号化を経て撮るので、画像の時刻はサンプルより遅れる（遅いマシンでは数秒）。
+ * 記録では「保存の判定（sample / flush の save）」のあとに「saved」が来るので、順に対応させる。
+ * 開始時・手動の保存は判定を伴わないので対応しない
+ */
+const sampleOfSave = new Map<number, number>();
+{
+  const pending: number[] = [];
+  for (const r of records) {
+    if ((r.kind === 'sample' || r.kind === 'flush') && r.verdict?.save) pending.push(r.videoTime);
+    else if (r.kind === 'saved' && pending.length > 0) sampleOfSave.set(r.videoTime, pending.shift()!);
+  }
+}
+/** ノートに使われた画像を、保存を決めたサンプルの時刻で持つ（対応が取れないものは画像の時刻のまま） */
+const usedAtSample = [...used].map((t) => sampleOfSave.get(t) ?? t);
+
+/** 使われた画像のうち、再生の保存（サンプルの時刻）が同じサンプルに当たるものがいくつ残るか */
 function kept(saves: readonly number[]): number {
   let n = 0;
-  for (const t of used) if (saves.some((s) => Math.abs(s - t) <= 2)) n++;
+  for (const t of usedAtSample) if (saves.some((s) => Math.abs(s - t) <= detect.sampleIntervalMs / 1000 + 0.05)) n++;
   return n;
 }
 
 const counts = records.reduce<Record<string, number>>((m, r) => ({ ...m, [r.kind]: (m[r.kind] ?? 0) + 1 }), {});
 const span = records.length ? records[records.length - 1]!.videoTime - records[0]!.videoTime : 0;
 console.log(`trace: ${records.length} records (${JSON.stringify(counts)}), ${(span / 60).toFixed(1)} min, ${records[0]?.width}x${records[0]?.height}`);
-console.log(`recorded: ${slides.filter((s) => s.reason === 'change').length} auto captures, ${used.size} used in notes`);
+console.log(`recorded: ${slides.filter((s) => s.reason === 'change').length} auto captures, ${used.size} used in notes (${usedAtSample.filter((t, i) => t !== [...used][i]).length} mapped to their sample times)`);
 
 const base = replay(records, detect, check);
 console.log(`replay (current rules): ${base.saves.length} saves, keeps ${kept(base.saves)}/${used.size} used${check ? `, ${base.mismatches} verdict mismatches` : ''}`);

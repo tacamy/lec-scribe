@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "pnpm --dir extension exec tsc -p ../scripts/tsconfig.json",
     "test": "pnpm -r test",
     "lint": "oxlint extension/src extension/entrypoints server/src server/scripts scripts fixtures",
     "fixtures:make": "node fixtures/make-slides.mjs",

@@ -616,7 +616,11 @@ async function appendTrace(msg: Extract<ToOffscreen, { type: 'TRACE' }>): Promis
     const writer = new AudioFileWriter();
     await writer.open([SESSIONS_DIR, current.sessionId, TRACE_FILE]);
     return writer;
-  })();
+  })().catch((e: unknown) => {
+    // 開けなかったら次の塊で開き直す（失敗した約束を持ち続けると、以後の塊が全部落ちる）
+    current.traceWriter = null;
+    throw e;
+  });
   const writer = await current.traceWriter;
   const bytes = await (await fetch(`data:application/octet-stream;base64,${msg.dataBase64}`)).blob();
   writer.append(bytes, (e) => console.warn('LecScribe: trace write failed', e.message));

@@ -13,19 +13,15 @@
  * 塊ごとに gzip するのは、録画中に少しずつ書き足せるようにするため（1 塊 ≒ 2 MB の生データ）
  */
 
+import type { Verdict } from './detect';
+
 export const TRACE_FILE = 'trace.bin';
 
 export type TraceKind = 'sample' | 'flush' | 'saved' | 'replaced';
 const KINDS: readonly TraceKind[] = ['sample', 'flush', 'saved', 'replaced'];
 
-export type TraceVerdict = {
-  save: boolean;
-  state: 'watching' | 'stabilizing';
-  diffPrev: number;
-  diffSaved?: number;
-  cells: number;
-  stillFraction: number;
-};
+/** 検知の判定そのもの（detect.ts の Verdict）。項目が増えたら encode / decode も足す */
+export type TraceVerdict = Verdict;
 
 export type TraceRecord = {
   kind: TraceKind;
@@ -108,7 +104,11 @@ export function decodeBatch(body: Uint8Array): TraceRecord[] {
   const count = view.getUint32(5, true);
   const records: TraceRecord[] = [];
   let at = HEADER_BYTES;
+  const need = (bytes: number) => {
+    if (at + bytes > body.length) throw new Error(`trace: truncated record ${records.length} (need ${bytes} bytes at ${at} of ${body.length})`);
+  };
   for (let i = 0; i < count; i++) {
+    need(RECORD_HEAD_BYTES);
     const kind = KINDS[body[at]!];
     if (!kind) throw new Error(`trace: unknown kind ${body[at]}`);
     const now = view.getFloat64(at + 1, true);
@@ -119,6 +119,7 @@ export function decodeBatch(body: Uint8Array): TraceRecord[] {
     at += RECORD_HEAD_BYTES;
     let verdict: TraceVerdict | undefined;
     if (hasVerdict) {
+      need(VERDICT_BYTES);
       const diffSaved = view.getFloat32(at + 6, true);
       verdict = {
         save: body[at] === 1,
@@ -131,6 +132,7 @@ export function decodeBatch(body: Uint8Array): TraceRecord[] {
       at += VERDICT_BYTES;
     }
     const bytes = width * height * 3;
+    need(bytes);
     records.push({ kind, now, videoTime, width, height, rgb: body.slice(at, at + bytes), ...(verdict ? { verdict } : {}) });
     at += bytes;
   }
@@ -151,17 +153,30 @@ export async function packMember(records: readonly TraceRecord[]): Promise<Uint8
   return out;
 }
 
-/** trace.bin 全体（塊の繰り返し）を読む */
-export async function readTrace(file: Uint8Array): Promise<TraceRecord[]> {
+/**
+ * trace.bin 全体（塊の繰り返し）を読む。
+ * 最後の塊が途中で切れていたら（書いている最中に offscreen が落ちた等）、そこまでの塊を返して warn に残す。
+ * 塊は書き足しの単位なので、それより前は完全に残っている
+ */
+export async function readTrace(file: Uint8Array, warn: (message: string) => void = (m) => console.warn(m)): Promise<TraceRecord[]> {
   const records: TraceRecord[] = [];
   const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
   let at = 0;
   while (at + 4 <= file.length) {
     const length = view.getUint32(at, true);
     const member = file.subarray(at + 4, at + 4 + length);
-    if (member.length < length) throw new Error(`trace: truncated member at ${at}`);
-    records.push(...decodeBatch(await pipeThrough(member, new DecompressionStream('gzip'))));
+    if (member.length < length) {
+      warn(`trace: truncated member at ${at} (${member.length} of ${length} bytes); keeping ${records.length} records`);
+      break;
+    }
+    try {
+      records.push(...decodeBatch(await pipeThrough(member, new DecompressionStream('gzip'))));
+    } catch (e) {
+      warn(`trace: unreadable member at ${at}: ${e instanceof Error ? e.message : String(e)}; keeping ${records.length} records`);
+      break;
+    }
     at += 4 + length;
   }
+  if (at < file.length && at + 4 > file.length) warn(`trace: ${file.length - at} trailing bytes ignored`);
   return records;
 }

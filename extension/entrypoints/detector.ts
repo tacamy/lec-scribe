@@ -18,6 +18,8 @@ import { DETECT_STATUS_HEARTBEAT_MS, type VideoStatus } from '../src/probe';
 import { isDuplicateEvent, videoState, type TimelineEvent, type TimelineEventType } from '../src/timeline';
 import { frameToRgb, packMember, type TraceKind, type TraceRecord } from '../src/trace';
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /**
  * 検知用 content script（SPEC §6.2, §8）。
  *
@@ -58,15 +60,7 @@ class TraceBuffer {
   constructor(private readonly sessionId: string) {}
 
   push(kind: TraceKind, now: number, videoTime: number, width: number, height: number, frame: Frame, verdict?: Verdict): void {
-    this.records.push({
-      kind,
-      now,
-      videoTime,
-      width,
-      height,
-      rgb: frameToRgb(frame, width * height),
-      ...(verdict ? { verdict: { save: verdict.save, state: verdict.state, diffPrev: verdict.diffPrev, cells: verdict.cells, stillFraction: verdict.stillFraction, ...(verdict.diffSaved !== undefined ? { diffSaved: verdict.diffSaved } : {}) } } : {}),
-    });
+    this.records.push({ kind, now, videoTime, width, height, rgb: frameToRgb(frame, width * height), ...(verdict ? { verdict } : {}) });
     this.bytes += width * height * 3;
     if (this.bytes >= TRACE_BATCH_BYTES) void this.flush();
   }
@@ -291,7 +285,11 @@ async function stopDetection(): Promise<object> {
   // 録音停止より先に書き終えたいので、stop だけは応答前に送り切る
   await sendToOffscreen.timelineEvent(current.sessionId, timelineEvent(current, 'stop')).catch(() => undefined);
   if (current.trace) {
-    await Promise.race([current.trace.flush(), new Promise<void>((resolve) => setTimeout(resolve, TRACE_FLUSH_TIMEOUT_MS))]);
+    // 進行中の最終状態の上書きが「replaced」を書き足すのを待ってから送り切る（待たないと最後の塊に入らない）
+    for (let i = 0; current.finalizing && i < 100; i++) await sleep(50);
+    let timer = 0;
+    await Promise.race([current.trace.flush(), new Promise<void>((resolve) => (timer = window.setTimeout(resolve, TRACE_FLUSH_TIMEOUT_MS)))]);
+    window.clearTimeout(timer);
   }
   return { verdicts: current.verdicts };
 }
