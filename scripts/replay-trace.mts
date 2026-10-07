@@ -33,8 +33,8 @@ const records = await readTrace(new Uint8Array(readFileSync(traceFile)));
 const slides = existsSync(path.join(work, 'slides.json')) ? (JSON.parse(readFileSync(path.join(work, 'slides.json'), 'utf8')) as Array<{ filename: string; videoTime: number; reason: string }>) : [];
 const scenes = existsSync(path.join(work, 'scenes.json')) ? (JSON.parse(readFileSync(path.join(work, 'scenes.json'), 'utf8')) as { decisions: Array<{ filename: string; shown: boolean }>; picker?: { accepted?: string[]; swaps?: Array<{ from: string; to: string }> } }) : null;
 
-/** ノートに使われた自動キャプチャの動画時刻（場面まとめと救出・差し替えのあと） */
-const used = new Set<number>();
+/** ノートに使われた自動キャプチャの動画時刻（場面まとめと救出・差し替えのあと）→ ファイル名 */
+const used = new Map<number, string>();
 if (scenes) {
   const shown = new Set(scenes.decisions.filter((d) => d.shown).map((d) => d.filename));
   for (const a of scenes.picker?.accepted ?? []) shown.add(a);
@@ -42,7 +42,7 @@ if (scenes) {
     shown.add(s.to);
     shown.delete(s.from);
   }
-  for (const s of slides) if (s.reason === 'change' && shown.has(s.filename)) used.add(s.videoTime);
+  for (const s of slides) if (s.reason === 'change' && shown.has(s.filename)) used.set(s.videoTime, s.filename);
 }
 
 export type ReplayResult = { saves: number[]; mismatches: number };
@@ -95,19 +95,19 @@ const sampleOfSave = new Map<number, number>();
   }
 }
 /** ノートに使われた画像を、保存を決めたサンプルの時刻で持つ（対応が取れないものは画像の時刻のまま） */
-const usedAtSample = [...used].map((t) => sampleOfSave.get(t) ?? t);
+const usedAtSample = [...used].map(([t, filename]) => ({ filename, imageTime: t, sampleTime: sampleOfSave.get(t) ?? t }));
 
-/** 使われた画像のうち、再生の保存（サンプルの時刻）が同じサンプルに当たるものがいくつ残るか */
-function kept(saves: readonly number[]): number {
-  let n = 0;
-  for (const t of usedAtSample) if (saves.some((s) => Math.abs(s - t) <= detect.sampleIntervalMs / 1000 + 0.05)) n++;
-  return n;
+/** 使われた画像のうち、再生の保存（サンプルの時刻）が同じサンプルに当たらないもの（規則を変えると失う画像） */
+function lost(saves: readonly number[]): typeof usedAtSample {
+  return usedAtSample.filter((u) => !saves.some((s) => Math.abs(s - u.sampleTime) <= detect.sampleIntervalMs / 1000 + 0.05));
 }
 
 const counts = records.reduce<Record<string, number>>((m, r) => ({ ...m, [r.kind]: (m[r.kind] ?? 0) + 1 }), {});
 const span = records.length ? records[records.length - 1]!.videoTime - records[0]!.videoTime : 0;
 console.log(`trace: ${records.length} records (${JSON.stringify(counts)}), ${(span / 60).toFixed(1)} min, ${records[0]?.width}x${records[0]?.height}`);
-console.log(`recorded: ${slides.filter((s) => s.reason === 'change').length} auto captures, ${used.size} used in notes (${usedAtSample.filter((t, i) => t !== [...used][i]).length} mapped to their sample times)`);
+console.log(`recorded: ${slides.filter((s) => s.reason === 'change').length} auto captures, ${used.size} used in notes (${usedAtSample.filter((u) => u.sampleTime !== u.imageTime).length} mapped to their sample times)`);
 
 const base = replay(records, detect, check);
-console.log(`replay (current rules): ${base.saves.length} saves, keeps ${kept(base.saves)}/${used.size} used${check ? `, ${base.mismatches} verdict mismatches` : ''}`);
+const baseLost = lost(base.saves);
+console.log(`replay (current rules): ${base.saves.length} saves, keeps ${used.size - baseLost.length}/${used.size} used${check ? `, ${base.mismatches} verdict mismatches` : ''}`);
+for (const u of baseLost) console.log(`  lost: ${u.filename} (${u.imageTime.toFixed(1)}s)`);

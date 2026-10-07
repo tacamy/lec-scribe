@@ -52,6 +52,12 @@ export type Config = {
     /** 最後に保存した画像との差がこれ未満なら保存しない */
     dedupeThreshold: number;
     /**
+     * 人が動く帯（静止部分が 50〜95%。板書・書画カメラ）で切り替えとみなす変化画素率（SPEC §9.1f）。
+     * 人の動きのにじみで撮りすぎないよう、スライドの画面（changeThreshold）より高くする。
+     * 最後に保存した画像との差の下限（dedupeThreshold）は帯でも変えない
+     */
+    bandChangeThreshold: number;
+    /**
      * 映像中心の画面（静止部分が半分未満）では、1 サンプルでこれ以上変わったときだけ
      * 「場面が切り替わった」とみなす。カメラが動いているだけの連続したショットを撮り続けないため
      */
@@ -99,6 +105,7 @@ export const DEFAULT_CONFIG: Config = {
     stableSamples: 2,
     maxStabilizeMs: 3000,
     dedupeThreshold: 0.015,
+    bandChangeThreshold: 0.05,
     cutThreshold: 0.3,
     sameSceneColor: 0.65,
     minShotIntervalMs: 2000,

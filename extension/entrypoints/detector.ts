@@ -384,8 +384,9 @@ function sampleOnce(current: Session): void {
     // 切り替わりを検知した瞬間: 直前まで静止していたフレームが前のスライドの最終状態
     current.switchVerdict = verdict;
     void finalizePrevious(current).catch(() => undefined);
-  } else if (verdict.state === 'watching' && !verdict.save && verdict.diffPrev < current.detect.changeThreshold) {
-    // 切り替わりではない小さな変化（ワイプの動き、文字が 1 行増えた）も含めて「同じスライドの最新の画面」として持つ
+  } else if (verdict.state === 'watching' && !verdict.save && verdict.diffPrev < current.detector.switchThreshold) {
+    // 切り替わりではない小さな変化（ワイプの動き、文字が 1 行増えた、人が動く帯での人の動き）も含めて
+    // 「同じスライドの最新の画面」として持つ。線は検知と同じ（帯では 5%。§9.1f）
     rememberStable(current, frame);
   }
   if (verdict.save) void grabFrame(current, 'change').catch(() => undefined);
