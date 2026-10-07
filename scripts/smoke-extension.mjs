@@ -560,10 +560,19 @@ try {
   assert.equal(pipelineStatus.result.hasTimeline, true);
   assert.equal(pipelineStatus.result.slides, 4);
   const lectureMd = readFileSync(path.join(work, 'lecture.md'), 'utf8');
-  assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](../slides/slide_001.png)'), lectureMd.slice(0, 300));
+  assert.ok(lectureMd.includes('# smoke frames') && lectureMd.includes('![slide_001](slides/slide_001.png)'), lectureMd.slice(0, 300));
   // LLM なしなので notes.md は文字起こしそのまま（画像は slides/ を相対参照）
   const notesMd = readFileSync(path.join(serverOut, outDir, 'notes.md'), 'utf8');
   assert.ok(notesMd.includes('# smoke frames') && notesMd.includes('![slide_001](slides/slide_001.png)'), notesMd.slice(0, 300));
+  // 画像の正本は .lecscribe/slides/ に全部あり、slides/ には notes.md に載せた画像だけが写される（SPEC §14）
+  const usedInNotes = new Set([...notesMd.matchAll(/\]\(slides\/(slide_[0-9]+\.png)\)/g)].map((m) => m[1]));
+  const inSlides = readdirSync(path.join(serverOut, outDir, 'slides')).sort();
+  const inSource = readdirSync(path.join(work, 'slides')).sort();
+  const allSlides = JSON.parse(readFileSync(path.join(work, 'slides.json'), 'utf8')).map((s) => s.filename).sort();
+  assert.deepEqual(inSource, allSlides, `.lecscribe/slides/ should hold every uploaded image: ${inSource} vs ${allSlides}`);
+  assert.deepEqual(inSlides, [...usedInNotes].sort(), `slides/ should hold exactly the images in notes.md: slides=${inSlides} notes=${[...usedInNotes]}`);
+  for (const name of inSlides) assert.equal(readFileSync(path.join(serverOut, outDir, 'slides', name)).equals(readFileSync(path.join(work, 'slides', name))), true, `slides/${name} differs from its source`);
+  console.log(`slides: ${inSlides.length} of ${inSource.length} images copied into slides/`);
   // 拡張側の status.json も done になり、一覧に「フォルダを開く」と「やり直す」が出る
   await panel.reload();
   await panel.waitForFunction(

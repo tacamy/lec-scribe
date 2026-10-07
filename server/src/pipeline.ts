@@ -3,7 +3,7 @@ import path from 'node:path';
 import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
-import { NOTES_FILE, SLIDES_DIR, migrateLayout, workPath } from './layout.ts';
+import { NOTES_FILE, migrateLayout, slidesSourcePath, syncSlides, workPath } from './layout.ts';
 import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
@@ -69,6 +69,8 @@ export async function recoverInterrupted(outDir: string, log: (message: string) 
       error: `サーバーが再起動したため「${status.stage}」の途中で中断されました。一覧の「やり直す」で続きから作れます。`,
     });
     log(`recovered interrupted session (${status.stage}): ${dir}`);
+    // notes.md を書いた直後に落ちていると slides/ の写しが途中なので、ここで合わせる（§14）
+    await syncSlides(dir).catch((e: unknown) => log(`slides/ を notes.md に合わせられませんでした: ${e instanceof Error ? e.message : String(e)}`));
     recovered.push(dir);
   }
   return recovered;
@@ -239,13 +241,13 @@ export class Pipeline {
     const thumbs = new Map<string, Uint8Array>();
     for (const s of slides) {
       if (signal?.aborted) return { slides: [...slides], decisions: [], texts: new Map() };
-      const thumb = await readThumbnail(this.config.ffmpegBin, path.join(dir, SLIDES_DIR, s.filename), signal);
+      const thumb = await readThumbnail(this.config.ffmpegBin, slidesSourcePath(dir, s.filename), signal);
       if (thumb) thumbs.set(s.filename, thumb);
     }
     if (thumbs.size === 0) return { slides: [...slides], decisions: [], texts: new Map() };
     // 見た目の距離と写っている文字（macOS の Vision）。用意できなければ色と画素だけで判定する
     const measure = usesVision(this.config)
-      ? await visionDistances(slides.map((s) => path.join(dir, SLIDES_DIR, s.filename)), this.log, signal)
+      ? await visionDistances(slides.map((s) => slidesSourcePath(dir, s.filename)), this.log, signal)
       : null;
     const visionOptions = measure ? { distance: measure.distance, text: measure.text, tight: this.config.sceneVision, photo: this.config.sceneVisionPhoto } : undefined;
     const decisions = pickShownSlides(slides, thumbs, this.config.sceneColor, visionOptions, this.config.sceneKeep);
@@ -291,7 +293,7 @@ export class Pipeline {
       if (regions.length === 0) return null;
       const run = await runPicker({
         dir,
-        slidesDir: path.join(dir, SLIDES_DIR),
+        slidesDir: slidesSourcePath(dir),
         regions,
         settings: { codexBin: this.config.codexBin, model: settings.model, fallbackModel: settings.fallbackModel, signal: settings.signal },
         log: this.log,
@@ -389,6 +391,28 @@ export class Pipeline {
     return writeStatus(dir, status).catch(() => status);
   }
 
+  /**
+   * notes.md を書き、slides/ をそれに合わせる（§14）。slides/ が変わるのはここだけなので、
+   * 中止・失敗・サーバーの再起動で途中で終わっても slides/ は最後に書いた notes.md と対応したまま
+   */
+  private async writeNotes(dir: string, content: string): Promise<void> {
+    await writeFile(path.join(dir, NOTES_FILE), content);
+    await this.syncSlides(dir);
+  }
+
+  /** slides/ を今の notes.md に合わせる。失敗してもノートは書けているので、ログに残して続ける */
+  private async syncSlides(dir: string): Promise<void> {
+    try {
+      const synced = await syncSlides(dir);
+      if (synced && (synced.copied > 0 || synced.removed > 0 || synced.missing > 0)) {
+        const missing = synced.missing > 0 ? `、正本に無い ${synced.missing} 枚` : '';
+        this.log(`slides/ を notes.md に合わせました: 写し ${synced.copied} 枚、外し ${synced.removed} 枚（${synced.copied + synced.kept} 枚${missing}）`);
+      }
+    } catch (e) {
+      this.log(`slides/ を notes.md に合わせられませんでした: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   private async process(dir: string, job: Job): Promise<PipelineStatus> {
     const signal = job.controller.signal;
     const now = () => new Date().toISOString();
@@ -409,6 +433,10 @@ export class Pipeline {
 
     try {
       await migrateLayout(dir);
+      // 始めに slides/ を今の notes.md に合わせる（§14）。旧配置の移行は受け付け（POST /sessions）で済んでいることが多いので
+      // ここで移った数は当てにしない。前回の処理が notes.md を書いた直後に落ちて写しが途中だった場合もここで直る。
+      // 合っていれば何もしない（全部 kept）
+      await this.syncSlides(dir);
       const audioWebm = workPath(dir, 'audio.webm');
       const audioWav = workPath(dir, 'audio.wav');
       const reportDir = workPath(dir, 'whisperkit');
@@ -487,7 +515,8 @@ export class Pipeline {
             sections,
             segmentCount: segsWithVideoTime.length,
           };
-          await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown({ ...lectureInput, imagePrefix: '../slides/' }));
+          // lecture.md は .lecscribe/ に置くので、画像は隣の正本（.lecscribe/slides/）を既定の slides/ で参照する
+          await writeFile(workPath(dir, 'lecture.md'), buildLectureMarkdown(lectureInput));
           const rawNotes = buildLectureMarkdown({
             ...lectureInput,
             note: this.config.llm === 'none' ? '文字起こしそのままの本文。サーバーを --llm 付きで動かすと、整えた本文と要点になる' : undefined,
@@ -511,7 +540,7 @@ export class Pipeline {
         // ノート作成に失敗したときは、あとでこの本文を書き込む（前回の結果が残ったままにならないように）
         const notesFile = path.join(dir, NOTES_FILE);
         const hasNotes = await stat(notesFile).then(() => true).catch(() => false);
-        if (!hasNotes || this.config.llm === 'none') await writeFile(notesFile, built.rawNotes);
+        if (!hasNotes || this.config.llm === 'none') await this.writeNotes(dir, built.rawNotes);
         if (!this.config.keepWav) await rm(audioWav, { force: true });
         const pickerInput: PickerInput = { segments: segsWithVideoTime, allSlides, shown: shownOnly, decisions, texts };
         return {
@@ -535,7 +564,7 @@ export class Pipeline {
       let notes: { notes?: boolean; notesError?: string; notesReused?: boolean; notesCancelled?: boolean } = {};
       /** ノート作成に失敗したら、文字起こしそのままの本文を置く（前回の内容が残ったままにならないように） */
       const fallbackNotes = async (notesError: string) => {
-        await writeFile(path.join(dir, NOTES_FILE), result.rawNotes).catch(() => undefined);
+        await this.writeNotes(dir, result.rawNotes).catch(() => undefined);
         this.log(`ノートを整えられませんでした（${notesError}）。文字起こしそのままの本文を置きました`);
         return { notes: false, notesError };
       };
@@ -697,8 +726,8 @@ export class Pipeline {
             });
           }
           if (polished.size === 0) return await fallbackNotes(errors.join(' / ') || 'no output');
-          await writeFile(
-            path.join(dir, NOTES_FILE),
+          await this.writeNotes(
+            dir,
             buildNotesMarkdown({
               title: result.session?.title,
               url: result.session?.url,
