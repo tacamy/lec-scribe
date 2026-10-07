@@ -102,6 +102,8 @@ export type ToOffscreen =
   | { target: 'offscreen'; type: 'SLIDE_UPDATE'; sessionId: string; seq: number; videoTime: number; t: number; mime: string; dataBase64: string }
   /** 検知用 content script からの再生イベント（SPEC §10）。offscreen が timeline.json に書く */
   | { target: 'offscreen'; type: 'TIMELINE_EVENT'; sessionId: string; event: TimelineEvent }
+  /** 検知の記録の塊（SPEC §9.1e）。offscreen が trace.bin に書き足す */
+  | { target: 'offscreen'; type: 'TRACE'; sessionId: string; dataBase64: string }
   /** OPFS のセッションをサーバーへ送り、finalize まで行う。以後は status を polling して PROCESS_STATUS を送る */
   | { target: 'offscreen'; type: 'UPLOAD'; sessionId: string; server: ServerTarget }
   /** 送信中なら中断し、polling をやめる（サーバー側の中止は service worker が頼む） */
@@ -122,6 +124,8 @@ export type ToContent =
       recorderStartEpochMs: number;
       slide: Config['slide'];
       detect: Config['detect'];
+      /** 検知の記録（trace.bin）を残す（SPEC §9.1e。chrome.storage.local の trace） */
+      trace?: boolean;
     }
   | { target: 'content'; type: 'DETECT_STOP' }
   | { target: 'content'; type: 'CAPTURE_FRAME'; reason: SlideReason };
@@ -232,6 +236,7 @@ export const sendToOffscreen = {
     send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE_UPDATE', ...params }),
   timelineEvent: (sessionId: string, event: TimelineEvent) =>
     send<object>({ target: 'offscreen', type: 'TIMELINE_EVENT', sessionId, event }),
+  trace: (sessionId: string, dataBase64: string) => send<object>({ target: 'offscreen', type: 'TRACE', sessionId, dataBase64 }),
   upload: (sessionId: string, server: ServerTarget) =>
     send<UploadResult>({ target: 'offscreen', type: 'UPLOAD', sessionId, server }),
   cancelUpload: (sessionId: string) => send<{ cancelled: boolean }>({ target: 'offscreen', type: 'CANCEL_UPLOAD', sessionId }),
@@ -248,6 +253,7 @@ export const sendToContent = {
       recorderStartEpochMs: number;
       slide: Config['slide'];
       detect: Config['detect'];
+      trace?: boolean;
     },
   ) => sendToFrame<DetectStartResult>(tabId, frameId, { target: 'content', type: 'DETECT_START', ...params }),
   detectStop: (tabId: number, frameId: number) =>

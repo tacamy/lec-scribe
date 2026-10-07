@@ -350,6 +350,8 @@ async function startDetection(
   }
   try {
     await chrome.scripting.executeScript({ target: { tabId, frameIds: [chosen.frameId] }, files: [DETECTOR_SCRIPT] });
+    // 検知の記録（trace.bin）は開発用。設定画面には出さず、chrome.storage.local の trace で切り替える（SPEC §9.1e）
+    const trace = (await chrome.storage.local.get('trace'))['trace'] === true;
     const { status } = await sendToContent.detectStart(tabId, chosen.frameId, {
       sessionId,
       selector: chosen.selector,
@@ -357,6 +359,7 @@ async function startDetection(
       recorderStartEpochMs,
       slide: config.slide,
       detect: config.detect,
+      ...(trace ? { trace } : {}),
     });
     return { frameSource: 'direct', frameId: chosen.frameId, video: status, warnings: videoWarnings(status) };
   } catch (e) {

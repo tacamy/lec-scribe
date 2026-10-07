@@ -34,7 +34,7 @@ type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?
 
 const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
 /** PUT /sessions/:id/files/<name> で受け付ける作業ファイル。画像は slides/<SLIDE_FILE> */
-const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json)$/;
+const UPLOAD_NAME = /^(audio\.webm|slides\.json|timeline\.json|capture-status\.json|trace\.bin)$/;
 const MAX_JSON_BODY = 5 * 1024 * 1024;
 
 export type App = { server: Server; pipeline: Pipeline; findSessionDir(sessionId: string): Promise<string | null> };
