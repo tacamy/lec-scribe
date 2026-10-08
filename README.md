@@ -22,7 +22,7 @@
 - 日本語の文字起こしを WhisperKit（`large-v3`）で行います
 - スライド画像と本文を時間順に並べた `notes.md` を作ります
 - 同じ場面の画像が何枚も撮れたときは、まとめて 1 枚だけ載せます（見た目の近さ、写っている文字、色の分布で判定。画像自体は残ります）
-- ChatGPT（Codex CLI）かローカルの Ollama を使える場合は、話し言葉を書き言葉に整え、全体の要点と話題ごとの見出し・要点を付けられます
+- ChatGPT（Codex CLI）かローカルの Ollama を使える場合は、話し言葉を書き言葉に整え、全体の要点と話題ごとの見出しを付けられます
 
 ## しくみ
 
@@ -115,6 +115,12 @@ flowchart TB
 
 ```sh
 node --experimental-transform-types scripts/migrate-slides.mts
+```
+
+Obsidian などへ `notes.md` と `slides/` をコピーして使っている場合、「やり直す」で中身が変わったあとにコピー先を合わせるには次を実行します（`--dry-run` で確認だけ。`--notes` を付けると `notes.md` も置き換えますが、コピーしたあとに手で直したものは触りません）。
+
+```sh
+node --experimental-transform-types scripts/sync-obsidian.mts --vault <コピー先の親フォルダ> --notes
 ```
 
 音声・文字起こし（json / srt / vtt / txt）・タイムラインなどの作業ファイルは、隠しフォルダ `.lecscribe/` にまとめてあります（Finder では Cmd+Shift+. で表示）。

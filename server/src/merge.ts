@@ -427,8 +427,11 @@ export function buildLectureMarkdown(input: {
 }
 
 /**
- * notes.md: 冒頭に動画全体の要点、本文は LLM が決めた話題ごとに見出しと要点を付けて、
+ * notes.md: 冒頭に動画全体の要点、本文は LLM が決めた話題ごとに見出しを付けて、
  * その中にスライド画像と整えた本文を順に並べる（SPEC §13.5）。
+ * 話題ごとの要点（outline の topic.summary）は出さない（2026-10-08）: 全体の要点と内容が重なり、本文の前に
+ * 結論を箇条書きで読まされて話の流れが切れていた。summary は LLM の出力としては残す（プロンプトとキャッシュの鍵を
+ * 変えないため。全体の要点を作る材料でもある）。
  * outline がなければ見出しなしで画像と本文だけ。整えられなかった節は文字起こしのまま載せる。
  */
 export function buildNotesMarkdown(input: {
@@ -452,10 +455,7 @@ export function buildNotesMarkdown(input: {
   const topicAt = new Map((input.outline?.topics ?? []).map((t) => [t.startId, t]));
   for (const section of input.sections) {
     const topic = topicAt.get(section.id);
-    if (topic) {
-      lines.push(`## ${topic.heading}`, '');
-      if (topic.summary.length > 0) lines.push('**要点**', '', ...topic.summary.map((s) => `- ${s}`), '');
-    }
+    if (topic) lines.push(`## ${topic.heading}`, '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
     // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、

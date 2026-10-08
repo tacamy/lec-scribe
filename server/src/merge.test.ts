@@ -358,7 +358,9 @@ describe('buildNotesMarkdown', () => {
       polished,
       outline: { overview: ['全体 1'], topics: [{ heading: '導入', summary: ['導入の要点'], startId: 'slide_001' }] },
     });
-    expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n**要点**\n\n- 導入の要点\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
+    // 話題ごとの要点（summary）は出さない。見出しのすぐ下に画像と本文（2026-10-08）
+    expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
+    expect(md).not.toContain('導入の要点');
     expect(md).toContain('![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
   });
 
