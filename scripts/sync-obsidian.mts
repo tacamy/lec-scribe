@@ -46,18 +46,22 @@ if (!vaultDir || !isDir(vaultDir) || !isDir(outDir)) {
 const IN_PROGRESS = new Set(['queued', 'converting', 'transcribing', 'merging', 'polishing']);
 const imageFiles = (dir: string): string[] => (isDir(dir) ? readdirSync(dir).filter((n) => SLIDE_FILE.test(n)).sort() : []);
 
-type Session = { id: string; dir: string; notes: string; slides: string[]; busy: boolean };
+type Session = { id: string; dir: string; notes: string; slides: string[]; busy: boolean; failed: boolean };
 const sessions: Session[] = readdirSync(outDir)
   .filter((n) => isDir(path.join(outDir, n)) && existsSync(path.join(outDir, n, 'notes.md')))
   .map((n) => {
     const dir = path.join(outDir, n);
     let stage: string | undefined;
+    let failed = false;
     try {
-      stage = (JSON.parse(readFileSync(path.join(dir, '.lecscribe', 'pipeline.json'), 'utf8')) as { stage?: string }).stage;
+      const p = JSON.parse(readFileSync(path.join(dir, '.lecscribe', 'pipeline.json'), 'utf8')) as { stage?: string; result?: { notes?: boolean } };
+      stage = p.stage;
+      // ノートを整えられなかった（Codex の失敗・上限で文字起こしのままになった）講義。写すと写しまで文字起こしのままになる
+      failed = p.result?.notes === false;
     } catch {
       // pipeline.json が無い・読めない: 処理中ではない
     }
-    return { id: n.match(/[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/)?.[0] ?? n, dir, notes: readFileSync(path.join(dir, 'notes.md'), 'utf8'), slides: imageFiles(path.join(dir, 'slides')), busy: stage !== undefined && IN_PROGRESS.has(stage) };
+    return { id: n.match(/[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$/)?.[0] ?? n, dir, notes: readFileSync(path.join(dir, 'notes.md'), 'utf8'), slides: imageFiles(path.join(dir, 'slides')), busy: stage !== undefined && IN_PROGRESS.has(stage), failed };
   });
 
 /** コピー先のフォルダ（notes.md があるもの）を深さ 5 まで集める */
@@ -92,6 +96,11 @@ for (const dir of targets(vaultDir)) {
     const { session, how } = found;
     if (session.busy) {
       console.log(`- ${label}: LecScribe 側が処理中なので触らない`);
+      counts.skipped++;
+      continue;
+    }
+    if (session.failed) {
+      console.log(`- ${label}: LecScribe 側でノートを整えられなかった（文字起こしのまま）ので触らない。「やり直す」で整えてから`);
       counts.skipped++;
       continue;
     }
