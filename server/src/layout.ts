@@ -138,7 +138,7 @@ export type SlidesSync = {
  * Node の `copyFile` は macOS でクローンを実装していない（`COPYFILE_FICLONE_FORCE` が ENOSYS、`COPYFILE_FICLONE` は
  * 黙って普通のコピーになる。libuv 1.52 で確認）ので使わない。cp が失敗したら（APFS 以外、ほかの OS）普通のコピー
  */
-async function cloneFile(src: string, dst: string): Promise<void> {
+export async function cloneFile(src: string, dst: string): Promise<void> {
   if (process.platform === 'darwin') {
     try {
       await execFileAsync('/bin/cp', ['-c', src, dst]);
