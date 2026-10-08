@@ -272,7 +272,9 @@ describe('local server', () => {
     expect(notes).toContain('# テスト 動画/1\n');
     expect(notes).toContain('![slide_001](slides/slide_001.png)');
     expect(notes).toContain('## 全体の要点\n\n- 全体の要点 1\n- 全体の要点 2');
-    expect(notes).toContain('## 話題 A\n\n**要点**\n\n- 話題 A の要点');
+    // 話題の見出しの下は画像と本文だけ（話題ごとの要点は出さない。2026-10-08）
+    expect(notes).toContain('## 話題 A\n\n![slide_001](slides/slide_001.png)');
+    expect(notes).not.toContain('話題 A の要点');
     expect(notes).toContain('slide_001 の整えた本文。');
     expect(notes).not.toContain('slide_001 の要点');
     const transcript = JSON.parse(await readFile(path.join(outputDir, '.lecscribe', 'transcript.json'), 'utf8')) as {
