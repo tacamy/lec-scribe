@@ -417,6 +417,20 @@ describe('local server', () => {
       await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
       const again = await wait();
       expect(again.result).toMatchObject({ notes: true, notesReused: true });
+      // 話題の区切りの形が古いキャッシュ（outlineVersion なし）は、本文は使い回して話題だけ作り直す（§13.5、2026-10-14）
+      const cacheFile = path.join(status.outputDir!, '.lecscribe', 'notes-cache.json');
+      const stored = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[]; corrections?: unknown[] };
+      expect(stored.outlineVersion).toBe(2);
+      delete stored.outlineVersion;
+      await writeFile(cacheFile, JSON.stringify(stored));
+      await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const refreshed = await wait();
+      expect(refreshed.result).toMatchObject({ notes: true });
+      expect(refreshed.result?.notesReused).toBeUndefined();
+      const rewritten = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[] };
+      expect(rewritten.outlineVersion).toBe(2);
+      expect(rewritten.polished).toEqual(stored.polished); // 本文は組み替えで使い回し、校正済みのまま
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

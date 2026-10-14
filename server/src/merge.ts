@@ -434,6 +434,21 @@ export function buildLectureMarkdown(input: {
  * 変えないため。全体の要点を作る材料でもある）。
  * outline がなければ見出しなしで画像と本文だけ。整えられなかった節は文字起こしのまま載せる。
  */
+/**
+ * 話題の最初の文（LLM が本文から書き写したもの）が整えた本文のどこから始まるか。本文の先頭なら 0、
+ * 見つからなければ -1。書き写しが少し違っても拾えるよう、見つからなければ先頭 12 文字で探す。
+ * 直前が文の切れ目（段落の頭か句点・鉤括弧の直後）でなければ、文の途中で切らないよう -1
+ */
+export function topicStartIndex(text: string, startText: string): number {
+  const needle = startText.trim();
+  if (!needle) return -1;
+  let index = text.indexOf(needle);
+  if (index < 0 && needle.length > 12) index = text.indexOf(needle.slice(0, 12));
+  if (index <= 0) return index;
+  const before = text.slice(0, index).trimEnd();
+  return /[。！？!?」』）)]$/.test(before) ? index : -1;
+}
+
 export function buildNotesMarkdown(input: {
   title?: string;
   startedAt?: string;
@@ -455,14 +470,20 @@ export function buildNotesMarkdown(input: {
   const topicAt = new Map((input.outline?.topics ?? []).map((t) => [t.startId, t]));
   for (const section of input.sections) {
     const topic = topicAt.get(section.id);
-    if (topic) lines.push(`## ${topic.heading}`, '');
+    const polished = input.polished.get(section.id)?.text;
+    // 話題が節の途中から始まる（最初の文が本文の先頭でない）なら、画像と手前の文は前の話題に残し、
+    // 見出しはその文の直前に置く（2026-10-14。操作のデモでは画面の変化が説明のあとに来るので、
+    // 節の先頭の画像と締めの文が次の話題に入ってしまっていた）
+    const split = topic?.startText && polished ? topicStartIndex(polished, topic.startText) : -1;
+    if (topic && split <= 0) lines.push(`## ${topic.heading}`, '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
     // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、
     // 発話が 1 つもなければ注意書きも本文も出さない（2026-10-01）
-    const polished = input.polished.get(section.id)?.text;
     const spoken = section.texts.filter((t) => hasSpeechText(t));
-    if (polished) {
+    if (polished && topic && split > 0) {
+      lines.push(polished.slice(0, split).trimEnd(), '', `## ${topic.heading}`, '', polished.slice(split).trimStart(), '');
+    } else if (polished) {
       lines.push(polished, '');
     } else if (spoken.length > 0) {
       lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(spoken), '');

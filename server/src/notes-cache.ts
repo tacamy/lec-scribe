@@ -23,9 +23,18 @@ export type CacheSettings = {
   checkModel?: string;
 };
 
+/**
+ * 話題の区切り（outline）の形の版。LLM に頼む内容が増えたら上げる。キャッシュの版が古ければ、本文は使い回して
+ * 話題の区切りだけ作り直す（§13.5）。
+ *   2: 話題の最初の文（startText）を持つ（2026-10-14）
+ */
+export const OUTLINE_VERSION = 2;
+
 export type NotesCache = {
   /** 入力と設定から作る鍵。変わっていれば呼び直す */
   key: string;
+  /** outline を作ったときの OUTLINE_VERSION。無ければ 1（startText の無い古い形） */
+  outlineVersion?: number;
   generatedAt: string;
   backend: string;
   /** そのときの呼び出し先・モデル・分割の大きさ。節の区切りだけ変わったときの組み替えに使ってよいかの判断に使う */

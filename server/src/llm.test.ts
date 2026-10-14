@@ -97,19 +97,23 @@ describe('outline', () => {
     const raw = JSON.stringify({
       overview: [' 色の基礎 ', ''],
       topics: [
-        { heading: '色の働き', summary: ['働き'], startId: 'slide_001' },
+        { heading: '色の働き', summary: ['働き'], startId: 'slide_001', startText: '最初の話題にも付いていたら捨てる。' },
         { heading: '謎', summary: [], startId: 'nope' },
         { heading: '戻る', summary: [], startId: 'intro' },
-        { heading: '配色', summary: ['配色の考え方'], startId: 'slide_003' },
+        { heading: '配色', summary: ['配色の考え方'], startId: 'slide_003', startText: ' 続いて配色です。 ' },
       ],
     });
+    // 話題の最初の文（startText）は前後の空白を落として残す。最初の話題は先頭の節から始まるので持たない
     expect(parseOutline(raw, parts.map((p) => p.id))).toEqual({
       overview: ['色の基礎'],
       topics: [
         { heading: '色の働き', summary: ['働き'], startId: 'intro' },
-        { heading: '配色', summary: ['配色の考え方'], startId: 'slide_003' },
+        { heading: '配色', summary: ['配色の考え方'], startId: 'slide_003', startText: '続いて配色です。' },
       ],
     });
+    // 空文字や長すぎる書き写し（文ではなく段落）は持たない
+    const odd = JSON.stringify({ overview: [], topics: [{ heading: 'a', summary: [], startId: 'intro' }, { heading: 'b', summary: [], startId: 'slide_003', startText: 'x'.repeat(201) }] });
+    expect(parseOutline(odd, parts.map((p) => p.id)).topics[1]).toEqual({ heading: 'b', summary: [], startId: 'slide_003' });
   });
 
   it('reports a failure instead of throwing', async () => {

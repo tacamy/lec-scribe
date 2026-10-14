@@ -34,10 +34,14 @@ export type LlmSettings = {
 export type PolishInput = { id: string; heading: string; text: string };
 export type PolishOutput = { id: string; text: string };
 
-/** 話題の区切り。topics は本文の順で、startId はその話題が始まる節の id */
+/**
+ * 話題の区切り。topics は本文の順で、startId はその話題が始まる節の id。
+ * startText はその話題の最初の文（節の本文の先頭から始まるなら無し）。話題の切れ目が節の途中にあるとき、
+ * ノートではその文の直前に見出しを置き、画像と手前の文は前の話題に残す（§13.5、2026-10-14）
+ */
 export type Outline = {
   overview: string[];
-  topics: Array<{ heading: string; summary: string[]; startId: string }>;
+  topics: Array<{ heading: string; summary: string[]; startId: string; startText?: string }>;
 };
 
 export type JsonSchema = Record<string, unknown>;
@@ -74,8 +78,9 @@ export const OUTLINE_SCHEMA: JsonSchema = {
           heading: { type: 'string' },
           summary: { type: 'array', items: { type: 'string' } },
           startId: { type: 'string' },
+          startText: { type: 'string' },
         },
-        required: ['heading', 'summary', 'startId'],
+        required: ['heading', 'summary', 'startId', 'startText'],
         additionalProperties: false,
       },
     },
@@ -130,11 +135,12 @@ export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: s
   return `あなたはスライド動画の解説をノートにまとめる編集者です。以下は動画の文字起こしを読みやすく整えた本文を、画面が切り替わったところ（スライドや操作画面の変化）で区切って順に並べたものです。画面の切り替わりは話の区切りと一致しないことが多い（操作のデモで画面が細かく変わる、同じスライドで別の話題に移る、など）ので、話題の区切りは内容から判断してください。次の 2 つを作ってください。
 
 1. overview: 動画全体の要点。日本語の箇条書きで 5〜12 項目、各項目は 1 文。記号や番号は付けない。
-2. topics: 話題のまとまり。本文の順に並べ、各要素は次の 3 つ。
+2. topics: 話題のまとまり。本文の順に並べ、各要素は次の 4 つ。
    - heading: その話題の見出し（日本語、20 文字以内、体言止め）
    - summary: その話題の要点を 1〜4 項目（各 1 文）
    - startId: その話題が始まる部分の id（入力の id をそのまま使う）
-   最初の topic の startId は最初の部分の id にしてください。話題は細かく割りすぎず、10 分の動画なら 2〜4 個、90 分なら 6〜15 個が目安です。「（発話なし）」の部分は前の話題に含めてください。
+   - startText: その話題の最初の文。startId の部分の本文からそのまま書き写す（一字も変えない）。その部分の本文の先頭から話題が始まるなら空文字。話題の切れ目が部分の途中にあるとき（前の話題の締めの文のあとに「続いて」「次に」と新しい話題が始まる、など）、見出しをその文の直前に置くために使う
+   最初の topic の startId は最初の部分の id、startText は空文字にしてください。話題は細かく割りすぎず、10 分の動画なら 2〜4 個、90 分なら 6〜15 個が目安です。「（発話なし）」の部分は前の話題に含めてください。
 
 出力は指定された JSON スキーマに従ってください。
 
@@ -197,10 +203,15 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
     const heading = String(item['heading'] ?? '').trim();
     const pos = order.get(startId);
     if (pos === undefined || pos <= last || !heading) continue;
-    topics.push({ heading, summary: strings(item['summary']), startId });
+    // 話題の最初の文。長すぎるもの（文ではなく段落を写した）は本文で見つけても信用しないので捨てる
+    const startText = String(item['startText'] ?? '').trim();
+    topics.push({ heading, summary: strings(item['summary']), startId, ...(startText && startText.length <= 200 ? { startText } : {}) });
     last = pos;
   }
-  if (topics.length > 0 && ids.length > 0) topics[0]!.startId = ids[0]!;
+  if (topics.length > 0 && ids.length > 0) {
+    topics[0]!.startId = ids[0]!;
+    delete topics[0]!.startText;
+  }
   return { overview: strings(parsed.overview), topics };
 }
 

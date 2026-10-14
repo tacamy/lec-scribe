@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupAssigned, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupAssigned, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, topicStartIndex, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -362,6 +362,40 @@ describe('buildNotesMarkdown', () => {
     expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
     expect(md).not.toContain('導入の要点');
     expect(md).toContain('![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
+  });
+
+  it('話題が節の途中から始まるときは、画像と手前の文を前の話題に残し、見出しを最初の文の直前に置く', () => {
+    const texts = new Map([
+      ['slide_001', { text: '一枚目の本文。' }],
+      ['slide_002', { text: 'このツールについてはここまでです。\n\n続いて、直線ツールを紹介します。\n\nドラッグで引けます。' }],
+    ]);
+    const md = buildNotesMarkdown({
+      sections,
+      polished: texts,
+      outline: {
+        overview: [],
+        topics: [
+          { heading: '導入', summary: [], startId: 'slide_001' },
+          { heading: '直線ツール', summary: [], startId: 'slide_002', startText: '続いて、直線ツールを紹介します。' },
+        ],
+      },
+    });
+    expect(md).toContain('## 導入\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n![slide_002](slides/slide_002.png)\n\nこのツールについてはここまでです。\n\n## 直線ツール\n\n続いて、直線ツールを紹介します。\n\nドラッグで引けます。');
+    // 最初の文が本文の先頭なら今までどおり見出しが先。本文に無い文なら節の先頭に置く（悪化はしない）
+    for (const startText of ['このツールについてはここまでです。', '本文に無い文。']) {
+      const same = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics: [{ heading: '直線ツール', summary: [], startId: 'slide_002', startText }] } });
+      expect(same).toContain('## 直線ツール\n\n![slide_002](slides/slide_002.png)\n\nこのツールについてはここまでです。');
+    }
+  });
+
+  it('topicStartIndex: 先頭なら 0、文の途中なら -1、書き写しが少し違っても先頭 12 文字で拾う', () => {
+    const text = '一文目です。二文目は長い文で、途中に読点があります。三文目。';
+    expect(topicStartIndex(text, '一文目です。')).toBe(0);
+    expect(topicStartIndex(text, '二文目は長い文で、途中に読点があります。')).toBe(6);
+    expect(topicStartIndex(text, '二文目は長い文で、途中に句点があります。')).toBe(6); // 先頭 12 文字が一致
+    expect(topicStartIndex(text, '途中に読点があります。')).toBe(-1); // 文の途中
+    expect(topicStartIndex(text, '無い文。')).toBe(-1);
+    expect(topicStartIndex(text, '')).toBe(-1);
   });
 
   it('works without an outline', () => {
