@@ -43,12 +43,14 @@ beforeAll(async () => {
   // osascript スタブ: 受け取った引数（AppleScript とダイアログの本文）を pair-args.txt に残し、pair-answer.txt の中身（allowed / denied）を返す
   const osascript = await writeStub('osascript', `printf '%s\\n' "$@" > "${path.join(tmp, 'pair-args.txt')}"; cat "${path.join(tmp, 'pair-answer.txt')}"`);
   // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
-  // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す
+  // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す。
+  // 呼ばれるたびに種類（batch / check / outline）を codex-calls.txt に 1 行書く（何を呼んだかの確認用）
   const codex = await writeStub(
     'codex',
     // --model check-fail は一時的な失敗、--model model-gone は「モデルが使えない」失敗のふり（受け皿の試験用）
     'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
       + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
+      + `kind=batch; if printf '%s' "$prompt" | grep -q "原文"; then kind=check; elif printf '%s' "$prompt" | grep -q "<<<PART"; then kind=outline; fi; printf '%s\\n' "$kind" >> "${path.join(tmp, 'codex-calls.txt')}"; `
       + 'if printf \'%s\' "$prompt" | grep -q "原文"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); printf \'{"corrections":[{"id":"%s","wrong":"整えた","right":"校正済みの"}]}\' "$first" > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
       + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s"}]}\' "$first" > "$out"; exit 0; fi; '
@@ -423,13 +425,18 @@ describe('local server', () => {
       expect(stored.outlineVersion).toBe(2);
       delete stored.outlineVersion;
       await writeFile(cacheFile, JSON.stringify(stored));
+      const callsFile = path.join(tmp, 'codex-calls.txt');
+      const callsBefore = (await readFile(callsFile, 'utf8')).split('\n').filter(Boolean).length;
       await fetch(`${checkBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
       const refreshed = await wait();
       expect(refreshed.result).toMatchObject({ notes: true });
       expect(refreshed.result?.notesReused).toBeUndefined();
-      const rewritten = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[] };
+      // codex は話題（outline）の 1 回だけ。本文の整え（batch）と校正（check）は呼ばない
+      expect((await readFile(callsFile, 'utf8')).split('\n').filter(Boolean).slice(callsBefore)).toEqual(['outline']);
+      const rewritten = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[]; corrections?: unknown[] };
       expect(rewritten.outlineVersion).toBe(2);
       expect(rewritten.polished).toEqual(stored.polished); // 本文は組み替えで使い回し、校正済みのまま
+      expect(rewritten.corrections).toEqual(stored.corrections); // 校正の記録も引き継ぐ
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

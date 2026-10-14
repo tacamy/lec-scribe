@@ -427,6 +427,26 @@ export function buildLectureMarkdown(input: {
 }
 
 /**
+ * 話題の最初の文（LLM が本文から書き写したもの）が整えた本文のどこから始まるか。本文の先頭なら 0、
+ * 見つからなければ -1。from 以降で探す（同じ節で 2 つ目以降の話題は、前の話題の位置より後ろ）。
+ * 書き写しが少し違っても拾えるよう、そのままで見つからなければ先頭 12 文字で探す。
+ * 直前が文の切れ目（段落の頭か句点・鉤括弧などの直後）になっている出現だけを採り、文の途中では切らない
+ */
+export function topicStartIndex(text: string, startText: string, from = 0): number {
+  const needle = startText.trim();
+  if (!needle) return -1;
+  const chars = Array.from(needle);
+  const needles = chars.length > 12 ? [needle, chars.slice(0, 12).join('')] : [needle];
+  for (const n of needles) {
+    for (let index = text.indexOf(n, from); index >= 0; index = text.indexOf(n, index + 1)) {
+      if (index === 0) return 0;
+      if (/[。！？!?．.…」』）)]$/.test(text.slice(0, index).trimEnd())) return index;
+    }
+  }
+  return -1;
+}
+
+/**
  * notes.md: 冒頭に動画全体の要点、本文は LLM が決めた話題ごとに見出しを付けて、
  * その中にスライド画像と整えた本文を順に並べる（SPEC §13.5）。
  * 話題ごとの要点（outline の topic.summary）は出さない（2026-10-08）: 全体の要点と内容が重なり、本文の前に
@@ -434,21 +454,6 @@ export function buildLectureMarkdown(input: {
  * 変えないため。全体の要点を作る材料でもある）。
  * outline がなければ見出しなしで画像と本文だけ。整えられなかった節は文字起こしのまま載せる。
  */
-/**
- * 話題の最初の文（LLM が本文から書き写したもの）が整えた本文のどこから始まるか。本文の先頭なら 0、
- * 見つからなければ -1。書き写しが少し違っても拾えるよう、見つからなければ先頭 12 文字で探す。
- * 直前が文の切れ目（段落の頭か句点・鉤括弧の直後）でなければ、文の途中で切らないよう -1
- */
-export function topicStartIndex(text: string, startText: string): number {
-  const needle = startText.trim();
-  if (!needle) return -1;
-  let index = text.indexOf(needle);
-  if (index < 0 && needle.length > 12) index = text.indexOf(needle.slice(0, 12));
-  if (index <= 0) return index;
-  const before = text.slice(0, index).trimEnd();
-  return /[。！？!?」』）)]$/.test(before) ? index : -1;
-}
-
 export function buildNotesMarkdown(input: {
   title?: string;
   startedAt?: string;
@@ -466,27 +471,45 @@ export function buildNotesMarkdown(input: {
   const overview = input.outline?.overview ?? [];
   if (overview.length > 0) lines.push('## 全体の要点', '', ...overview.map((s) => `- ${s}`), '');
 
-  // 話題の開始 id → 話題。最初の話題は先頭の節から始まる
-  const topicAt = new Map((input.outline?.topics ?? []).map((t) => [t.startId, t]));
+  // 話題の開始 id → その節で始まる話題（本文の順）。最初の話題は先頭の節から始まる。
+  // 長い節の途中で話題が変わると、1 つの節に 2 つ以上の話題が始まる（位置は startText で決める）
+  const topicsAt = new Map<string, Outline['topics']>();
+  for (const t of input.outline?.topics ?? []) topicsAt.set(t.startId, [...(topicsAt.get(t.startId) ?? []), t]);
   for (const section of input.sections) {
-    const topic = topicAt.get(section.id);
     const polished = input.polished.get(section.id)?.text;
+    // 見出しを置く本文の位置。0 は節の先頭（画像の上）、本文の長さは節の末尾（次の節の手前）。
     // 話題が節の途中から始まる（最初の文が本文の先頭でない）なら、画像と手前の文は前の話題に残し、
     // 見出しはその文の直前に置く（2026-10-14。操作のデモでは画面の変化が説明のあとに来るので、
-    // 節の先頭の画像と締めの文が次の話題に入ってしまっていた）
-    const split = topic?.startText && polished ? topicStartIndex(polished, topic.startText) : -1;
-    if (topic && split <= 0) lines.push(`## ${topic.heading}`, '');
+    // 節の先頭の画像と締めの文が次の話題に入ってしまっていた）。2 つ目以降の話題は前の話題より後ろで探し、
+    // 見つからなければ節の末尾（次の節から始まる扱い。先頭に重ねて置くより読みやすい）
+    const cuts: Array<{ at: number; heading: string }> = [];
+    for (const topic of topicsAt.get(section.id) ?? []) {
+      const last = cuts[cuts.length - 1];
+      const found = topic.startText && polished ? topicStartIndex(polished, topic.startText, last ? last.at + 1 : 0) : -1;
+      const at = !last ? Math.max(found, 0) : found > last.at ? found : (polished?.length ?? 0);
+      cuts.push({ at, heading: topic.heading });
+    }
+    if (cuts[0]?.at === 0) lines.push(`## ${cuts[0].heading}`, '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
     // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、
     // 発話が 1 つもなければ注意書きも本文も出さない（2026-10-01）
     const spoken = section.texts.filter((t) => hasSpeechText(t));
-    if (polished && topic && split > 0) {
-      lines.push(polished.slice(0, split).trimEnd(), '', `## ${topic.heading}`, '', polished.slice(split).trimStart(), '');
-    } else if (polished) {
-      lines.push(polished, '');
-    } else if (spoken.length > 0) {
-      lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(spoken), '');
+    if (polished) {
+      let pos = 0;
+      for (const cut of cuts) {
+        if (cut.at === 0) continue; // 先頭の話題は画像の上に置いた
+        const piece = polished.slice(pos, cut.at).trimEnd();
+        if (piece) lines.push(piece, '');
+        lines.push(`## ${cut.heading}`, '');
+        pos = cut.at;
+      }
+      const rest = polished.slice(pos).trimStart();
+      if (rest) lines.push(rest, '');
+    } else {
+      if (spoken.length > 0) lines.push('（整えられなかったため文字起こしのまま）', '', toParagraph(spoken), '');
+      // 整えた本文がなく位置を決められない 2 つ目以降の話題は、節の末尾に
+      for (const cut of cuts.slice(1)) lines.push(`## ${cut.heading}`, '');
     }
   }
   return lines.join('\n');

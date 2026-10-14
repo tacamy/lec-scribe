@@ -396,6 +396,27 @@ describe('buildNotesMarkdown', () => {
     expect(topicStartIndex(text, '途中に読点があります。')).toBe(-1); // 文の途中
     expect(topicStartIndex(text, '無い文。')).toBe(-1);
     expect(topicStartIndex(text, '')).toBe(-1);
+    // 最初の出現が文の途中なら、あとの出現（文の頭）を採る
+    expect(topicStartIndex('まず直線の説明に移りたい。直線の説明に移ります。', '直線の説明に移ります。')).toBe(13);
+    // 「…」や「．」のあとも文の切れ目。from 以降で探せる
+    expect(topicStartIndex('前の話…続いて本題です。', '続いて本題です。')).toBe(4);
+    expect(topicStartIndex('同じ文。別の文。同じ文。', '同じ文。', 1)).toBe(8);
+    // 先頭 12 文字はサロゲートペア（𠮷）を割らない
+    expect(topicStartIndex('前。一二三四五六七八九十、𠮷野家の話。次。', '一二三四五六七八九十、𠮷野家の話。少し違う')).toBe(2);
+  });
+
+  it('同じ節で 2 つ以上の話題が始まるときは順に分け、位置の決まらない 2 つ目以降は節の末尾に置く', () => {
+    const texts = new Map([['slide_001', { text: 'A の締め。\n\nB の最初の文。B の続き。\n\nC の最初の文。' }]]);
+    const topics = [
+      { heading: 'A', summary: [], startId: 'slide_001' },
+      { heading: 'B', summary: [], startId: 'slide_001', startText: 'B の最初の文。' },
+      { heading: 'C', summary: [], startId: 'slide_001', startText: 'C の最初の文。' },
+    ];
+    const md = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics } });
+    expect(md).toContain('## A\n\n![slide_001](slides/slide_001.png)\n\nA の締め。\n\n## B\n\nB の最初の文。B の続き。\n\n## C\n\nC の最初の文。\n\n![slide_002](slides/slide_002.png)');
+    // 2 つ目の最初の文が見つからなければ、その見出しは節の末尾（次の節の手前）
+    const missing = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics: [topics[0]!, { heading: 'D', summary: [], startId: 'slide_001', startText: '無い文。' }] } });
+    expect(missing).toContain('C の最初の文。\n\n## D\n\n![slide_002](slides/slide_002.png)');
   });
 
   it('works without an outline', () => {

@@ -127,7 +127,14 @@ text: 内容と順序を変えずに、フィラー（「えー」「あの」�
 ${body}`;
 }
 
-/** 整えた本文全体から、動画全体の要点と話題の区切りを頼むプロンプト */
+/**
+ * 話題の区切り（outline）の形の版。buildOutlinePrompt や OUTLINE_SCHEMA で LLM に頼む内容を変えたら上げる。
+ * notes-cache.json に残り、古い版なら本文は使い回して話題だけ作り直す（§13.5b）。
+ *   2: 話題の最初の文（startText）を持つ（2026-10-14）
+ */
+export const OUTLINE_VERSION = 2;
+
+/** 整えた本文全体から、動画全体の要点と話題の区切りを頼むプロンプト。頼む内容を変えたら OUTLINE_VERSION を上げる */
 export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: string }>): string {
   const body = sections
     .map((s) => `<<<PART id="${s.id}">>>\n${s.text.trim() || '（発話なし）'}\n<<<END>>>`)
@@ -202,10 +209,12 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
     const startId = String(item['startId'] ?? '');
     const heading = String(item['heading'] ?? '').trim();
     const pos = order.get(startId);
-    if (pos === undefined || pos <= last || !heading) continue;
     // 話題の最初の文。長すぎるもの（文ではなく段落を写した）は本文で見つけても信用しないので捨てる
-    const startText = String(item['startText'] ?? '').trim();
-    topics.push({ heading, summary: strings(item['summary']), startId, ...(startText && startText.length <= 200 ? { startText } : {}) });
+    const copied = String(item['startText'] ?? '').trim();
+    const startText = copied.length <= 200 ? copied : '';
+    // 同じ節で 2 つ目以降の話題は、最初の文があって位置を決められるときだけ残す
+    if (pos === undefined || pos < last || (pos === last && !startText) || !heading) continue;
+    topics.push({ heading, summary: strings(item['summary']), startId, ...(startText ? { startText } : {}) });
     last = pos;
   }
   if (topics.length > 0 && ids.length > 0) {

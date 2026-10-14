@@ -114,6 +114,17 @@ describe('outline', () => {
     // 空文字や長すぎる書き写し（文ではなく段落）は持たない
     const odd = JSON.stringify({ overview: [], topics: [{ heading: 'a', summary: [], startId: 'intro' }, { heading: 'b', summary: [], startId: 'slide_003', startText: 'x'.repeat(201) }] });
     expect(parseOutline(odd, parts.map((p) => p.id)).topics[1]).toEqual({ heading: 'b', summary: [], startId: 'slide_003' });
+    // 同じ節で 2 つ目以降の話題は、最初の文があって位置を決められるときだけ残す
+    const same = JSON.stringify({
+      overview: [],
+      topics: [
+        { heading: 'a', summary: [], startId: 'intro' },
+        { heading: 'b', summary: [], startId: 'slide_003', startText: '続き。' },
+        { heading: 'c', summary: [], startId: 'slide_003', startText: 'さらに。' },
+        { heading: 'd', summary: [], startId: 'slide_003' },
+      ],
+    });
+    expect(parseOutline(same, parts.map((p) => p.id)).topics.map((t) => t.heading)).toEqual(['a', 'b', 'c']);
   });
 
   it('reports a failure instead of throwing', async () => {
