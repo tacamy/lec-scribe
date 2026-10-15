@@ -51,7 +51,8 @@ beforeAll(async () => {
     // --model check-fail は一時的な失敗、--model model-gone は「モデルが使えない」失敗のふり（受け皿の試験用）
     'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
       + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
-      + `kind=batch; if printf '%s' "$prompt" | grep -q "原文"; then kind=check; elif printf '%s' "$prompt" | grep -q "<<<PART"; then kind=outline; fi; printf '%s\\n' "$kind" >> "${path.join(tmp, 'codex-calls.txt')}"; `
+      + `kind=batch; if printf '%s' "$prompt" | grep -q "原文"; then kind=check; elif printf '%s' "$prompt" | grep -q "<<<PART"; then kind=outline; elif printf '%s' "$prompt" | grep -q "前の話題に残す枚数"; then kind=boundary; fi; printf '%s\\n' "$kind" >> "${path.join(tmp, 'codex-calls.txt')}"; `
+      + 'if [ "$kind" = "boundary" ]; then printf \'{"boundaries":[]}\' > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "原文"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); printf \'{"corrections":[{"id":"%s","wrong":"整えた","right":"校正済みの"}]}\' "$first" > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
       + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s"}]}\' "$first" > "$out"; exit 0; fi; '

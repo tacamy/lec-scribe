@@ -407,9 +407,14 @@ export function acceptPicks(region: PickRegion, picks: readonly Pick[]): { accep
  * カンマを含むパスは codex が読み込めず、しかもエラーにならずに画像が黙って欠け、番号がずれる（2026-10-02 に確認）
  */
 async function prepareImages(slidesDir: string, region: PickRegion, outDir: string, signal?: AbortSignal): Promise<string[]> {
+  return shrinkImages(slidesDir, region.candidates.map((c) => c.filename), outDir, signal);
+}
+
+/** 画像を一時フォルダに 001.jpg… の名前で縮小して用意する（上の注意と同じ。話題の境目の判定でも使う） */
+export async function shrinkImages(slidesDir: string, filenames: readonly string[], outDir: string, signal?: AbortSignal): Promise<string[]> {
   const files: string[] = [];
-  for (const [i, c] of region.candidates.entries()) {
-    const src = path.join(slidesDir, c.filename);
+  for (const [i, filename] of filenames.entries()) {
+    const src = path.join(slidesDir, filename);
     const base = path.join(outDir, String(i + 1).padStart(3, '0'));
     const r = await run('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '70', '-Z', '512', src, '--out', `${base}.jpg`], { signal }).catch(
       () => ({ code: 1 }),

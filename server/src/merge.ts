@@ -477,9 +477,11 @@ export function buildNotesMarkdown(input: {
   const starts = new Set((input.outline?.topics ?? []).map((t) => t.startId));
   const silent = (s: Section) => !input.polished.get(s.id)?.text && !s.texts.some((t) => hasSpeechText(t));
   const topics = (input.outline?.topics ?? []).map((t) => {
+    // 画像で判定済みの話題（boundary.ts）はそのまま。
     // 最初の文が本文の途中で見つかる話題は節の途中から始まるので動かさない。先頭にある・見つからない
     // （どちらも節の先頭に置かれる）なら節の先頭から始まる話題として扱う（Codex は startId の節の最初の文を
     // そのまま startText に書くことが多い。2026-10-15）
+    if (t.placed) return t;
     const text = input.polished.get(t.startId)?.text;
     if (t.startText && text && topicStartIndex(text, t.startText) > 0) return t;
     let i = input.sections.findIndex((s) => s.id === t.startId);
@@ -499,15 +501,18 @@ export function buildNotesMarkdown(input: {
     // 見出しはその文の直前に置く（2026-10-14。操作のデモでは画面の変化が説明のあとに来るので、
     // 節の先頭の画像と締めの文が次の話題に入ってしまっていた）。2 つ目以降の話題は前の話題より後ろで探し、
     // 見つからなければ節の末尾（次の節から始まる扱い。先頭に重ねて置くより読みやすい）
-    const cuts: Array<{ at: number; heading: string }> = [];
+    const cuts: Array<{ at: number; heading: string; afterImage: boolean }> = [];
     for (const topic of topicsAt.get(section.id) ?? []) {
       const last = cuts[cuts.length - 1];
       const found = topic.startText && polished ? topicStartIndex(polished, topic.startText, last ? last.at + 1 : 0) : -1;
       const at = !last ? Math.max(found, 0) : found > last.at ? found : (polished?.length ?? 0);
-      cuts.push({ at, heading: topic.heading });
+      // 画像の判定（boundary.ts）で「この節の画像は前の話題、本文から新しい話題」とされた話題は、見出しを画像の下に
+      cuts.push({ at, heading: topic.heading, afterImage: at === 0 && !!topic.startAfterImage });
     }
-    if (cuts[0]?.at === 0) lines.push(`## ${cuts[0].heading}`, '');
+    const head = cuts[0]?.at === 0 ? cuts[0] : undefined;
+    if (head && !head.afterImage) lines.push(`## ${head.heading}`, '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
+    if (head?.afterImage) lines.push(`## ${head.heading}`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
     // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、
     // 発話が 1 つもなければ注意書きも本文も出さない（2026-10-01）

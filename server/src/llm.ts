@@ -41,7 +41,19 @@ export type PolishOutput = { id: string; text: string };
  */
 export type Outline = {
   overview: string[];
-  topics: Array<{ heading: string; summary: string[]; startId: string; startText?: string }>;
+  topics: Array<{
+    heading: string;
+    summary: string[];
+    startId: string;
+    startText?: string;
+    /**
+     * 以下は LLM の返答ではなく、話題の境目の画像判定（boundary.ts、§13.5）がノートを組む直前に付ける。
+     * startAfterImage: 節の画像は前の話題のもので、本文から新しい話題（見出しを画像の下に置く）。
+     * placed: 画像で判定済み（ノートを組むときの時間の規則で動かさない）。キャッシュには残さない
+     */
+    startAfterImage?: boolean;
+    placed?: boolean;
+  }>;
 };
 
 export type JsonSchema = Record<string, unknown>;
@@ -188,7 +200,7 @@ export function parseResponse(raw: string, expectedIds: readonly string[]): Poli
 }
 
 /** JSON を取り出す（前後に説明や \`\`\` フェンスが付いていても許容） */
-function extractJson(raw: string): unknown {
+export function extractJson(raw: string): unknown {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');

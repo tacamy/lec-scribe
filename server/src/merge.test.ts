@@ -422,6 +422,11 @@ describe('buildNotesMarkdown', () => {
     // 最初の文（startText）が節の先頭にある（Codex がその節の最初の文をそのまま書いた）なら、節の先頭から始まる話題として前に出す
     const head = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startText: '三枚目の本文。' }] } });
     expect(head).toContain('一枚目の本文。\n\n## 本題\n\n![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n三枚目の本文。');
+    // 画像で判定済み（placed）の話題は動かさない。startAfterImage なら見出しは画像の下、本文の上
+    const placed = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', placed: true }] } });
+    expect(placed).toContain('一枚目の本文。\n\n![slide_002](slides/slide_002.png)\n\n## 本題\n\n![slide_003](slides/slide_003.png)\n\n三枚目の本文。');
+    const afterImage = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startAfterImage: true, placed: true }] } });
+    expect(afterImage).toContain('![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n## 本題\n\n三枚目の本文。');
     // 最初の文（startText）が節の途中で見つかる話題は、そこから始まるので動かさない
     const mid = buildNotesMarkdown({ sections: secs, polished: new Map([...texts, ['slide_003', { text: '締めの文。\n\n三枚目の本文。' }]]), outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startText: '三枚目の本文。' }] } });
     expect(mid).toContain('![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n締めの文。\n\n## 本題\n\n三枚目の本文。');
