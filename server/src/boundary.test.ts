@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyPlacement, boundaryCacheKey, boundaryImages, buildBoundaryPrompt, findBoundaries, imageNumbers, keepMax, parseBoundaryResponse, placementFor, type Boundary, type Topic } from './boundary.ts';
 import type { Section, SlideEntry } from './merge.ts';
 
-const slide = (n: number): SlideEntry => ({ filename: `slide_${String(n).padStart(3, '0')}.png`, seq: n, videoTime: n * 10, t: n * 10, reason: 'change' });
+const slide = (n: number): SlideEntry => ({ filename: `slide_${String(n).padStart(3, '0')}.png`, seq: n, videoTime: n * 10, reason: 'change' });
 const section = (n: number, ...texts: string[]): Section => ({ id: `slide_${String(n).padStart(3, '0')}`, heading: '', slide: slide(n), texts });
 
 describe('話題の境目の画像判定（§13.5）', () => {
