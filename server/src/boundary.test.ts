@@ -34,12 +34,31 @@ describe('話題の境目の画像判定（§13.5）', () => {
     expect(boundaryImages([b!])).toEqual(['slide_001.png', 'slide_002.png', 'slide_003.png']);
   });
 
-  it('本文の途中から始まる話題と、判定済みの話題は集めない', () => {
+  it('本文の途中から始まる話題、最初の文が見つからない話題、判定済みの話題は集めない', () => {
     const mid = new Map([...polished, ['slide_003', { text: '前の締め。\n\n三枚目の本文。' }]]);
     expect(findBoundaries(sections, mid, [topics[0]!, { ...topics[1]!, startText: '三枚目の本文。' }])).toEqual([]);
+    expect(findBoundaries(sections, polished, [topics[0]!, { ...topics[1]!, startText: '本文に無い文。' }])).toEqual([]);
     expect(findBoundaries(sections, polished, [topics[0]!, { ...topics[1]!, placed: true }])).toEqual([]);
     // 最初の文が節の先頭なら、節の先頭から始まる話題として集める
     expect(findBoundaries(sections, polished, [topics[0]!, { ...topics[1]!, startText: '三枚目の本文。' }])).toHaveLength(1);
+  });
+
+  it('前の話題が無音の節から始まっていれば、その画面は次の境目に含めない（前の画面として見せるだけ）', () => {
+    // A@001、B@002（無音の画面を始まりにした）、C@003
+    const three: Topic[] = [topics[0]!, { heading: 'B', summary: [], startId: 'slide_002' }, { heading: 'C', summary: [], startId: 'slide_003' }];
+    const [b] = findBoundaries(sections, polished, three);
+    expect(b?.topic).toBe(2);
+    expect(b?.silent).toEqual([]);
+    expect(b?.before).toEqual({ id: 'slide_002', filename: 'slide_002.png', tail: '一枚目の本文。' }); // 画面は無音の節、本文は手前の発話の節
+    expect(keepMax(b!)).toBe(1);
+  });
+
+  it('次の話題が同じ節の途中から始まっていても、節の先頭から始まる話題の境目は集める', () => {
+    const mid = new Map([...polished, ['slide_003', { text: '三枚目の本文。\n\nC の文。' }]]);
+    const three: Topic[] = [topics[0]!, { heading: 'B', summary: [], startId: 'slide_003' }, { heading: 'C', summary: [], startId: 'slide_003', startText: 'C の文。' }];
+    const found = findBoundaries(sections, mid, three);
+    expect(found.map((b) => b.topic)).toEqual([1]);
+    expect(found[0]?.silent).toEqual([{ id: 'slide_002', filename: 'slide_002.png' }]);
   });
 
   it('keep（前の話題に残す枚数）を話題の始まりに写す', () => {
@@ -52,6 +71,8 @@ describe('話題の境目の画像判定（§13.5）', () => {
       { topic: 1, startId: 'slide_003', startAfterImage: true },
     ]);
     expect(() => parseBoundaryResponse('not json', [b])).toThrow(); // JSON でない返答は投げる（呼び出し側が失敗として記録する）
+    // null や空文字、小数は答えとみなさない
+    expect(parseBoundaryResponse(JSON.stringify({ boundaries: [{ boundary: 1, keep: null }, { boundary: 1, keep: '' }, { boundary: 1, keep: 0.5 }] }), [b])).toEqual([]);
   });
 
   it('判定を話題に当てると startText は捨て、placed が付く', () => {
@@ -65,7 +86,7 @@ describe('話題の境目の画像判定（§13.5）', () => {
     const b = findBoundaries(sections, polished, topics)[0]!;
     const p = buildBoundaryPrompt([b], imageNumbers(boundaryImages([b])));
     expect(p).toContain('境目 1: 新しい話題「本題」');
-    expect(p).toContain('[1] 前の話題の最後の画面（数えない）。そのときの本文の末尾: 「…一枚目の本文。」');
+    expect(p).toContain('[1] 前の話題の最後の画面（数えない）。前の話題の本文の末尾: 「…一枚目の本文。」');
     expect(p).toContain('[2] 話が途切れている間の画面');
     expect(p).toContain('[3] 新しい話題の最初の発話の画面。本文の冒頭: 「三枚目の本文。…」');
     expect(p).toContain('keep は 0〜2');

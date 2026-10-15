@@ -52,10 +52,12 @@ beforeAll(async () => {
     'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
       + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
       + `kind=batch; if printf '%s' "$prompt" | grep -q "原文"; then kind=check; elif printf '%s' "$prompt" | grep -q "<<<PART"; then kind=outline; elif printf '%s' "$prompt" | grep -q "前の話題に残す枚数"; then kind=boundary; fi; printf '%s\\n' "$kind" >> "${path.join(tmp, 'codex-calls.txt')}"; `
-      + 'if [ "$kind" = "boundary" ]; then printf \'{"boundaries":[]}\' > "$out"; exit 0; fi; '
+      // 境目の判定には「境目 1 は keep 0（途切れている間の画面か、話し始めた画面から新しい話題）」と答える
+      + 'if [ "$kind" = "boundary" ]; then printf \'{"boundaries":[{"boundary":1,"keep":0}]}\' > "$out"; exit 0; fi; '
       + 'if printf \'%s\' "$prompt" | grep -q "原文"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); printf \'{"corrections":[{"id":"%s","wrong":"整えた","right":"校正済みの"}]}\' "$first" > "$out"; exit 0; fi; '
-      + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); '
-      + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s"}]}\' "$first" > "$out"; exit 0; fi; '
+      // 話題は先頭の部分から「話題 A」。部分が 2 つ以上あれば最後の部分から「話題 B」も（境目の判定を動かすため）
+      + 'if printf \'%s\' "$prompt" | grep -q "<<<PART"; then first=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | head -1 | sed \'s/id="//; s/"//\'); last=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | tail -1 | sed \'s/id="//; s/"//\'); extra=""; if [ "$first" != "$last" ]; then extra=",{\\"heading\\":\\"話題 B\\",\\"summary\\":[],\\"startId\\":\\"$last\\",\\"startText\\":\\"\\"}"; fi; '
+      + 'printf \'{"overview":["全体の要点 1","全体の要点 2"],"topics":[{"heading":"話題 A","summary":["話題 A の要点"],"startId":"%s","startText":""}%s]}\' "$first" "$extra" > "$out"; exit 0; fi; '
       + 'ids=$(printf \'%s\' "$prompt" | grep -o \'id="[^"]*"\' | sed \'s/id="//; s/"//\'); body=""; for id in $ids; do body="$body{\\"id\\":\\"$id\\",\\"text\\":\\"$id の整えた本文。\\"},"; done; printf \'{"sections":[%s]}\' "${body%,}" > "$out"',
   );
   config = {
@@ -384,6 +386,51 @@ describe('local server', () => {
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('最初の区間');
     } finally {
       await new Promise<void>((resolve) => limited.close(() => resolve()));
+    }
+  });
+
+  it('画像の救出のモデルがあれば話題の境目を画像で判定し、結果をキャッシュして 2 回目は呼ばない（§13.5）', async () => {
+    const { server } = createApp({ ...config, llmPickModel: 'pick-model', outDir: path.join(tmp, 'out-boundary') }, TOKEN);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const bBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const sessionId = '20261015-120000-bnd1';
+      const callsFile = path.join(tmp, 'codex-calls.txt');
+      const calls = async () => (await readFile(callsFile, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+      const wait = async () => {
+        let status: { stage: string; outputDir?: string; result?: { notes?: boolean; notesError?: string; notesReused?: boolean } } = { stage: 'queued' };
+        for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          status = (await (await fetch(`${bBase}/sessions/${sessionId}/status`, { headers })).json()) as typeof status;
+        }
+        return status;
+      };
+      await fetch(`${bBase}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'boundary' }) });
+      const put = (name: string, body: string | Uint8Array) => fetch(`${bBase}/sessions/${sessionId}/files/${name}`, { method: 'PUT', headers, body });
+      await put('audio.webm', 'x');
+      await put('slides/slide_001.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+      await put('slides/slide_002.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2]));
+      await put('slides.json', JSON.stringify([{ filename: 'slide_001.png', videoTime: 0, t: 0, reason: 'initial' }, { filename: 'slide_002.png', videoTime: 32, t: 32, reason: 'change' }]));
+      const before = (await calls()).length;
+      await fetch(`${bBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      const status = await wait();
+      expect(status.stage).toBe('done');
+      expect(status.result).toMatchObject({ notes: true });
+      expect(status.result?.notesError).toBeUndefined();
+      // スタブの話題は A（slide_001）と B（slide_002）。B の境目が 1 か所あり、boundary が 1 回呼ばれる
+      const first = (await calls()).slice(before);
+      expect(first.filter((k) => k === 'boundary')).toEqual(['boundary']);
+      const cache = JSON.parse(await readFile(path.join(status.outputDir!, '.lecscribe', 'boundary-cache.json'), 'utf8')) as { placements: Array<{ topic: number; startId: string }>; errors?: string[] };
+      expect(cache.placements).toEqual([{ topic: 1, startId: 'slide_002' }]);
+      expect(cache.errors).toBeUndefined();
+      expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('## 話題 B\n\n![slide_002](slides/slide_002.png)');
+      // 同じ並びでもう一度 finalize すると、境目の判定は使い回されて codex は呼ばれない
+      const again = (await calls()).length;
+      await fetch(`${bBase}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      expect((await wait()).result).toMatchObject({ notes: true, notesReused: true });
+      expect((await calls()).slice(again)).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

@@ -426,6 +426,22 @@ export function buildLectureMarkdown(input: {
   return lines.join('\n');
 }
 
+/** 発話のない節（整えた本文も元の発話もない。画面が切り替わっただけ） */
+export function isSilentSection(section: Section, polished: ReadonlyMap<string, { text: string }>): boolean {
+  return !polished.get(section.id)?.text && !section.texts.some((t) => hasSpeechText(t));
+}
+
+/**
+ * idx の節の直前に続く発話のない節を遡り、その先頭の添字を返す（無ければ idx のまま）。
+ * stops（ほかの話題が始まる節の id）は越えない。ノートの見出しの位置（buildNotesMarkdown）と
+ * 境目の画像判定（boundary.ts）で同じ遡り方をする
+ */
+export function walkBackOverSilent(sections: readonly Section[], idx: number, polished: ReadonlyMap<string, { text: string }>, stops: ReadonlySet<string>): number {
+  let i = idx;
+  while (i > 0 && isSilentSection(sections[i - 1]!, polished) && !stops.has(sections[i - 1]!.id)) i--;
+  return i;
+}
+
 /**
  * 話題の最初の文（LLM が本文から書き写したもの）が整えた本文のどこから始まるか。本文の先頭なら 0、
  * 見つからなければ -1。from 以降で探す（同じ節で 2 つ目以降の話題は、前の話題の位置より後ろ）。
@@ -475,18 +491,20 @@ export function buildNotesMarkdown(input: {
   // Codex にも同じことを頼んでいるが（§13.5）、ここで決めれば判断がぶれず、古いキャッシュの話題にも効く。
   // 前の話題が始まる節は越えない（2026-10-15）
   const starts = new Set((input.outline?.topics ?? []).map((t) => t.startId));
-  const silent = (s: Section) => !input.polished.get(s.id)?.text && !s.texts.some((t) => hasSpeechText(t));
   const topics = (input.outline?.topics ?? []).map((t) => {
     // 画像で判定済みの話題（boundary.ts）はそのまま。
-    // 最初の文が本文の途中で見つかる話題は節の途中から始まるので動かさない。先頭にある・見つからない
-    // （どちらも節の先頭に置かれる）なら節の先頭から始まる話題として扱う（Codex は startId の節の最初の文を
-    // そのまま startText に書くことが多い。2026-10-15）
+    // 最初の文が本文の途中で見つかる話題は節の途中から始まるので動かさない。見つからない話題も動かさない
+    // （どこから始まるか本文でも分からないので、節の先頭に置いたまま）。先頭にある（Codex は startId の節の最初の文を
+    // そのまま startText に書くことが多い）か最初の文が無いなら、節の先頭から始まる話題として扱う（2026-10-15）
     if (t.placed) return t;
-    const text = input.polished.get(t.startId)?.text;
-    if (t.startText && text && topicStartIndex(text, t.startText) > 0) return t;
-    let i = input.sections.findIndex((s) => s.id === t.startId);
-    while (i > 0 && silent(input.sections[i - 1]!) && !starts.has(input.sections[i - 1]!.id)) i--;
-    if (i < 0 || input.sections[i]!.id === t.startId) return t;
+    if (t.startText) {
+      const text = input.polished.get(t.startId)?.text;
+      if (!text || topicStartIndex(text, t.startText) !== 0) return t;
+    }
+    const idx = input.sections.findIndex((s) => s.id === t.startId);
+    if (idx < 0) return t;
+    const i = walkBackOverSilent(input.sections, idx, input.polished, starts);
+    if (i === idx) return t;
     const { startText: _dropped, ...moved } = t;
     return { ...moved, startId: input.sections[i]!.id };
   });

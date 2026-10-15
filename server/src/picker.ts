@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from './exec.ts';
 import { workPath } from './layout.ts';
-import { createBackend, isModelUnavailable } from './llm.ts';
+import { createBackend, withModelFallback } from './llm.ts';
 import { slideStart, type SlideEntry } from './merge.ts';
 import type { SceneDecision } from './scenes.ts';
 
@@ -467,21 +467,8 @@ export async function pickRegion(
       })!;
       return acceptResponse(region, parsePicks(await backend.complete(prompt, PICK_SCHEMA, { images })));
     };
-    try {
-      return { ...(await callOnce(settings.model)), model: settings.model };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isModelUnavailable(message) && settings.fallbackModel !== settings.model && !settings.signal?.aborted) {
-        log(`画像の救出のモデル（${settings.model || '既定'}）が使えないため、整えのモデルでやり直します: ${message}`);
-        try {
-          return { ...(await callOnce(settings.fallbackModel)), model: settings.fallbackModel };
-        } catch (retryError) {
-          const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
-          return { accepted: [], swaps: [], rejected: [], error: retryMessage, model: settings.fallbackModel };
-        }
-      }
-      return { accepted: [], swaps: [], rejected: [], error: message, model: settings.model };
-    }
+    const outcome = await withModelFallback(settings, callOnce, '画像の救出', log);
+    return outcome.result ? { ...outcome.result, model: outcome.model } : { accepted: [], swaps: [], rejected: [], error: outcome.error ?? 'no result', model: outcome.model };
   } catch (error) {
     // 画像を用意できなかった
     return { accepted: [], swaps: [], rejected: [], error: error instanceof Error ? error.message : String(error), model: settings.model };

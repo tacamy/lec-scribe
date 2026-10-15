@@ -542,6 +542,32 @@ export async function polish(
   return { results, errors };
 }
 
+/**
+ * モデルが使えない（プランにない等）ときだけ、受け皿のモデルで 1 回やり直す（画像の救出・話題の境目で共通）。
+ * 結果か失敗の理由と、実際に使ったモデルを返す。中止されていれば受け皿は試さない
+ */
+export async function withModelFallback<T>(
+  settings: { model: string; fallbackModel: string; signal?: AbortSignal },
+  call: (model: string) => Promise<T>,
+  label: string,
+  log: (line: string) => void,
+): Promise<{ result?: T; error?: string; model: string }> {
+  try {
+    return { result: await call(settings.model), model: settings.model };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isModelUnavailable(message) && settings.fallbackModel !== settings.model && !settings.signal?.aborted) {
+      log(`${label}のモデル（${settings.model || '既定'}）が使えないため、整えのモデルでやり直します: ${message}`);
+      try {
+        return { result: await call(settings.fallbackModel), model: settings.fallbackModel };
+      } catch (retryError) {
+        return { error: retryError instanceof Error ? retryError.message : String(retryError), model: settings.fallbackModel };
+      }
+    }
+    return { error: message, model: settings.model };
+  }
+}
+
 /** 整えた本文全体から、動画全体の要点と話題の区切りを 1 回の呼び出しで作る。失敗しても notes.md は作れる */
 export async function outline(
   sections: ReadonlyArray<{ id: string; text: string }>,

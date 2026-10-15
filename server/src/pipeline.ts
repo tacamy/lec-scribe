@@ -344,15 +344,15 @@ export class Pipeline {
       });
       if (settings.signal.aborted) return topics;
       if (run.reused) this.log('話題の境目: 前回の判定を使い回します');
-      for (const e of run.errors) this.log(`話題の境目の判定に失敗（時間の規則のままノートを作ります）: ${e}`);
-      if (run.placements.length > 0) {
-        const kinds = run.placements.map((p) => {
-          const b = boundaries.find((x) => x.topic === p.topic)!;
-          return p.startAfterImage ? '本文だけ新しい話題' : b.silent.some((s) => s.id === p.startId) ? '途切れている間の画面から' : '話し始めた画面から';
-        });
-        const count = (k: string) => kinds.filter((x) => x === k).length;
-        this.log(`話題の境目 (${run.model}): ${boundaries.length} か所を画像で判定（途切れている間の画面から ${count('途切れている間の画面から')}、話し始めた画面から ${count('話し始めた画面から')}、本文だけ新しい話題 ${count('本文だけ新しい話題')}）`);
-      }
+      for (const e of run.errors) this.log(`話題の境目の判定に失敗（残りは時間の規則のままノートを作ります）: ${e}`);
+      const kinds = run.placements.map((p) => {
+        const b = boundaries.find((x) => x.topic === p.topic)!;
+        return p.startAfterImage ? '本文だけ新しい話題' : b.silent.some((s) => s.id === p.startId) ? '途切れている間の画面から' : '話し始めた画面から';
+      });
+      const count = (k: string) => kinds.filter((x) => x === k).length;
+      this.log(
+        `話題の境目 (${run.model}): ${boundaries.length} か所のうち ${run.placements.length} か所を画像で判定（途切れている間の画面から ${count('途切れている間の画面から')}、話し始めた画面から ${count('話し始めた画面から')}、本文だけ新しい話題 ${count('本文だけ新しい話題')}）`,
+      );
       return { ...topics, topics: applyPlacement(topics.topics, run.placements) };
     } catch (error) {
       this.log(`話題の境目の判定に失敗（時間の規則のままノートを作ります）: ${error instanceof Error ? error.message : String(error)}`);
@@ -779,9 +779,11 @@ export class Pipeline {
           if (polished.size === 0) return await fallbackNotes(errors.join(' / ') || 'no output');
           // 話題の境目の画像を見て、どの画像から新しい話題かを決める（§13.5）。キャッシュの話題には残さず、ノートを組む直前だけ
           if (topics && llmSettings.kind === 'codex') {
-            topics = await this.placeBoundaries(dir, result.sections, polished, topics, { model: llmPickModel, fallbackModel: llmSettings.model, signal: job.llm.signal });
+            // 受け皿は整えに実際に使ったモデル（整えのモデルが使えず既定に切り替えていたら、そちら）
+            topics = await this.placeBoundaries(dir, result.sections, polished, topics, { model: llmPickModel, fallbackModel: activeModel, signal: job.llm.signal });
             if (signal.aborted) throw new Error('cancelled');
-            if (notesStopped()) throw new Error('notes stopped');
+            // ノート作成だけの中止がここで入っても、本文と話題はもうできているので、時間の規則のままノートを書く
+            if (notesStopped()) this.log('話題の境目の判定の途中で止められたので、時間の規則のままノートを作ります');
           }
           await this.writeNotes(
             dir,
