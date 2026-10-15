@@ -131,6 +131,22 @@ describe('deriveFromCache（節の区切りだけ変わったときの組み替�
     expect(deriveFromCache(withText, inputs).outline?.topics[1]?.startText).toBe('二枚目。');
   });
 
+  it('発話のない節から始まっていた話題が前の節とつながったら、その節以降の最初の本文の文を startText にする', () => {
+    // 話題「終わり」が無音の slide_003（画面が切り替わって話し始める前）から始まっていて、002〜004 が 1 つの節につながった
+    const silentStart = { ...cache, outline: { overview: ['全体'], topics: [{ heading: '導入', summary: ['a'], startId: 'intro' }, { heading: '終わり', summary: ['c'], startId: 'slide_003' }] } };
+    const inputs = [
+      { id: 'intro', text: 'はじめに。' },
+      { id: 'slide_001', text: '一枚目。' },
+      { id: 'slide_004', text: '二枚目。四枚目。' },
+    ];
+    const d = deriveFromCache(silentStart, inputs);
+    expect(d.unmatched).toEqual([]);
+    expect(d.outline?.topics.map((t) => [t.startId, t.startText])).toEqual([
+      ['intro', undefined],
+      ['slide_004', '整えた 四枚目。'], // 無音の節の本文は空なので、その次の本文から
+    ]);
+  });
+
   it('2 つの話題が始まっていた節同士がつながっても、両方の話題を残す', () => {
     // 導入（intro）と本題（slide_002）が、画像を外して 1 つの節（intro）につながった
     const inputs = [

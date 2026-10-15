@@ -149,7 +149,7 @@ export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: s
    - startId: その話題が始まる部分の id（入力の id をそのまま使う）
    - startText: その話題の最初の文。startId の部分の本文からそのまま書き写す（一字も変えない）。その部分の本文の先頭から話題が始まるなら空文字。話題の切れ目が部分の途中にあるとき（前の話題の締めの文のあとに「続いて」「次に」と新しい話題が始まる、など）、見出しをその文の直前に置くために使う
    最初の topic の startId は最初の部分の id、startText は空文字にしてください。話題は細かく割りすぎず、10 分の動画なら 2〜4 個、90 分なら 6〜15 個が目安です。ただし操作のデモでは、別の機能やツールの説明に移るところ（「続いての機能は」「今回は〜について」）は切れ目にしてかまいません。
-   話題の切れ目は、新しい機能や概念の説明が始まるところに置いてください。「次の練習に移ります」「ファイルを開きます」「次のアートボードに移動しましょう」のような準備の発話は前の話題の末尾に含め、新しい話題は準備のあとで画面が切り替わったところから始めます。「（発話なし）」の部分は、その直後に新しい話題が始まるならその話題の始まり（startId）にしてください（画面が切り替わってから話し始めるので、その画面は新しい話題のもの。「（発話なし）」が続いていれば最初のものから）。そうでなければ前の話題に含めてください。
+   話題の切れ目は、新しい機能や概念の説明が始まるところに置いてください。「次の練習に移ります」「ファイルを開きます」「次のアートボードに移動しましょう」のような準備の発話は前の話題の末尾に含め、新しい話題は準備のあとで画面が切り替わったところから始めます。「（発話なし）」の部分は、その直後に新しい話題が始まるならその話題の始まり（startId）にしてください（画面が切り替わってから話し始めるので、その画面は新しい話題のもの。「（発話なし）」が続いていれば最初のものから。このとき startText は空文字）。そうでなければ前の話題に含めてください。
 
 出力は指定された JSON スキーマに従ってください。
 
@@ -211,9 +211,10 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
     const startId = String(item['startId'] ?? '');
     const heading = String(item['heading'] ?? '').trim();
     const pos = order.get(startId);
-    // 話題の最初の文。長すぎるもの（文ではなく段落を写した）は本文で見つけても信用しないので捨てる
+    // 話題の最初の文。長すぎるもの（文ではなく段落を写した）は本文で見つけても信用しないので捨てる。
+    // 発話のない部分の「（発話なし）」を書き写したものも捨てる（本文には無い）
     const copied = String(item['startText'] ?? '').trim();
-    const startText = copied.length <= 200 ? copied : '';
+    const startText = copied.length <= 200 && copied !== '（発話なし）' ? copied : '';
     // 同じ節で 2 つ目以降の話題は、最初の文があって位置を決められるときだけ残す
     if (pos === undefined || pos < last || (pos === last && !startText) || !heading) continue;
     topics.push({ heading, summary: strings(item['summary']), startId, ...(startText ? { startText } : {}) });

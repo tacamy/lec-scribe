@@ -424,7 +424,7 @@ describe('local server', () => {
       const cacheFile = path.join(status.outputDir!, '.lecscribe', 'notes-cache.json');
       const stored = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[]; corrections?: unknown[] };
       expect(stored.outlineVersion).toBe(OUTLINE_VERSION);
-      delete stored.outlineVersion;
+      stored.outlineVersion = OUTLINE_VERSION - 1; // 1 つ前の版（版を上げたときに実際にたどる道）
       await writeFile(cacheFile, JSON.stringify(stored));
       const callsFile = path.join(tmp, 'codex-calls.txt');
       const callsBefore = (await readFile(callsFile, 'utf8')).split('\n').filter(Boolean).length;
