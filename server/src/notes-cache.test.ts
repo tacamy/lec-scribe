@@ -122,8 +122,29 @@ describe('deriveFromCache（節の区切りだけ変わったときの組み替�
     expect(d.unmatched).toEqual([]);
     expect(d.polished.get('slide_001')?.text).toBe('整えた 一枚目。\n\n整えた 二枚目。');
     expect(d.polished.get('slide_003')?.text).toBe('');
-    // slide_002 で始まっていた話題は slide_001 に付け替わるが、導入と同じ節になるので 1 つに減る… ではなく別の節なので残る
+    // slide_002 で始まっていた話題は slide_001 に付け替わる。本文の途中になるので、前回の本文の最初の文を startText に残す（§13.5）
     expect(d.outline?.topics.map((t) => t.startId)).toEqual(['intro', 'slide_001', 'slide_004']);
+    expect(d.outline?.topics[1]).toEqual({ heading: '本題', summary: ['b'], startId: 'slide_001', startText: '整えた 二枚目。' });
+    expect(d.outline?.topics[0]?.startText).toBeUndefined(); // 節の先頭のままの話題には付けない
+    // 既に startText があればそのまま
+    const withText = { ...cache, outline: { ...cache.outline!, topics: cache.outline!.topics.map((t) => (t.startId === 'slide_002' ? { ...t, startText: '二枚目。' } : t)) } };
+    expect(deriveFromCache(withText, inputs).outline?.topics[1]?.startText).toBe('二枚目。');
+  });
+
+  it('2 つの話題が始まっていた節同士がつながっても、両方の話題を残す', () => {
+    // 導入（intro）と本題（slide_002）が、画像を外して 1 つの節（intro）につながった
+    const inputs = [
+      { id: 'intro', text: 'はじめに。一枚目。二枚目。' },
+      { id: 'slide_003', text: '' },
+      { id: 'slide_004', text: '四枚目。' },
+    ];
+    const d = deriveFromCache(cache, inputs);
+    expect(d.unmatched).toEqual([]);
+    expect(d.outline?.topics.map((t) => [t.startId, t.startText])).toEqual([
+      ['intro', undefined],
+      ['intro', '整えた 二枚目。'],
+      ['slide_004', undefined],
+    ]);
   });
 
   it('まとまりの最後の画像の id で節がつながったときも（載せる画像が最後の 1 枚）、本文の並びで組み替える', () => {

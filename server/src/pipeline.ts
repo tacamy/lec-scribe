@@ -4,7 +4,7 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, migrateLayout, slidesSourcePath, syncSlides, workPath } from './layout.ts';
-import { applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
+import { OUTLINE_VERSION, applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
@@ -620,8 +620,10 @@ export class Pipeline {
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
           // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
-          const cached = stored && stored.key === key && (stored.errors ?? []).length === 0 && stored.outline ? stored : null;
-          if (stored && !cached && stored.key === key) this.log('前回のノートに失敗が残っているので作り直します');
+          // 話題の区切りの形が古い（startText の無い版）なら、本文は組み替えで使い回して話題だけ作り直す（§13.5）
+          const outlineStale = !!stored && (stored.outlineVersion ?? 1) < OUTLINE_VERSION;
+          const cached = stored && stored.key === key && (stored.errors ?? []).length === 0 && stored.outline && !outlineStale ? stored : null;
+          if (stored && !cached && stored.key === key && (stored.errors ?? []).length > 0) this.log('前回のノートに失敗が残っているので作り直します');
           let polished: Map<string, PolishOutput>;
           let topics: Outline | undefined;
           let errors: string[];
@@ -694,16 +696,23 @@ export class Pipeline {
                 }
               }
             }
+            // 本文を全部使い回したときは、前回の校正の記録もそのまま引き継ぐ（本文が同じなので当てた直しも同じ）
+            if (todo.length === 0 && previous) {
+              corrections = previous.corrections ?? [];
+              checkErrors = previous.checkErrors ?? [];
+            }
             // 発話のある節が 1 つも整わなかったら失敗とする（空の節はキャッシュの組み替えでも埋まるため数に入れない）
             const hasText = inputs.some((i) => i.text !== '');
             if (polished.size === 0 || (hasText && ![...polished.values()].some((x) => x.text !== ''))) {
               return await fallbackNotes(errors.join(' / ') || 'no output');
             }
-            if (todo.length === 0 && derived.outline) {
+            if (todo.length === 0 && derived.outline && !outlineStale) {
               this.log(`前回のノートを組み替えて使い回します（${previous!.backend}, ${previous!.generatedAt}）`);
               topics = derived.outline;
               reused = true;
             } else {
+              // 本文は全部使い回せたが話題の区切りの形が古い: 話題だけ作り直す（outline の呼び出し 1 回）
+              if (todo.length === 0 && outlineStale) this.log('前回の話題の区切りが古い形なので、本文は使い回して話題だけ作り直します');
               // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
               const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
               const { outline: made, error: outlineError } = await outline(outlineInput, activeBackend, llmSettings, this.log);
@@ -714,6 +723,7 @@ export class Pipeline {
             }
             await writeNotesCache(dir, {
               key,
+              outlineVersion: OUTLINE_VERSION,
               generatedAt: now(),
               backend: activeBackend.name,
               settings: cacheSettings,

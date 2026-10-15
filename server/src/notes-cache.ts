@@ -26,6 +26,8 @@ export type CacheSettings = {
 export type NotesCache = {
   /** 入力と設定から作る鍵。変わっていれば呼び直す */
   key: string;
+  /** outline を作ったときの形の版（llm.ts の OUTLINE_VERSION）。無ければ 1（startText の無い古い形）。古ければ話題だけ作り直す */
+  outlineVersion?: number;
   generatedAt: string;
   backend: string;
   /** そのときの呼び出し先・モデル・分割の大きさ。節の区切りだけ変わったときの組み替えに使ってよいかの判断に使う */
@@ -34,7 +36,10 @@ export type NotesCache = {
   inputs?: NotesCacheInput[];
   polished: PolishOutput[];
   outline?: Outline;
-  /** 校正（誤変換の修正）で当てた直し。polished には当てたあとの本文が入る（§13.5、記録用。その回に当てた分だけで、組み替えでは引き継がない） */
+  /**
+   * 校正（誤変換の修正）で当てた直し。polished には当てたあとの本文が入る（§13.5、記録用）。
+   * その回に当てた分だけ。本文を全部使い回した回（話題だけ作り直す、節の区切りだけ変わった）は前回の記録を引き継ぐ
+   */
   corrections?: Correction[];
   /**
    * 校正だけの失敗（枠切れなど）。本文は揃っていて直しが入らないだけなので、errors とは別に残し、
@@ -89,6 +94,8 @@ export function deriveFromCache(
   const oldPolished = new Map(cache.polished.map((p) => [p.id, p.text]));
   /** 前回の節 id → 今回の節 id */
   const movedTo = new Map<string, string>();
+  /** 今回の節 id → その本文の先頭になった前回の節 id */
+  const firstPartOf = new Map<string, string>();
   let i = 0;
   for (const section of inputs) {
     // 発話のない節は整える対象がない。前回も同じ位置に空の節があれば消費しておく
@@ -96,6 +103,7 @@ export function deriveFromCache(
       polished.set(section.id, { id: section.id, text: '' });
       if (oldInputs[i]?.text === '') {
         movedTo.set(oldInputs[i]!.id, section.id);
+        firstPartOf.set(section.id, oldInputs[i]!.id);
         i++;
       }
       continue;
@@ -108,6 +116,7 @@ export function deriveFromCache(
     if (found && found.parts.every((id) => oldPolished.has(id))) {
       polished.set(section.id, { id: section.id, text: found.parts.map((id) => oldPolished.get(id)!).filter(Boolean).join('\n\n') });
       for (const id of found.parts) movedTo.set(id, section.id);
+      firstPartOf.set(section.id, found.parts[0]!);
       i = found.end;
     } else {
       unmatched.push(section.id);
@@ -118,16 +127,24 @@ export function deriveFromCache(
   }
   let outline: Outline | undefined;
   if (cache.outline && unmatched.length === 0) {
-    const seen = new Set<string>();
     const topics = cache.outline.topics.flatMap((t) => {
       const startId = movedTo.get(t.startId);
-      if (!startId || seen.has(startId)) return [];
-      seen.add(startId);
-      return [{ ...t, startId }];
+      if (!startId) return [];
+      // 前の節とつながって本文の途中になった話題は、前回の本文の最初の文を startText にして位置を残す
+      // （同じ節に 2 つ以上の話題が始まってよい。§13.5、2026-10-14）
+      if (t.startText || firstPartOf.get(startId) === t.startId) return [{ ...t, startId }];
+      const startText = firstSentence(oldPolished.get(t.startId) ?? '');
+      return [{ ...t, startId, ...(startText ? { startText } : {}) }];
     });
     outline = { overview: cache.outline.overview, topics };
   }
   return { polished, ...(outline ? { outline } : {}), unmatched };
+}
+
+/** 整えた本文の最初の文（句点まで。無ければ全文）。200 文字まで */
+function firstSentence(text: string): string {
+  const m = text.trim().match(/^[\s\S]*?[。！？!?]/);
+  return (m ? m[0] : text.trim()).slice(0, 200);
 }
 
 /** 前回の節を start 以降の位置から順につないで text と一致する並びを探す。見つからなければ null */

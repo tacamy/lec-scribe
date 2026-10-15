@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupAssigned, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, endsSentence, groupAssigned, groupSections, innerSentenceEnds, isSlideList, sentenceUnits, slideStart, toParagraph, topicStartIndex, type MergedSegment, type SlideEntry } from './merge.ts';
 
 const seg = (videoStart: number, text: string): MergedSegment => ({ start: videoStart, end: videoStart + 2, videoStart, videoEnd: videoStart + 2, text });
 const slides: SlideEntry[] = [
@@ -362,6 +362,61 @@ describe('buildNotesMarkdown', () => {
     expect(md).toContain('## 全体の要点\n\n- 全体 1\n\n## 導入\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。');
     expect(md).not.toContain('導入の要点');
     expect(md).toContain('![slide_002](slides/slide_002.png)\n\n（整えられなかったため文字起こしのまま）\n\n二枚目の話。');
+  });
+
+  it('話題が節の途中から始まるときは、画像と手前の文を前の話題に残し、見出しを最初の文の直前に置く', () => {
+    const texts = new Map([
+      ['slide_001', { text: '一枚目の本文。' }],
+      ['slide_002', { text: 'このツールについてはここまでです。\n\n続いて、直線ツールを紹介します。\n\nドラッグで引けます。' }],
+    ]);
+    const md = buildNotesMarkdown({
+      sections,
+      polished: texts,
+      outline: {
+        overview: [],
+        topics: [
+          { heading: '導入', summary: [], startId: 'slide_001' },
+          { heading: '直線ツール', summary: [], startId: 'slide_002', startText: '続いて、直線ツールを紹介します。' },
+        ],
+      },
+    });
+    expect(md).toContain('## 導入\n\n![slide_001](slides/slide_001.png)\n\n一枚目の本文。\n\n![slide_002](slides/slide_002.png)\n\nこのツールについてはここまでです。\n\n## 直線ツール\n\n続いて、直線ツールを紹介します。\n\nドラッグで引けます。');
+    // 最初の文が本文の先頭なら今までどおり見出しが先。本文に無い文なら節の先頭に置く（悪化はしない）
+    for (const startText of ['このツールについてはここまでです。', '本文に無い文。']) {
+      const same = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics: [{ heading: '直線ツール', summary: [], startId: 'slide_002', startText }] } });
+      expect(same).toContain('## 直線ツール\n\n![slide_002](slides/slide_002.png)\n\nこのツールについてはここまでです。');
+    }
+  });
+
+  it('topicStartIndex: 先頭なら 0、文の途中なら -1、書き写しが少し違っても先頭 12 文字で拾う', () => {
+    const text = '一文目です。二文目は長い文で、途中に読点があります。三文目。';
+    expect(topicStartIndex(text, '一文目です。')).toBe(0);
+    expect(topicStartIndex(text, '二文目は長い文で、途中に読点があります。')).toBe(6);
+    expect(topicStartIndex(text, '二文目は長い文で、途中に句点があります。')).toBe(6); // 先頭 12 文字が一致
+    expect(topicStartIndex(text, '途中に読点があります。')).toBe(-1); // 文の途中
+    expect(topicStartIndex(text, '無い文。')).toBe(-1);
+    expect(topicStartIndex(text, '')).toBe(-1);
+    // 最初の出現が文の途中なら、あとの出現（文の頭）を採る
+    expect(topicStartIndex('まず直線の説明に移りたい。直線の説明に移ります。', '直線の説明に移ります。')).toBe(13);
+    // 「…」や「．」のあとも文の切れ目。from 以降で探せる
+    expect(topicStartIndex('前の話…続いて本題です。', '続いて本題です。')).toBe(4);
+    expect(topicStartIndex('同じ文。別の文。同じ文。', '同じ文。', 1)).toBe(8);
+    // 先頭 12 文字はサロゲートペア（𠮷）を割らない
+    expect(topicStartIndex('前。一二三四五六七八九十、𠮷野家の話。次。', '一二三四五六七八九十、𠮷野家の話。少し違う')).toBe(2);
+  });
+
+  it('同じ節で 2 つ以上の話題が始まるときは順に分け、位置の決まらない 2 つ目以降は節の末尾に置く', () => {
+    const texts = new Map([['slide_001', { text: 'A の締め。\n\nB の最初の文。B の続き。\n\nC の最初の文。' }]]);
+    const topics = [
+      { heading: 'A', summary: [], startId: 'slide_001' },
+      { heading: 'B', summary: [], startId: 'slide_001', startText: 'B の最初の文。' },
+      { heading: 'C', summary: [], startId: 'slide_001', startText: 'C の最初の文。' },
+    ];
+    const md = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics } });
+    expect(md).toContain('## A\n\n![slide_001](slides/slide_001.png)\n\nA の締め。\n\n## B\n\nB の最初の文。B の続き。\n\n## C\n\nC の最初の文。\n\n![slide_002](slides/slide_002.png)');
+    // 2 つ目の最初の文が見つからなければ、その見出しは節の末尾（次の節の手前）
+    const missing = buildNotesMarkdown({ sections, polished: texts, outline: { overview: [], topics: [topics[0]!, { heading: 'D', summary: [], startId: 'slide_001', startText: '無い文。' }] } });
+    expect(missing).toContain('C の最初の文。\n\n## D\n\n![slide_002](slides/slide_002.png)');
   });
 
   it('works without an outline', () => {
