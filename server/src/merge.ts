@@ -477,10 +477,16 @@ export function buildNotesMarkdown(input: {
   const starts = new Set((input.outline?.topics ?? []).map((t) => t.startId));
   const silent = (s: Section) => !input.polished.get(s.id)?.text && !s.texts.some((t) => hasSpeechText(t));
   const topics = (input.outline?.topics ?? []).map((t) => {
-    if (t.startText) return t;
+    // 最初の文が本文の途中で見つかる話題は節の途中から始まるので動かさない。先頭にある・見つからない
+    // （どちらも節の先頭に置かれる）なら節の先頭から始まる話題として扱う（Codex は startId の節の最初の文を
+    // そのまま startText に書くことが多い。2026-10-15）
+    const text = input.polished.get(t.startId)?.text;
+    if (t.startText && text && topicStartIndex(text, t.startText) > 0) return t;
     let i = input.sections.findIndex((s) => s.id === t.startId);
     while (i > 0 && silent(input.sections[i - 1]!) && !starts.has(input.sections[i - 1]!.id)) i--;
-    return i >= 0 && input.sections[i]!.id !== t.startId ? { ...t, startId: input.sections[i]!.id } : t;
+    if (i < 0 || input.sections[i]!.id === t.startId) return t;
+    const { startText: _dropped, ...moved } = t;
+    return { ...moved, startId: input.sections[i]!.id };
   });
   // 話題の開始 id → その節で始まる話題（本文の順）。最初の話題は先頭の節から始まる。
   // 長い節の途中で話題が変わると、1 つの節に 2 つ以上の話題が始まる（位置は startText で決める）

@@ -419,7 +419,10 @@ describe('buildNotesMarkdown', () => {
     // 無音の節で別の話題が始まっているなら、そこは越えない
     const stop = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '準備', summary: [], startId: 'slide_002' }, { heading: '本題', summary: [], startId: 'slide_003' }] } });
     expect(stop).toContain('## 準備\n\n![slide_002](slides/slide_002.png)\n\n## 本題\n\n![slide_003](slides/slide_003.png)');
-    // 最初の文（startText）のある話題は節の途中から始まるので動かさない
+    // 最初の文（startText）が節の先頭にある（Codex がその節の最初の文をそのまま書いた）なら、節の先頭から始まる話題として前に出す
+    const head = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startText: '三枚目の本文。' }] } });
+    expect(head).toContain('一枚目の本文。\n\n## 本題\n\n![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n三枚目の本文。');
+    // 最初の文（startText）が節の途中で見つかる話題は、そこから始まるので動かさない
     const mid = buildNotesMarkdown({ sections: secs, polished: new Map([...texts, ['slide_003', { text: '締めの文。\n\n三枚目の本文。' }]]), outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startText: '三枚目の本文。' }] } });
     expect(mid).toContain('![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n締めの文。\n\n## 本題\n\n三枚目の本文。');
   });
