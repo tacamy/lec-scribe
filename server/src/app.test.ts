@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
+import { OUTLINE_VERSION } from './llm.ts';
 import { readPipelineStatus, recoverInterrupted, type PipelineStatus } from './pipeline.ts';
 import type { ServerConfig } from './config.ts';
 
@@ -422,7 +423,7 @@ describe('local server', () => {
       // 話題の区切りの形が古いキャッシュ（outlineVersion なし）は、本文は使い回して話題だけ作り直す（§13.5、2026-10-14）
       const cacheFile = path.join(status.outputDir!, '.lecscribe', 'notes-cache.json');
       const stored = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[]; corrections?: unknown[] };
-      expect(stored.outlineVersion).toBe(2);
+      expect(stored.outlineVersion).toBe(OUTLINE_VERSION);
       delete stored.outlineVersion;
       await writeFile(cacheFile, JSON.stringify(stored));
       const callsFile = path.join(tmp, 'codex-calls.txt');
@@ -434,7 +435,7 @@ describe('local server', () => {
       // codex は話題（outline）の 1 回だけ。本文の整え（batch）と校正（check）は呼ばない
       expect((await readFile(callsFile, 'utf8')).split('\n').filter(Boolean).slice(callsBefore)).toEqual(['outline']);
       const rewritten = JSON.parse(await readFile(cacheFile, 'utf8')) as { outlineVersion?: number; polished: unknown[]; corrections?: unknown[] };
-      expect(rewritten.outlineVersion).toBe(2);
+      expect(rewritten.outlineVersion).toBe(OUTLINE_VERSION);
       expect(rewritten.polished).toEqual(stored.polished); // 本文は組み替えで使い回し、校正済みのまま
       expect(rewritten.corrections).toEqual(stored.corrections); // 校正の記録も引き継ぐ
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
