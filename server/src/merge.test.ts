@@ -405,6 +405,25 @@ describe('buildNotesMarkdown', () => {
     expect(topicStartIndex('前。一二三四五六七八九十、𠮷野家の話。次。', '一二三四五六七八九十、𠮷野家の話。少し違う')).toBe(2);
   });
 
+  it('節の先頭から始まる話題は、直前に続く発話のない節まで前に出す（前の話題が始まる節は越えない）', () => {
+    const three = [
+      { filename: 'slide_001.png', seq: 1, videoTime: 10, t: 10, reason: 'initial' as const },
+      { filename: 'slide_002.png', seq: 2, videoTime: 60, t: 60, reason: 'change' as const },
+      { filename: 'slide_003.png', seq: 3, videoTime: 120, t: 120, reason: 'change' as const },
+    ];
+    // slide_002 は画面が切り替わっただけで発話がない。話題「本題」は Codex が slide_003（話し始めた節）から始めた
+    const secs = groupSections([seg(12, '一枚目の話。'), seg(130, '三枚目の話。')], three);
+    const texts = new Map([['slide_001', { text: '一枚目の本文。' }], ['slide_003', { text: '三枚目の本文。' }]]);
+    const md = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003' }] } });
+    expect(md).toContain('一枚目の本文。\n\n## 本題\n\n![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n三枚目の本文。');
+    // 無音の節で別の話題が始まっているなら、そこは越えない
+    const stop = buildNotesMarkdown({ sections: secs, polished: texts, outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '準備', summary: [], startId: 'slide_002' }, { heading: '本題', summary: [], startId: 'slide_003' }] } });
+    expect(stop).toContain('## 準備\n\n![slide_002](slides/slide_002.png)\n\n## 本題\n\n![slide_003](slides/slide_003.png)');
+    // 最初の文（startText）のある話題は節の途中から始まるので動かさない
+    const mid = buildNotesMarkdown({ sections: secs, polished: new Map([...texts, ['slide_003', { text: '締めの文。\n\n三枚目の本文。' }]]), outline: { overview: [], topics: [{ heading: '導入', summary: [], startId: 'slide_001' }, { heading: '本題', summary: [], startId: 'slide_003', startText: '三枚目の本文。' }] } });
+    expect(mid).toContain('![slide_002](slides/slide_002.png)\n\n![slide_003](slides/slide_003.png)\n\n締めの文。\n\n## 本題\n\n三枚目の本文。');
+  });
+
   it('同じ節で 2 つ以上の話題が始まるときは順に分け、位置の決まらない 2 つ目以降は節の末尾に置く', () => {
     const texts = new Map([['slide_001', { text: 'A の締め。\n\nB の最初の文。B の続き。\n\nC の最初の文。' }]]);
     const topics = [

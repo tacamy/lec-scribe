@@ -94,8 +94,8 @@ export function deriveFromCache(
   const oldPolished = new Map(cache.polished.map((p) => [p.id, p.text]));
   /** 前回の節 id → 今回の節 id */
   const movedTo = new Map<string, string>();
-  /** 今回の節 id → その本文の先頭になった前回の節 id */
-  const firstPartOf = new Map<string, string>();
+  /** 今回の節 id → その本文になった前回の節 id の並び（先頭が本文の先頭） */
+  const partsOf = new Map<string, readonly string[]>();
   let i = 0;
   for (const section of inputs) {
     // 発話のない節は整える対象がない。前回も同じ位置に空の節があれば消費しておく
@@ -103,7 +103,7 @@ export function deriveFromCache(
       polished.set(section.id, { id: section.id, text: '' });
       if (oldInputs[i]?.text === '') {
         movedTo.set(oldInputs[i]!.id, section.id);
-        firstPartOf.set(section.id, oldInputs[i]!.id);
+        partsOf.set(section.id, [oldInputs[i]!.id]);
         i++;
       }
       continue;
@@ -116,7 +116,7 @@ export function deriveFromCache(
     if (found && found.parts.every((id) => oldPolished.has(id))) {
       polished.set(section.id, { id: section.id, text: found.parts.map((id) => oldPolished.get(id)!).filter(Boolean).join('\n\n') });
       for (const id of found.parts) movedTo.set(id, section.id);
-      firstPartOf.set(section.id, found.parts[0]!);
+      partsOf.set(section.id, found.parts);
       i = found.end;
     } else {
       unmatched.push(section.id);
@@ -131,9 +131,19 @@ export function deriveFromCache(
       const startId = movedTo.get(t.startId);
       if (!startId) return [];
       // 前の節とつながって本文の途中になった話題は、前回の本文の最初の文を startText にして位置を残す
-      // （同じ節に 2 つ以上の話題が始まってよい。§13.5、2026-10-14）
-      if (t.startText || firstPartOf.get(startId) === t.startId) return [{ ...t, startId }];
-      const startText = firstSentence(oldPolished.get(t.startId) ?? '');
+      // （同じ節に 2 つ以上の話題が始まってよい。§13.5、2026-10-14）。
+      // 発話のない節から始まっていた話題（画面が切り替わってから話し始める。§13.5）は、その節の本文が空なので、
+      // つながった並びの中でその節以降の最初の本文から取る（2026-10-15 のレビュー）
+      const parts = partsOf.get(startId) ?? [];
+      if (t.startText || parts[0] === t.startId) return [{ ...t, startId }];
+      let startText = '';
+      for (const id of parts.slice(Math.max(0, parts.indexOf(t.startId)))) {
+        const text = oldPolished.get(id);
+        if (text) {
+          startText = firstSentence(text);
+          break;
+        }
+      }
       return [{ ...t, startId, ...(startText ? { startText } : {}) }];
     });
     outline = { overview: cache.outline.overview, topics };

@@ -620,7 +620,7 @@ export class Pipeline {
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
           // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
-          // 話題の区切りの形が古い（startText の無い版）なら、本文は組み替えで使い回して話題だけ作り直す（§13.5）
+          // 話題の区切りの形が古い（OUTLINE_VERSION 未満。頼む内容を変えた）なら、本文は組み替えで使い回して話題だけ作り直す（§13.5）
           const outlineStale = !!stored && (stored.outlineVersion ?? 1) < OUTLINE_VERSION;
           const cached = stored && stored.key === key && (stored.errors ?? []).length === 0 && stored.outline && !outlineStale ? stored : null;
           if (stored && !cached && stored.key === key && (stored.errors ?? []).length > 0) this.log('前回のノートに失敗が残っているので作り直します');

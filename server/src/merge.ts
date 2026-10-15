@@ -471,10 +471,21 @@ export function buildNotesMarkdown(input: {
   const overview = input.outline?.overview ?? [];
   if (overview.length > 0) lines.push('## 全体の要点', '', ...overview.map((s) => `- ${s}`), '');
 
+  // 節の先頭から始まる話題は、直前に続く発話のない節（画面が切り替わって話し始める前の画面）まで前に出す。
+  // Codex にも同じことを頼んでいるが（§13.5）、ここで決めれば判断がぶれず、古いキャッシュの話題にも効く。
+  // 前の話題が始まる節は越えない（2026-10-15）
+  const starts = new Set((input.outline?.topics ?? []).map((t) => t.startId));
+  const silent = (s: Section) => !input.polished.get(s.id)?.text && !s.texts.some((t) => hasSpeechText(t));
+  const topics = (input.outline?.topics ?? []).map((t) => {
+    if (t.startText) return t;
+    let i = input.sections.findIndex((s) => s.id === t.startId);
+    while (i > 0 && silent(input.sections[i - 1]!) && !starts.has(input.sections[i - 1]!.id)) i--;
+    return i >= 0 && input.sections[i]!.id !== t.startId ? { ...t, startId: input.sections[i]!.id } : t;
+  });
   // 話題の開始 id → その節で始まる話題（本文の順）。最初の話題は先頭の節から始まる。
   // 長い節の途中で話題が変わると、1 つの節に 2 つ以上の話題が始まる（位置は startText で決める）
   const topicsAt = new Map<string, Outline['topics']>();
-  for (const t of input.outline?.topics ?? []) topicsAt.set(t.startId, [...(topicsAt.get(t.startId) ?? []), t]);
+  for (const t of topics) topicsAt.set(t.startId, [...(topicsAt.get(t.startId) ?? []), t]);
   for (const section of input.sections) {
     const polished = input.polished.get(section.id)?.text;
     // 見出しを置く本文の位置。0 は節の先頭（画像の上）、本文の長さは節の末尾（次の節の手前）。

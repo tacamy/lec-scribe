@@ -114,6 +114,9 @@ describe('outline', () => {
     // 空文字や長すぎる書き写し（文ではなく段落）は持たない
     const odd = JSON.stringify({ overview: [], topics: [{ heading: 'a', summary: [], startId: 'intro' }, { heading: 'b', summary: [], startId: 'slide_003', startText: 'x'.repeat(201) }] });
     expect(parseOutline(odd, parts.map((p) => p.id)).topics[1]).toEqual({ heading: 'b', summary: [], startId: 'slide_003' });
+    // 「（発話なし）」を書き写したものは持たない（本文には無い）
+    const placeholder = JSON.stringify({ overview: [], topics: [{ heading: 'a', summary: [], startId: 'intro' }, { heading: 'b', summary: [], startId: 'slide_003', startText: '（発話なし）' }] });
+    expect(parseOutline(placeholder, parts.map((p) => p.id)).topics[1]).toEqual({ heading: 'b', summary: [], startId: 'slide_003' });
     // 同じ節で 2 つ目以降の話題は、最初の文があって位置を決められるときだけ残す
     const same = JSON.stringify({
       overview: [],
