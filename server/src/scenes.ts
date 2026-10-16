@@ -772,6 +772,8 @@ export type SceneDecision = {
   reason?: SceneReason;
   /** 基準の画像ではなく直前の画像と比べて同じと判断したとき、その直前の画像 */
   via?: string;
+  /** preview のとき、この画像と戻った先（sameSceneAs）の間に挟まっていた別の画面（扉のスライドなど） */
+  between?: string;
   /** 載せる画像が、同じ場面の最初の画像の代わりであるとき、その最初の画像。発話の割り当てにはこちらの時刻を使う */
   standsFor?: string;
   /** 比べた画像との見た目の距離（Vision。0 に近いほど似ている） */
@@ -1191,7 +1193,10 @@ export function pickShownSlides(
     }
   });
   // 画面 A が短く映ってすぐ別の画面 B（扉のスライド、ダイアログ）を挟み、また A と同じ画面 A' に戻ったら、最初の A は載せない
-  // （A' が代わり。発話は A' のほうに付く）。止まった画面（静止部分が半分以上）だけ。A がほかの画像の代わりになっていれば触らない
+  // （A' が代わり。発話は A' のほうに付く）。止まった画面（静止部分が半分以上。記録が無ければ対象外）だけ。
+  // A を指していた画像（中身が同じ仲間、フェード、短い戻り）はそのまま A を指す（sameSceneAs を載っている画像まで辿れば A' に
+  // 行き着く。§13.4c の sceneGroups と同じ。付け替えると「最後の 1 枚に譲る」規則が A' より前の仲間を最後と見てしまう）。
+  // 安い確認（次に載る 2 枚と経過時間）を先にして、画素と Vision の比較（sceneSeconds・compare）はそのあと
   const nextShown = (from: number): number => {
     for (let j = from; j < slides.length; j++) if (decisions[j]?.shown) return j;
     return -1;
@@ -1199,18 +1204,17 @@ export function pickShownSlides(
   for (let i = 0; i < slides.length; i++) {
     const d = decisions[i]!;
     const slide = slides[i]!;
-    if (!d.shown || d.standsFor || (slide.trigger?.stillFraction ?? 1) < FOOTAGE_MAX_STILL) continue;
-    if (decisions.some((x) => x.sameSceneAs === d.filename)) continue;
-    const seconds = sceneSeconds(i);
-    if (seconds === undefined || seconds >= REVISIT_MAX_SECONDS) continue;
+    if (!d.shown || (slide.trigger?.stillFraction ?? 0) < FOOTAGE_MAX_STILL) continue;
     const middle = nextShown(i + 1);
     const back = middle < 0 ? -1 : nextShown(middle + 1);
     if (back < 0) continue;
     const elapsed = slides[back]!.videoTime - slide.videoTime;
     if (elapsed < 0 || elapsed > PREVIEW_MAX_SECONDS) continue;
+    const seconds = sceneSeconds(i);
+    if (seconds === undefined || seconds >= REVISIT_MAX_SECONDS) continue;
     const v = compare(back, i, true, true);
     if (!v?.reason) continue;
-    decisions[i] = { filename: d.filename, shown: false, reason: 'preview', sameSceneAs: slides[back]!.filename, via: slides[middle]!.filename, ...v.metrics };
+    decisions[i] = { filename: d.filename, shown: false, reason: 'preview', sameSceneAs: slides[back]!.filename, between: slides[middle]!.filename, ...v.metrics };
   }
   return keep === 'last' ? preferLast(decisions) : decisions;
 }

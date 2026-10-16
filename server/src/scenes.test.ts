@@ -334,19 +334,49 @@ describe('短く映ったあと別の画面を挟んで同じ画面に戻った�
       ['004', true, ''],
     ]);
     expect(d[0]!.sameSceneAs).toBe('slide_003.png');
-    expect(d[0]!.via).toBe('slide_002.png');
+    expect(d[0]!.between).toBe('slide_002.png');
+    expect(d[0]!.via).toBeUndefined();
     expect(d[2]!.standsFor).toBeUndefined(); // 最後の 1 枚に譲る規則で逆転しない
+    // 最初の 1 枚を載せる設定でも同じ
+    expect(pickShownSlides(slides, thumbs, 0.65, undefined, 'first').map((x) => x.shown)).toEqual([false, true, true, true]);
   });
 
-  it('A が長く映っていた、戻りが遅い、映像中心の画面、A がほかの代わりになっている、のどれかなら外さない', () => {
+  it('A が長く映っていた、戻りが遅い、映像中心の画面、静止部分の記録がない、のどれかなら外さない', () => {
     expect(pickShownSlides([at(1, 100), at(2, 115), at(3, 118), at(4, 200)], thumbs, 0.65)[0]!.shown).toBe(true); // 15 秒映っていた
     expect(pickShownSlides([at(1, 100), at(2, 103), at(3, 140), at(4, 200)], thumbs, 0.65)[0]!.shown).toBe(true); // 40 秒後に戻った
     expect(pickShownSlides([at(1, 100, 0.1), at(2, 103, 0.1), at(3, 106, 0.1), at(4, 200, 0.1)], thumbs, 0.65)[0]!.shown).toBe(true); // 映像中心
-    // A の前に A と同じ画像があって A がその代わり（最後の 1 枚）になっている
-    const withPrior = new Map(thumbs);
-    withPrior.set('slide_000.png', footage(1, 60));
-    const d = pickShownSlides([at(0, 90), at(1, 100), at(2, 103), at(3, 106), at(4, 200)], withPrior, 0.65);
-    expect(d.map((x) => x.shown)).toEqual([false, true, true, true, true]);
+    const noRecord = [at(1, 100), at(2, 103), at(3, 106), at(4, 200)].map((s) => ({ ...s, trigger: undefined }));
+    expect(pickShownSlides(noRecord, thumbs, 0.65)[0]!.shown).toBe(true); // 古いセッション（記録なし）は対象外
+  });
+
+  it('A と B の間にフェードや中身の同じ仲間が挟まっても外す。仲間は A を指したまま（辿れば A′ に行き着く）', () => {
+    // A → 真っ黒（blank）→ B → A′ → C
+    const withFade = new Map(thumbs);
+    withFade.set('slide_002.png', new Uint8Array(160 * 90 * 4)); // 真っ黒
+    withFade.set('slide_005.png', footage(2, 220)); // B
+    const fade = pickShownSlides([at(1, 100), at(2, 102), at(5, 103), at(3, 106), at(4, 200)], withFade, 0.65);
+    expect(fade.map((x) => [x.filename.slice(6, 9), x.shown, x.reason ?? ''])).toEqual([
+      ['001', false, 'preview'],
+      ['002', false, 'blank'],
+      ['005', true, ''],
+      ['003', true, ''],
+      ['004', true, ''],
+    ]);
+    expect(fade[0]!.sameSceneAs).toBe('slide_003.png');
+    expect(fade[1]!.sameSceneAs).toBe('slide_001.png'); // 001 → 003 と辿れる
+    // A → A2（A と中身が同じ）→ B → A′ → C: A も A2 も載せず、A′ だけ。最後の 1 枚に譲る規則で A2 が A′ の代わりにならない
+    const withTwin = new Map(thumbs);
+    withTwin.set('slide_002.png', footage(1, 60)); // A2
+    withTwin.set('slide_005.png', footage(2, 220)); // B
+    const twin = pickShownSlides([at(1, 100), at(2, 102), at(5, 103), at(3, 106), at(4, 200)], withTwin, 0.65);
+    expect(twin.map((x) => [x.filename.slice(6, 9), x.shown, x.reason ?? '', x.sameSceneAs ?? ''])).toEqual([
+      ['001', false, 'preview', 'slide_003.png'],
+      ['002', false, 'identical', 'slide_001.png'],
+      ['005', true, '', ''],
+      ['003', true, '', ''],
+      ['004', true, '', ''],
+    ]);
+    expect(twin[3]!.standsFor).toBeUndefined();
   });
 });
 
