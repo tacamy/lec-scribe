@@ -65,7 +65,8 @@ export function pickCap(region: PickRegion): number {
 }
 
 /** 救出の対象にしない外し方。identical はまったく同じ画像、blank はほぼ一色 */
-const UNRESCUABLE = new Set(['identical', 'blank']);
+/** 救出の候補にしない理由: 中身が同じ、ほぼ一色、短く映ったあと同じ画面に戻った（戻った先が載っていて、足すと隣に同じ画面が並ぶ） */
+const UNRESCUABLE = new Set(['identical', 'blank', 'preview']);
 
 /**
  * 外された画像がどの掲載画像のまとまりに属するか（外された画像 → 代表の filename）。
