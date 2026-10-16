@@ -41,7 +41,19 @@ export type PolishOutput = { id: string; text: string };
  */
 export type Outline = {
   overview: string[];
-  topics: Array<{ heading: string; summary: string[]; startId: string; startText?: string }>;
+  topics: Array<{
+    heading: string;
+    summary: string[];
+    startId: string;
+    startText?: string;
+    /**
+     * 以下は LLM の返答ではなく、話題の境目の画像判定（boundary.ts、§13.5）がノートを組む直前に付ける。
+     * startAfterImage: 節の画像は前の話題のもので、本文から新しい話題（見出しを画像の下に置く）。
+     * placed: 画像で判定済み（ノートを組むときの時間の規則で動かさない）。キャッシュには残さない
+     */
+    startAfterImage?: boolean;
+    placed?: boolean;
+  }>;
 };
 
 export type JsonSchema = Record<string, unknown>;
@@ -188,7 +200,7 @@ export function parseResponse(raw: string, expectedIds: readonly string[]): Poli
 }
 
 /** JSON を取り出す（前後に説明や \`\`\` フェンスが付いていても許容） */
-function extractJson(raw: string): unknown {
+export function extractJson(raw: string): unknown {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
@@ -528,6 +540,32 @@ export async function polish(
     await send(batch, `batch ${i + 1}/${batches.length}`, true);
   }
   return { results, errors };
+}
+
+/**
+ * モデルが使えない（プランにない等）ときだけ、受け皿のモデルで 1 回やり直す（画像の救出・話題の境目で共通）。
+ * 結果か失敗の理由と、実際に使ったモデルを返す。中止されていれば受け皿は試さない
+ */
+export async function withModelFallback<T>(
+  settings: { model: string; fallbackModel: string; signal?: AbortSignal },
+  call: (model: string) => Promise<T>,
+  label: string,
+  log: (line: string) => void,
+): Promise<{ result?: T; error?: string; model: string }> {
+  try {
+    return { result: await call(settings.model), model: settings.model };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isModelUnavailable(message) && settings.fallbackModel !== settings.model && !settings.signal?.aborted) {
+      log(`${label}のモデル（${settings.model || '既定'}）が使えないため、整えのモデルでやり直します: ${message}`);
+      try {
+        return { result: await call(settings.fallbackModel), model: settings.fallbackModel };
+      } catch (retryError) {
+        return { error: retryError instanceof Error ? retryError.message : String(retryError), model: settings.fallbackModel };
+      }
+    }
+    return { error: message, model: settings.model };
+  }
 }
 
 /** 整えた本文全体から、動画全体の要点と話題の区切りを 1 回の呼び出しで作る。失敗しても notes.md は作れる */

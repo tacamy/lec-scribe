@@ -4,9 +4,10 @@ import { type ServerConfig, usesVision } from './config.ts';
 import { run } from './exec.ts';
 import { toSrt, toTxt, toVtt, type Segment } from './format.ts';
 import { NOTES_FILE, migrateLayout, slidesSourcePath, syncSlides, workPath } from './layout.ts';
+import { applyPlacement, findBoundaries, runBoundaries } from './boundary.ts';
 import { OUTLINE_VERSION, applyCorrections, checkWithFallback, createBackend, isModelUnavailable, outline, polish, type Correction, type Outline, type PolishOutput } from './llm.ts';
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
-import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry } from './merge.ts';
+import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry, type Section } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
@@ -316,6 +317,46 @@ export class Pipeline {
     } catch (error) {
       this.log(`画像の救出に失敗（ノートはそのまま作ります）: ${error instanceof Error ? error.message : String(error)}`);
       return null;
+    }
+  }
+
+  /**
+   * 話題の境目の画像を LLM に見せて、新しい話題がどの画像から始まるかを決める（boundary.ts、§13.5）。
+   * 失敗しても時間の規則（merge.ts）のままノートを作る
+   */
+  private async placeBoundaries(
+    dir: string,
+    sections: readonly Section[],
+    polished: ReadonlyMap<string, { text: string }>,
+    topics: Outline,
+    settings: { model: string; fallbackModel: string; signal: AbortSignal },
+  ): Promise<Outline> {
+    if (!settings.model || settings.signal.aborted) return topics;
+    try {
+      const boundaries = findBoundaries(sections, polished, topics.topics);
+      if (boundaries.length === 0) return topics;
+      const run = await runBoundaries({
+        dir,
+        slidesDir: slidesSourcePath(dir),
+        boundaries,
+        settings: { codexBin: this.config.codexBin, model: settings.model, fallbackModel: settings.fallbackModel, signal: settings.signal },
+        log: this.log,
+      });
+      if (settings.signal.aborted) return topics;
+      if (run.reused) this.log('話題の境目: 前回の判定を使い回します');
+      for (const e of run.errors) this.log(`話題の境目の判定に失敗（残りは時間の規則のままノートを作ります）: ${e}`);
+      const kinds = run.placements.map((p) => {
+        const b = boundaries.find((x) => x.topic === p.topic)!;
+        return p.startAfterImage ? '本文だけ新しい話題' : b.silent.some((s) => s.id === p.startId) ? '途切れている間の画面から' : '話し始めた画面から';
+      });
+      const count = (k: string) => kinds.filter((x) => x === k).length;
+      this.log(
+        `話題の境目 (${run.model}): ${boundaries.length} か所のうち ${run.placements.length} か所を画像で判定（途切れている間の画面から ${count('途切れている間の画面から')}、話し始めた画面から ${count('話し始めた画面から')}、本文だけ新しい話題 ${count('本文だけ新しい話題')}）`,
+      );
+      return { ...topics, topics: applyPlacement(topics.topics, run.placements) };
+    } catch (error) {
+      this.log(`話題の境目の判定に失敗（時間の規則のままノートを作ります）: ${error instanceof Error ? error.message : String(error)}`);
+      return topics;
     }
   }
 
@@ -736,6 +777,14 @@ export class Pipeline {
             });
           }
           if (polished.size === 0) return await fallbackNotes(errors.join(' / ') || 'no output');
+          // 話題の境目の画像を見て、どの画像から新しい話題かを決める（§13.5）。キャッシュの話題には残さず、ノートを組む直前だけ
+          if (topics && llmSettings.kind === 'codex') {
+            // 受け皿は整えに実際に使ったモデル（整えのモデルが使えず既定に切り替えていたら、そちら）
+            topics = await this.placeBoundaries(dir, result.sections, polished, topics, { model: llmPickModel, fallbackModel: activeModel, signal: job.llm.signal });
+            if (signal.aborted) throw new Error('cancelled');
+            // ノート作成だけの中止がここで入っても、本文と話題はもうできているので、時間の規則のままノートを書く
+            if (notesStopped()) this.log('話題の境目の判定の途中で止められたので、時間の規則のままノートを作ります');
+          }
           await this.writeNotes(
             dir,
             buildNotesMarkdown({

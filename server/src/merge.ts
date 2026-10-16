@@ -426,6 +426,22 @@ export function buildLectureMarkdown(input: {
   return lines.join('\n');
 }
 
+/** 発話のない節（整えた本文も元の発話もない。画面が切り替わっただけ） */
+export function isSilentSection(section: Section, polished: ReadonlyMap<string, { text: string }>): boolean {
+  return !polished.get(section.id)?.text && !section.texts.some((t) => hasSpeechText(t));
+}
+
+/**
+ * idx の節の直前に続く発話のない節を遡り、その先頭の添字を返す（無ければ idx のまま）。
+ * stops（ほかの話題が始まる節の id）は越えない。ノートの見出しの位置（buildNotesMarkdown）と
+ * 境目の画像判定（boundary.ts）で同じ遡り方をする
+ */
+export function walkBackOverSilent(sections: readonly Section[], idx: number, polished: ReadonlyMap<string, { text: string }>, stops: ReadonlySet<string>): number {
+  let i = idx;
+  while (i > 0 && isSilentSection(sections[i - 1]!, polished) && !stops.has(sections[i - 1]!.id)) i--;
+  return i;
+}
+
 /**
  * 話題の最初の文（LLM が本文から書き写したもの）が整えた本文のどこから始まるか。本文の先頭なら 0、
  * 見つからなければ -1。from 以降で探す（同じ節で 2 つ目以降の話題は、前の話題の位置より後ろ）。
@@ -475,12 +491,22 @@ export function buildNotesMarkdown(input: {
   // Codex にも同じことを頼んでいるが（§13.5）、ここで決めれば判断がぶれず、古いキャッシュの話題にも効く。
   // 前の話題が始まる節は越えない（2026-10-15）
   const starts = new Set((input.outline?.topics ?? []).map((t) => t.startId));
-  const silent = (s: Section) => !input.polished.get(s.id)?.text && !s.texts.some((t) => hasSpeechText(t));
   const topics = (input.outline?.topics ?? []).map((t) => {
-    if (t.startText) return t;
-    let i = input.sections.findIndex((s) => s.id === t.startId);
-    while (i > 0 && silent(input.sections[i - 1]!) && !starts.has(input.sections[i - 1]!.id)) i--;
-    return i >= 0 && input.sections[i]!.id !== t.startId ? { ...t, startId: input.sections[i]!.id } : t;
+    // 画像で判定済みの話題（boundary.ts）はそのまま。
+    // 最初の文が本文の途中で見つかる話題は節の途中から始まるので動かさない。見つからない話題も動かさない
+    // （どこから始まるか本文でも分からないので、節の先頭に置いたまま）。先頭にある（Codex は startId の節の最初の文を
+    // そのまま startText に書くことが多い）か最初の文が無いなら、節の先頭から始まる話題として扱う（2026-10-15）
+    if (t.placed) return t;
+    if (t.startText) {
+      const text = input.polished.get(t.startId)?.text;
+      if (!text || topicStartIndex(text, t.startText) !== 0) return t;
+    }
+    const idx = input.sections.findIndex((s) => s.id === t.startId);
+    if (idx < 0) return t;
+    const i = walkBackOverSilent(input.sections, idx, input.polished, starts);
+    if (i === idx) return t;
+    const { startText: _dropped, ...moved } = t;
+    return { ...moved, startId: input.sections[i]!.id };
   });
   // 話題の開始 id → その節で始まる話題（本文の順）。最初の話題は先頭の節から始まる。
   // 長い節の途中で話題が変わると、1 つの節に 2 つ以上の話題が始まる（位置は startText で決める）
@@ -493,15 +519,18 @@ export function buildNotesMarkdown(input: {
     // 見出しはその文の直前に置く（2026-10-14。操作のデモでは画面の変化が説明のあとに来るので、
     // 節の先頭の画像と締めの文が次の話題に入ってしまっていた）。2 つ目以降の話題は前の話題より後ろで探し、
     // 見つからなければ節の末尾（次の節から始まる扱い。先頭に重ねて置くより読みやすい）
-    const cuts: Array<{ at: number; heading: string }> = [];
+    const cuts: Array<{ at: number; heading: string; afterImage: boolean }> = [];
     for (const topic of topicsAt.get(section.id) ?? []) {
       const last = cuts[cuts.length - 1];
       const found = topic.startText && polished ? topicStartIndex(polished, topic.startText, last ? last.at + 1 : 0) : -1;
       const at = !last ? Math.max(found, 0) : found > last.at ? found : (polished?.length ?? 0);
-      cuts.push({ at, heading: topic.heading });
+      // 画像の判定（boundary.ts）で「この節の画像は前の話題、本文から新しい話題」とされた話題は、見出しを画像の下に
+      cuts.push({ at, heading: topic.heading, afterImage: at === 0 && !!topic.startAfterImage });
     }
-    if (cuts[0]?.at === 0) lines.push(`## ${cuts[0].heading}`, '');
+    const head = cuts[0]?.at === 0 ? cuts[0] : undefined;
+    if (head && !head.afterImage) lines.push(`## ${head.heading}`, '');
     if (section.slide) lines.push(`![${section.id}](slides/${section.slide.filename})`, '');
+    if (head?.afterImage) lines.push(`## ${head.heading}`, '');
     // 発話のない節は画像だけ。整えた本文が空でも元の発話が残っているなら、文字起こしのまま載せて失わない。
     // 記号だけの文（「♪」等）と言いよどみの音だけの文（「ん」「えー」。整えると当然空になる）は発話ではないので除き、
     // 発話が 1 つもなければ注意書きも本文も出さない（2026-10-01）
