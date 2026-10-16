@@ -26,6 +26,13 @@ const FOOTAGE_MAX_STILL = 0.5;
  * 160×90 の 5% = 720 画素で、見た目にはほぼ区別がつかない（5 章で 2〜4% の組が残っていたため 2% から上げた）
  */
 const IDENTICAL_MAX_DIFF = 0.05;
+/**
+ * 画素の差が小さくても、Vision の距離がこれを超えていれば「中身が同じ」とはしない（2026-10-16）。
+ * 白地に細い線や薄い鉛筆のラフだけの画面は、ページをめくっても 160×90 では 3〜5% しか変わらない
+ * （5 章 GD II-1 のペンツールの練習ページ 15 枚が 1 枚にまとまり、8 章 GD I-3 の「進め方イメージ②→③」は 0.6%）。
+ * 同じ画面（カーソル・パネル・メニュー程度の違い）は 0.2 以下、レイアウトが同じで中身が違うスライドが 0.29 だったので、その間に置く
+ */
+const IDENTICAL_MAX_VISION = 0.25;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
 /** RGBA の並びの中の 2 画素（a の i 番目、b の j 番目）が「違う」か。pixelDiff と panResidual で同じ判定を使う */
@@ -97,7 +104,10 @@ const PAN_MAX_DY = 12;
  * ただし利用者が `--scene-vision-photo` を下げていたら、そちらを上限にする（この規則だけ勝手に広く見ないため）
  */
 const PAN_MAX_VISION = 0.35;
-/** 画素がこれ以上違う組だけ調べる。これ未満の違いは「中身が同じ」「途中の状態」の規則で先に決まる */
+/**
+ * 画素がこれ以上違う組だけ調べる。これ未満の組は平行移動として見ない（多くは「中身が同じ」「途中の状態」の規則で先に決まり、
+ * 5% 以下でも Vision が離れている組は別の画面として残す。2026-10-16）
+ */
 const PAN_MIN_DIFF = 0.1;
 /** 平行移動で説明できずに残る画素が、違っている画素のこの割合以下なら同じ画面（5 組は 0.07〜0.36。本文が違うスライドは 0.43 以上） */
 const PAN_MAX_LEFT_RATIO = 0.4;
@@ -214,8 +224,10 @@ const SCROLL_SPARSE_MIN_MATCH = 0.75;
  */
 const SCROLL_SPARSE_MIN_COVERAGE = 0.5;
 /**
- * 画素がこの割合以上違う組だけ調べる（平行移動の規則と同じ 1 割）。凹凸の少ないページ（rowScroll の sparse）はこの下限を使わない:
- * 白地のページを少し送った組は 6〜10% しか変わらず、「中身が同じ」（5% 以下）は規則 1 が先に外しているので、それ以上の下限は要らない
+ * 画素がこの割合以上違う組だけ調べる（平行移動の規則と同じ 1 割）。凹凸の少ないページ（rowScroll の sparse）はこの下限を使わず、
+ * 「中身が同じ」の線（IDENTICAL_MAX_DIFF、5%）を超える組だけ調べる: 白地のページを少し送った組は 6〜10% しか変わらない。
+ * 5% 以下の組は規則 1 の Vision の拒否線（2026-10-16）を抜けてここまで来るが、送った画面ではなく、等間隔の行が並ぶ別のページが
+ * 動いていない縦のずれで重なってしまう（2026-10-16 のレビュー）
  */
 const SCROLL_MIN_DIFF = PAN_MIN_DIFF;
 /**
@@ -905,9 +917,13 @@ export function pickShownSlides(
    * index の画像を against の画像と比べる。strongOnly なら、間違えにくいルール
    * （中身が同じ・見た目がごく近い・文字が同じ・途中の状態）だけで判断する。
    * tightOnly なら、そのうち文字を使わないもの（中身が同じ・見た目がごく近い）だけ。
-   * 同じ型のスライドは見出しやフッターの文字が共通なので、文字の規則を遠くの画像まで広げると別のスライドがまとまる
+   * 同じ型のスライドは見出しやフッターの文字が共通なので、文字の規則を遠くの画像まで広げると別のスライドがまとまる。
+   * continuing は「この画面がまだ続いているか」（sceneSeconds）を見る比較: 画素がほぼ同じなら Vision によらず続いているとみなす
+   * （規則 1 の Vision の拒否線を掛けない）。掛けると、メニューを開いただけの画像（画素 0.5%、Vision 0.33）で画面が変わったことになり、
+   * 15 秒映っていた画面が「短く映った」として preview・revisit で消えた（2026-10-16 のレビュー）。続いた時間が長くなる向きにしか
+   * 効かないので、外す画像が増えることはない
    */
-  const compare = (index: number, against: number, strongOnly: boolean, tightOnly = false): Verdict | null => {
+  const compare = (index: number, against: number, strongOnly: boolean, tightOnly = false, continuing = false): Verdict | null => {
     const slide = slides[index]!;
     const other = slides[against]!;
     const thumb = thumbs.get(slide.filename);
@@ -962,8 +978,15 @@ export function pickShownSlides(
       metrics.colorMatch = round(color);
       return color;
     };
-    // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
-    if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
+    // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）。
+    //    ただし Vision が「別の画面」と言うほど離れていれば、画素の差が小さくても同じとはしない（白地に細い線だけの画面）。
+    //    Vision が無い環境と、画面が続いているかの比較（continuing）では画素だけで決める。撮影した紙面（filmed）にも線を掛ける:
+    //    静止部分の帯で紙面と判定される画面には、動きのある Web ページも入る（11 章 GD I-2 の TOKYO TDC の別のページ 033・035 は
+    //    画素差 4.9%、Vision 0.53）。紙面に手が入った組は画素が 7〜23% 変わるので、5% 以下で Vision だけ離れる組は実データに無かった。
+    //    前の画面への戻り・preview の「同じ画面に戻ったか」には同じ線を使う: 白い題名のスライド同士（画素差 2.8%、Vision 0.31）が
+    //    「前の題名に戻った」と見なされて消えていたため。代わりに、同じ画面に戻ったのに Vision が 0.25 を超える組（同じスライドへの
+    //    5 秒の戻りで 0.29）は 2 枚載る
+    if (diff <= IDENTICAL_MAX_DIFF && (continuing || d === undefined || d <= IDENTICAL_MAX_VISION)) return { reason: 'identical', metrics };
     if (vision && d !== undefined) {
       // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ
       if (vision.tight > 0 && d <= vision.tight) return { reason: 'vision', metrics };
@@ -1005,13 +1028,13 @@ export function pickShownSlides(
     //     文字が多い（本文が SCROLL_MIN_LINES 行以上）なら、送れば文字が入れ替わるのが当たり前なので、代わりに共通する行で見る。
     //     安い順に見る: 行の並び → 見つかったずれでの列の並び（周期的なリストの別の中身を除く）→ 文字（重い）
     const fewLines = !hasText || textLines(text).length < SCROLL_MIN_LINES || textLines(otherText).length < SCROLL_MIN_LINES;
-    // 画素の差の入口は、凹凸のあるページだけ 1 割（凹凸の少ないページは 6〜10% しか変わらない。5% 以下は規則 1 が外している）。
+    // 画素の差の入口は、凹凸のあるページは 1 割、凹凸の少ないページは 5% を超える組（6〜10% しか変わらない。SCROLL_MIN_DIFF）。
     // 行を重ねる前に、安い条件（重ね方・文字・画素の差）で入口を絞る
     const rows = profile(slide.filename, thumb);
     const otherRows = profile(other.filename, otherThumb);
     const mode =
       vision && d !== undefined && vision.photo > 0 && d <= Math.min(SCROLL_MAX_VISION, vision.photo) && !(differentRealLabels && fewLines) ? scrollMode(rows, otherRows) : undefined;
-    const scrollable = mode === 'sparse' ? bothRealLabeled : mode === 'rows' && diff >= SCROLL_MIN_DIFF;
+    const scrollable = mode === 'sparse' ? bothRealLabeled && diff > IDENTICAL_MAX_DIFF : mode === 'rows' && diff >= SCROLL_MIN_DIFF;
     if (scrollable) {
       const scroll = rowScroll(rows, otherRows);
       if (scroll.dy !== undefined) {
@@ -1076,7 +1099,7 @@ export function pickShownSlides(
     for (let j = index + 1; j < slides.length; j++) {
       // フェードのコマは画面が変わったことにしない（挟まると、長い戻りが短い戻りに見えてしまう）
       if (blank.has(j)) continue;
-      const v = compare(j, index, true, true);
+      const v = compare(j, index, true, true, true);
       // サムネイルが読めない画像は「同じ」とも「違う」とも言えない。そこで測るのをやめる（載せる側に倒す）
       if (v === null) return undefined;
       if (v.reason) continue;
