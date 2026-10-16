@@ -314,6 +314,42 @@ describe('写っている文字（Vision の文字認識）', () => {
   });
 });
 
+describe('短く映ったあと別の画面を挟んで同じ画面に戻ったら、最初の方を載せない（preview、2026-10-16）', () => {
+  // A（アートボード）が 3 秒 → B（扉のスライド）→ A' （同じアートボード、ここから発話）→ C（別の画面）
+  const thumbs = new Map<string, Uint8Array>([
+    ['slide_001.png', footage(1, 60)],
+    ['slide_002.png', footage(2, 220)],
+    ['slide_003.png', footage(1, 60)], // 1 と同じ
+    ['slide_004.png', footage(4, 140)],
+  ]);
+  const at = (n: number, videoTime: number, still = 0.98): SlideEntry => ({ ...slide(n, still), videoTime });
+
+  it('A を preview として外し、A′ が代わりになる。間の B はそのまま', () => {
+    const slides = [at(1, 100), at(2, 103), at(3, 106), at(4, 200)];
+    const d = pickShownSlides(slides, thumbs, 0.65);
+    expect(d.map((x) => [x.filename.slice(6, 9), x.shown, x.reason ?? ''])).toEqual([
+      ['001', false, 'preview'],
+      ['002', true, ''],
+      ['003', true, ''],
+      ['004', true, ''],
+    ]);
+    expect(d[0]!.sameSceneAs).toBe('slide_003.png');
+    expect(d[0]!.via).toBe('slide_002.png');
+    expect(d[2]!.standsFor).toBeUndefined(); // 最後の 1 枚に譲る規則で逆転しない
+  });
+
+  it('A が長く映っていた、戻りが遅い、映像中心の画面、A がほかの代わりになっている、のどれかなら外さない', () => {
+    expect(pickShownSlides([at(1, 100), at(2, 115), at(3, 118), at(4, 200)], thumbs, 0.65)[0]!.shown).toBe(true); // 15 秒映っていた
+    expect(pickShownSlides([at(1, 100), at(2, 103), at(3, 140), at(4, 200)], thumbs, 0.65)[0]!.shown).toBe(true); // 40 秒後に戻った
+    expect(pickShownSlides([at(1, 100, 0.1), at(2, 103, 0.1), at(3, 106, 0.1), at(4, 200, 0.1)], thumbs, 0.65)[0]!.shown).toBe(true); // 映像中心
+    // A の前に A と同じ画像があって A がその代わり（最後の 1 枚）になっている
+    const withPrior = new Map(thumbs);
+    withPrior.set('slide_000.png', footage(1, 60));
+    const d = pickShownSlides([at(0, 90), at(1, 100), at(2, 103), at(3, 106), at(4, 200)], withPrior, 0.65);
+    expect(d.map((x) => x.shown)).toEqual([false, true, true, true, true]);
+  });
+});
+
 describe('同じ場面の最後の画像を載せる（既定）', () => {
   const thumbs = new Map<string, Uint8Array>([
     ['slide_001.png', footage(1, 60)],
