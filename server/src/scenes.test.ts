@@ -123,14 +123,15 @@ describe('pickShownSlides', () => {
     ]);
     const slides = [slide(1, 1), slide(2, 1), slide(3, 1)];
     const vision = (d: number) => ({ distance: () => d, tight: 0.2, photo: 0.55, text: (i: number) => ['直線を描く', '四方向の曲線', '連続した曲線'][i] });
-    // Vision が無い、または近い（カーソルやパネルの違い）なら、これまでどおり中身が同じ
+    // Vision が無い、または線（0.25）以下なら、これまでどおり中身が同じ。0.22 は規則 2（tight 0.2）には掛からないので、線そのものを見る
     expect(pickShownSlides(slides, pages, 0.65, undefined, 'first').map((x) => x.reason)).toEqual([undefined, 'identical', 'identical']);
-    expect(pickShownSlides(slides, pages, 0.65, vision(0.15), 'first').map((x) => x.reason)).toEqual([undefined, 'identical', 'identical']);
-    // 図形が 1 つ違うだけのページでも、Vision が 0.25 を超えていれば別のページとして全部載せる
-    const d = pickShownSlides(slides, pages, 0.65, vision(0.3), 'first');
+    expect(pickShownSlides(slides, pages, 0.65, vision(0.22), 'first').map((x) => x.reason)).toEqual([undefined, 'identical', 'identical']);
+    // 図形が 1 つ違うだけのページでも、Vision が 0.25 を超えていれば別のページとして全部載せる（最後の 1 枚を載せる既定の設定でも）
+    const d = pickShownSlides(slides, pages, 0.65, vision(0.26), 'first');
     expect(d.map((x) => x.shown)).toEqual([true, true, true]);
     expect(d[1]!.pixelDiff).toBeLessThanOrEqual(0.05);
-    expect(d[1]!.vision).toBe(0.3);
+    expect(d[1]!.vision).toBe(0.26);
+    expect(pickShownSlides(slides, pages, 0.65, vision(0.26)).map((x) => x.shown)).toEqual([true, true, true]);
     // 時間の規則（前の画面への短い戻り）にも同じ線が効く: 白い題名のスライド同士が「前の題名に戻った」と見なされない
     const titles = new Map([
       ['slide_001.png', sketch(0)],
@@ -141,8 +142,56 @@ describe('pickShownSlides', () => {
     const timed = [slide(1, 1), slide(2, 1), { ...slide(3, 1), videoTime: 30 }, { ...slide(4, 1), videoTime: 35 }];
     // 001 と 003 の間だけ指定の距離、ほかの組は遠い
     const between = (d13: number) => ({ distance: (a: number, b: number) => (Math.min(a, b) === 0 && Math.max(a, b) === 2 ? d13 : 0.8), tight: 0.2, photo: 0.55 });
-    expect(pickShownSlides(timed, titles, 0.65, between(0.15), 'first')[2]!.reason).toBe('revisit'); // 近ければこれまでどおり戻り
+    expect(pickShownSlides(timed, titles, 0.65, between(0.22), 'first')[2]!.reason).toBe('revisit'); // 線以下ならこれまでどおり戻り
     expect(pickShownSlides(timed, titles, 0.65, between(0.3), 'first')[2]!.shown).toBe(true);
+  });
+
+  it('メニューを開いただけの画像（画素がほぼ同じで Vision 0.33）は、画面が続いた時間を区切らない（2026-10-16 のレビュー）', () => {
+    // A(0 秒) → A2 メニューを開いた(3) → B 題名(15) → A′(25) → C(60)。A は 15 秒映っていたので preview で消さない
+    const thumbs5 = new Map([
+      ['slide_001.png', sketch(0)],
+      ['slide_002.png', sketch(1)],
+      ['slide_003.png', paper(1)],
+      ['slide_004.png', sketch(0)],
+      ['slide_005.png', paper(3)],
+    ]);
+    const at5 = (times: number[]) => times.map((t, i) => ({ ...slide(i + 1, 1), videoTime: t }));
+    const pairs = (table: Record<string, number>) => ({
+      distance: (a: number, b: number) => table[`${Math.min(a, b)}-${Math.max(a, b)}`] ?? 0.8,
+      tight: 0.2,
+      photo: 0.55,
+      text: (i: number) => ['基本図形の描画', '基本図形の描画 長方形ツール', '第2章 パスの描画', '基本図形の描画', 'パスの練習 曲線'][i],
+    });
+    const preview = pickShownSlides(at5([0, 3, 15, 25, 60]), thumbs5, 0.65, pairs({ '0-1': 0.33, '0-3': 0.05, '1-3': 0.33 }));
+    expect(preview.some((x) => x.reason === 'preview')).toBe(false);
+    expect(preview[1]!.shown).toBe(true); // 最後の 1 枚（メニューを開いた A2）が A の位置に載る
+    expect(preview[1]!.standsFor).toBe('slide_001.png');
+    // X(0) → Y(20) → X に戻る(40) → X2 メニューを開いた(43) → Z(100)。戻った X は 60 秒続くので revisit で消さない
+    const back = pickShownSlides(at5([0, 20, 40, 43, 100]), thumbs5.set('slide_002.png', paper(1)).set('slide_003.png', sketch(0)).set('slide_004.png', sketch(1)), 0.65, {
+      ...pairs({ '0-2': 0.05, '0-3': 0.33, '2-3': 0.33 }),
+      text: (i: number) => ['基本図形の描画', '第2章 パスの描画', '基本図形の描画', '基本図形の描画 長方形ツール', 'パスの練習 曲線'][i],
+    }, 'first');
+    expect(back.map((x) => x.shown)).toEqual([true, true, true, false, true]);
+    expect(back[3]!.sameSceneAs).toBe('slide_003.png');
+  });
+
+  it('画素が 5% 以下で Vision の拒否線を抜けた組は、凹凸の少ないページのスクロールとしてもまとめない（2026-10-16 のレビュー）', () => {
+    // 白地に等間隔の細い行が並ぶ別のページ（1 行の長さだけ違う。画素 0.8%）。縦に 10 画素ずらすと行がそろってしまう
+    const lined = (shortRow?: number) => {
+      const f = new Uint8Array(PIXELS * 4).fill(255);
+      for (let y = 5; y < 90; y += 10) for (let x = 20; x < (y === shortRow ? 25 : 140); x++) f.set([20, 20, 20], (y * THUMB_WIDTH + x) * 4);
+      return f;
+    };
+    const texts = ['第一の見出し\n本文の一行目ですよね\n本文の二行目ですよね', '第一の見出し\n別の段落が始まります\nさらに別の説明が続く'];
+    const d = pickShownSlides([{ ...slide(1, 1), reason: 'change' }, { ...slide(2, 1), reason: 'change' }], new Map([['slide_001.png', lined()], ['slide_002.png', lined(45)]]), 0.65, {
+      distance: () => 0.3,
+      tight: 0.2,
+      photo: 0.55,
+      text: (i: number) => texts[i],
+    }, 'first');
+    expect(d[1]!.pixelDiff).toBeLessThanOrEqual(0.05);
+    expect(d[1]!.reason).toBeUndefined();
+    expect(d[1]!.shown).toBe(true);
   });
 
   it('閾値 0 なら場面のまとめはしない。サムネイルがない画像も載せる', () => {
