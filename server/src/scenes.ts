@@ -26,6 +26,13 @@ const FOOTAGE_MAX_STILL = 0.5;
  * 160×90 の 5% = 720 画素で、見た目にはほぼ区別がつかない（5 章で 2〜4% の組が残っていたため 2% から上げた）
  */
 const IDENTICAL_MAX_DIFF = 0.05;
+/**
+ * 画素の差が小さくても、Vision の距離がこれを超えていれば「中身が同じ」とはしない（2026-10-16）。
+ * 白地に細い線や薄い鉛筆のラフだけの画面は、ページをめくっても 160×90 では 3〜5% しか変わらない
+ * （5 章 GD II-1 のペンツールの練習ページ 15 枚が 1 枚にまとまり、8 章 GD I-3 の「進め方イメージ②→③」は 0.6%）。
+ * 同じ画面（カーソル・パネル・メニュー程度の違い）は 0.2 以下、レイアウトが同じで中身が違うスライドが 0.29 だったので、その間に置く
+ */
+const IDENTICAL_MAX_VISION = 0.25;
 /** 画素を「違う」とみなすチャンネル差 */
 const PIXEL_DIFF = 24;
 /** RGBA の並びの中の 2 画素（a の i 番目、b の j 番目）が「違う」か。pixelDiff と panResidual で同じ判定を使う */
@@ -962,8 +969,12 @@ export function pickShownSlides(
       metrics.colorMatch = round(color);
       return color;
     };
-    // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）
-    if (diff <= IDENTICAL_MAX_DIFF) return { reason: 'identical', metrics };
+    // 1. 中身が同じ画像は、スライドでも映像でも外す（拡張の取りこぼしの受け皿）。
+    //    ただし Vision が「別の画面」と言うほど離れていれば、画素の差が小さくても同じとはしない（白地に細い線だけの画面）。
+    //    Vision が無い環境では画素だけで決める。時間の規則（続いた時間・短い戻り・preview）の比較にも同じ線を使う: 白い題名の
+    //    スライド同士（画素差 2.8%、Vision 0.31）が「前の題名に戻った」と見なされて消えていたため。代わりに、同じ画面に戻ったのに
+    //    Vision が 0.25 を超える組（同じスライドへの 5 秒の戻りで 0.29、空のキャンバスにメニューを開いただけで 0.33〜0.35）は 2 枚載る
+    if (diff <= IDENTICAL_MAX_DIFF && (d === undefined || d <= IDENTICAL_MAX_VISION)) return { reason: 'identical', metrics };
     if (vision && d !== undefined) {
       // 2. 見た目の距離（Vision）。メニューを開いた・少しスクロールした程度ならどんな画面でも同じ
       if (vision.tight > 0 && d <= vision.tight) return { reason: 'vision', metrics };

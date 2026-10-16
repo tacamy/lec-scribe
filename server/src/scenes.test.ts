@@ -55,6 +55,19 @@ function paper(seed: number): Uint8Array {
   return f;
 }
 
+/**
+ * 白地に細い横線 1 本と小さな図形が marks 個だけの画面（ペンツールの練習ページ）。図形が 1 つ増えても画素の 0.5% しか
+ * 変わらない。図形は横線をずらしても作れない位置に置く（パン・スクロールの規則に掛からない）
+ */
+function sketch(marks: number): Uint8Array {
+  const f = new Uint8Array(PIXELS * 4).fill(255);
+  for (let x = 10; x < 150; x++) f.set([20, 20, 20], (20 * THUMB_WIDTH + x) * 4);
+  for (let n = 0; n < marks; n++) {
+    for (let y = 45 + n * 15; y < 53 + n * 15; y++) for (let x = 30 + n * 50; x < 38 + n * 50; x++) f.set([20, 20, 20], (y * THUMB_WIDTH + x) * 4);
+  }
+  return f;
+}
+
 const slide = (n: number, stillFraction?: number): SlideEntry => ({
   filename: `slide_${String(n).padStart(3, '0')}.png`,
   seq: n,
@@ -100,6 +113,36 @@ describe('pickShownSlides', () => {
     const d = pickShownSlides(slides, same, 0.65, undefined, 'first');
     expect(d.map((x) => x.shown)).toEqual([true, true, false]);
     expect(d[2]!.reason).toBe('identical');
+  });
+
+  it('画素の差が小さくても、Vision が別の画面と言うほど離れていれば中身が同じとはしない（白地に細い線だけのページ、2026-10-16）', () => {
+    const pages = new Map([
+      ['slide_001.png', sketch(0)],
+      ['slide_002.png', sketch(1)],
+      ['slide_003.png', sketch(2)],
+    ]);
+    const slides = [slide(1, 1), slide(2, 1), slide(3, 1)];
+    const vision = (d: number) => ({ distance: () => d, tight: 0.2, photo: 0.55, text: (i: number) => ['直線を描く', '四方向の曲線', '連続した曲線'][i] });
+    // Vision が無い、または近い（カーソルやパネルの違い）なら、これまでどおり中身が同じ
+    expect(pickShownSlides(slides, pages, 0.65, undefined, 'first').map((x) => x.reason)).toEqual([undefined, 'identical', 'identical']);
+    expect(pickShownSlides(slides, pages, 0.65, vision(0.15), 'first').map((x) => x.reason)).toEqual([undefined, 'identical', 'identical']);
+    // 図形が 1 つ違うだけのページでも、Vision が 0.25 を超えていれば別のページとして全部載せる
+    const d = pickShownSlides(slides, pages, 0.65, vision(0.3), 'first');
+    expect(d.map((x) => x.shown)).toEqual([true, true, true]);
+    expect(d[1]!.pixelDiff).toBeLessThanOrEqual(0.05);
+    expect(d[1]!.vision).toBe(0.3);
+    // 時間の規則（前の画面への短い戻り）にも同じ線が効く: 白い題名のスライド同士が「前の題名に戻った」と見なされない
+    const titles = new Map([
+      ['slide_001.png', sketch(0)],
+      ['slide_002.png', paper(1)],
+      ['slide_003.png', sketch(1)],
+      ['slide_004.png', footage(3)],
+    ]);
+    const timed = [slide(1, 1), slide(2, 1), { ...slide(3, 1), videoTime: 30 }, { ...slide(4, 1), videoTime: 35 }];
+    // 001 と 003 の間だけ指定の距離、ほかの組は遠い
+    const between = (d13: number) => ({ distance: (a: number, b: number) => (Math.min(a, b) === 0 && Math.max(a, b) === 2 ? d13 : 0.8), tight: 0.2, photo: 0.55 });
+    expect(pickShownSlides(timed, titles, 0.65, between(0.15), 'first')[2]!.reason).toBe('revisit'); // 近ければこれまでどおり戻り
+    expect(pickShownSlides(timed, titles, 0.65, between(0.3), 'first')[2]!.shown).toBe(true);
   });
 
   it('閾値 0 なら場面のまとめはしない。サムネイルがない画像も載せる', () => {
