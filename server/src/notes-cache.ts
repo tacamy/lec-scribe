@@ -146,7 +146,7 @@ export function deriveFromCache(
       }
       return [{ ...t, startId, ...(startText ? { startText } : {}) }];
     });
-    outline = { ...(cache.outline.title ? { title: cache.outline.title } : {}), overview: cache.outline.overview, topics };
+    outline = { overview: cache.outline.overview, topics };
   }
   return { polished, ...(outline ? { outline } : {}), unmatched };
 }

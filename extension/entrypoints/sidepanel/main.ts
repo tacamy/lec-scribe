@@ -1,10 +1,10 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { authHeaders, loadConfig, serverEnabled } from '../../src/config';
-import { ForeignServerError, NAME_SERVER_API, fetchHealth, outdatedMessage, serverOutdated } from '../../src/health';
+import { ForeignServerError, NAME_SERVER_API, ServerReplyError, fetchHealth, outdatedMessage, saveSessionName, serverOutdated } from '../../src/health';
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
-import { listSessions, sessionName, setNotesProblem, setServerName, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
+import { listSessions, sessionName, setNotesProblem, setOutputDir, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
 import {
   INITIAL_STATE,
@@ -525,65 +525,85 @@ const confirmOk = $<HTMLButtonElement>('confirmOk');
 $<HTMLButtonElement>('confirmCancel').addEventListener('click', () => confirmDialog.close(''));
 
 /**
- * 名前を変えるダイアログ（§14、2026-10-18）。1 つのページに動画がいくつもあると、ページの題名だけでは一覧も
- * ~/LecScribe のフォルダも全部同じ名前になるので、利用者が付け直せるようにする
+ * 名前を変えている行（§14、2026-10-18）。一覧の見出しをクリックすると入力欄になり、Enter かほかを押すと保存、Esc で取り消す。
+ * 一覧は状態が変わると描き直すので、入力中の行と文字を覚えておき、描き直しても入力欄のまま残す
  */
-const nameDialog = $<HTMLDialogElement>('nameDialog');
-const nameInput = $<HTMLInputElement>('nameInput');
-$<HTMLButtonElement>('nameCancel').addEventListener('click', () => nameDialog.close(''));
+let editing: { sessionId: string; value: string } | null = null;
 
-/** 名前を聞く。保存なら入力（前後の空白を除く）、Esc やキャンセルなら null */
-function askName(currentName: string): Promise<string | null> {
-  nameInput.value = currentName;
-  return new Promise((resolve) => {
-    const onClose = () => {
-      nameDialog.removeEventListener('close', onClose);
-      resolve(nameDialog.returnValue === 'ok' ? nameInput.value.trim() : null);
-    };
-    nameDialog.returnValue = '';
-    nameDialog.addEventListener('close', onClose);
-    nameDialog.showModal();
-    nameInput.select();
-  });
-}
-
-/** 行の「名前を変える」。処理中・送信待ちの行には出さない（サーバーもフォルダを付け替えない） */
-function renameButton(session: StoredSession, title: string, missing: boolean): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = '名前を変える';
-  b.title = '一覧と~/LecScribeのフォルダ名、ノートの見出しの名前を変える';
-  b.addEventListener('click', () => {
-    void askName(title).then((name) => {
-      if (name === null || name === title) return;
-      void renameSession(session, name, missing).catch((e: unknown) => showMessage(`名前を変えられませんでした: ${toErrorInfo(e).message}`));
-    });
-  });
-  return b;
+/** 見出しを入力欄にする */
+function startEditing(sessionId: string, title: string, nameEl: HTMLElement, onSave: (value: string) => void) {
+  editing = { sessionId, value: title };
+  hideSessionTip(false);
+  const input = titleEditor(title, onSave);
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 /**
- * 名前を変える。サーバーにフォルダがあれば（処理済み・失敗のあと）サーバーで先に変え（フォルダ名とノートの見出し）、
- * 通ってから録音の側（session.json の name）を書く。まだ送っていない録音は録音の側だけ変え、送るときにサーバーへ渡る。
- * 空にすると名前を外し、ページの題名（同じ題名の講義がほかにもあれば、サーバーが自動で付けた名前）に戻す
+ * 名前の入力欄。保存は Enter とフォーカスが外れたとき（ほかの所を押した）。日本語の変換を確定する Enter では保存しない。
+ * 描き直しで入力欄が外されたとき（isConnected でない）のフォーカス外れは保存しない（描き直した側に入力欄があるため）
+ */
+function titleEditor(title: string, onSave: (value: string) => void): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'sessionTitleInput';
+  input.maxLength = 100;
+  input.value = editing?.value ?? title;
+  input.setAttribute('aria-label', '名前');
+  input.title = 'Enterで保存、Escで取り消し。空にして保存すると元の名前（ページの題名）に戻ります';
+  let finished = false;
+  const finish = (save: boolean) => {
+    if (finished) return;
+    finished = true;
+    editing = null;
+    const value = input.value.trim();
+    if (save && value !== title) {
+      input.disabled = true;
+      onSave(value);
+    } else {
+      void renderSessions();
+    }
+  };
+  input.addEventListener('input', () => {
+    if (editing) editing.value = input.value;
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => {
+    if (input.isConnected) finish(true);
+  });
+  return input;
+}
+
+/**
+ * 名前を変える。サーバーにフォルダがあれば（送ったあと）サーバーで先に変え（フォルダ名とノートの見出し）、通ってから
+ * 録音の側（session.json の name）を書く。まだ送っていない録音、フォルダが無い（Finder で消した）講義は録音の側だけ変え、
+ * 送るときにサーバーへ渡る。空にすると名前を外し、ページの題名に戻す
  */
 async function renameSession(session: StoredSession, name: string, missing: boolean) {
   const value = name === '' ? undefined : name;
   const sent = session.status?.uploadedAt !== undefined || session.status?.stage === 'done';
   if (sent && !missing && serverTarget.token) {
-    const health = await fetchHealth(serverTarget, { timeoutMs: 3000 }).catch(() => null);
-    if (!health) throw new Error('サーバーが起動していません');
-    if ((health.api ?? 0) < NAME_SERVER_API) throw new Error('Mac側のサーバーが古いので、名前を変えられません。サーバーを更新してください');
-    const res = await fetch(`http://127.0.0.1:${serverTarget.port}/sessions/${session.sessionId}/name`, {
-      method: 'POST',
-      headers: { ...authHeaders(serverTarget), 'content-type': 'application/json' },
-      body: JSON.stringify({ name: value ?? null }),
-      signal: AbortSignal.timeout(10_000),
+    const health = await fetchHealth(serverTarget).catch((e: unknown) => {
+      throw e instanceof ForeignServerError ? e : new Error('サーバーが起動していません');
     });
-    const body = (await res.json().catch(() => undefined)) as { name?: string | null; outputDir?: string; error?: { message?: string } } | undefined;
-    // フォルダが無い（Finder で消した）なら録音の側だけ変える
-    if (!res.ok && res.status !== 404) throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
-    if (res.ok) await setServerName(session.sessionId, body?.name ?? undefined, body?.outputDir);
+    if ((health.api ?? 0) < NAME_SERVER_API) throw new Error('Mac側のサーバーが古いので、名前を変えられません。サーバーを更新してください');
+    try {
+      const saved = await saveSessionName(serverTarget, session.sessionId, value ?? null);
+      if (saved.outputDir) await setOutputDir(session.sessionId, saved.outputDir);
+    } catch (e) {
+      // フォルダが無ければ録音の側だけ変える（送り直すとその名前でフォルダができる）
+      if (!(e instanceof ServerReplyError && e.status === 404)) throw e;
+    }
   }
   await setSessionName(session.sessionId, value);
   await renderSessions();
@@ -625,6 +645,12 @@ async function renderSessions() {
   // 描き直しで入れ替わった行まで「開いた瞬間」の動きをしないように、印を外してから入れ替える
   sessionList.classList.remove('reveal');
   sessionList.replaceChildren(...items);
+  // 名前を変えている途中なら、描き直した入力欄に戻る（カーソルは末尾）
+  const editor = sessionList.querySelector<HTMLInputElement>('input.sessionTitleInput:not(:disabled)');
+  if (editor) {
+    editor.focus();
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+  }
   renderMoreToggle();
   hiddenToggle.hidden = hiddenCount === 0;
   hiddenToggle.textContent = showHidden ? `非表示のセッションを隠す（${hiddenCount}）` : `非表示のセッションを表示（${hiddenCount}）`;
@@ -679,12 +705,6 @@ async function checkOutputs(sessions: readonly StoredSession[]) {
         const body = (await res.json().catch(() => undefined)) as ServerStatus | undefined;
         const inFlight = current.processing?.sessionId === s.sessionId || (current.pendingUploads?.includes(s.sessionId) ?? false);
         if (body?.stage !== 'done' || inFlight) return;
-        // 講義の名前とフォルダ（§14）。同じページの題名の講義がほかにも処理されると、サーバーがこの講義にも名前を付けて
-        // フォルダを付け替えることがある。名前を返さない古いサーバー（api 6 より前）なら触らない
-        if (body.name && (body.name !== s.status?.name || (body.outputDir && body.outputDir !== s.status?.outputDir))) {
-          await setServerName(s.sessionId, body.name, body.outputDir);
-          corrected = true;
-        }
         const problem = notesProblemOf(body.result);
         const error = problem ? body.result?.notesError : undefined;
         if (problem === s.status?.notesProblem && error === s.status?.notesError) return;
@@ -704,11 +724,33 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   li.dataset['sessionId'] = session.sessionId;
   // 1 行目は動画ページのタイトル（古い録音で無ければ日時）、2 行目に日時・長さ・サイズ・枚数
   const title = sessionName(session) || formatSessionId(session.sessionId);
+  const done = session.status?.stage === 'done';
+  const missing = done && outputMissing.get(session.sessionId) === true;
+  const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
   const main = document.createElement('div');
   main.className = 'sessionMain';
   const name = document.createElement('span');
   name.className = 'sessionTitle';
   name.textContent = title;
+  // 見出しをクリックすると名前を変えられる（§14）。処理中・送信待ちの行は変えない（サーバーもフォルダを付け替えない）
+  const save = (value: string) => {
+    void renameSession(session, value, missing).catch((e: unknown) => {
+      showMessage(`名前を変えられませんでした: ${toErrorInfo(e).message}`);
+      void renderSessions();
+    });
+  };
+  if (!inFlight) {
+    name.classList.add('editable');
+    name.tabIndex = 0;
+    name.setAttribute('role', 'button');
+    name.setAttribute('aria-label', `${title}（押すと名前を変えられます）`);
+    name.addEventListener('click', () => startEditing(session.sessionId, title, name, save));
+    name.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== 'F2') return;
+      e.preventDefault();
+      startEditing(session.sessionId, title, name, save);
+    });
+  }
   const parts = [formatSessionId(session.sessionId), formatBytes(session.audioBytes), `${session.slideCount} 枚`];
   if (session.status?.durationMs !== undefined) parts.splice(1, 0, formatElapsed(session.status.durationMs));
   const metaText = parts.join(' · ');
@@ -726,14 +768,12 @@ function sessionItem(session: StoredSession): HTMLLIElement {
     if (truncated()) showSessionTip(name, li, title);
   });
   li.addEventListener('focusout', () => hideSessionTip());
-  main.append(name);
+  // 名前を変えている途中の行は、描き直しても入力欄のまま
+  main.append(editing?.sessionId === session.sessionId && !inFlight ? titleEditor(title, save) : name);
 
   const btns = document.createElement('div');
   btns.className = 'sessionBtns';
-  const done = session.status?.stage === 'done';
   const hidden = session.status?.hidden === true;
-  const missing = done && outputMissing.get(session.sessionId) === true;
-  const inFlight = current.processing?.sessionId === session.sessionId || (current.pendingUploads?.includes(session.sessionId) ?? false);
   li.classList.toggle('pinned', inFlight);
   const button = (label: string, className = '') => {
     const b = document.createElement('button');
@@ -797,9 +837,9 @@ function sessionItem(session: StoredSession): HTMLLIElement {
           .catch((e: unknown) => showMessage(`表示を切り替えられませんでした: ${toErrorInfo(e).message}`))
           .then(() => renderSessions());
       });
-      btns.append(openFolderBtn, uploadBtn, renameButton(session, title, missing), hideBtn, removeBtn);
+      btns.append(openFolderBtn, uploadBtn, hideBtn, removeBtn);
     } else {
-      btns.append(uploadBtn, renameButton(session, title, missing), removeBtn);
+      btns.append(uploadBtn, removeBtn);
     }
     if (missing) btns.append(tag('データなし', '~/LecScribe にフォルダがありません（Finder で消した？）'));
     if (hidden) btns.append(tag('非表示'));

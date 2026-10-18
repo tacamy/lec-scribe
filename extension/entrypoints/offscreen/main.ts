@@ -329,8 +329,6 @@ function startPolling(
         outputDir: status.outputDir ?? outputDir,
         notesProblem,
         notesError: notesProblem ? status.result?.notesError : undefined,
-        // 講義の名前（§14）。同じページの題名の講義がほかにもあると、サーバーが動画の題名を足した名前を付ける
-        ...(status.name ? { name: status.name } : {}),
       });
       report({ stage: 'done', outputDir: status.outputDir ?? outputDir });
     } else if (status.stage === 'error' || status.stage === 'cancelled') {

@@ -99,6 +99,16 @@ export class ForeignServerError extends Error {
  * サーバーの API を呼ぶ共通形: LecScribe の応答か確かめ、失敗はサーバーの日本語メッセージ（無ければ HTTP の番号）で投げる。
  * fetchHealth / fetchLlmSettings / saveLlmSettings で同じ定型を繰り返さないため（2026-10-01 のレビュー）
  */
+/** サーバーが LecScribe として断った（404 など）。status で場合分けできるように番号を持つ */
+export class ServerReplyError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ServerReplyError';
+    this.status = status;
+  }
+}
+
 async function requestJson(
   server: Pick<Config['server'], 'port' | 'token'>,
   path: string,
@@ -116,8 +126,21 @@ async function requestJson(
   });
   const body: unknown = await res.json().catch(() => undefined);
   if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+  if (!res.ok || !body.ok) throw new ServerReplyError(body.error?.message ?? `HTTP ${res.status}`, res.status);
   return body as Record<string, unknown>;
+}
+
+/**
+ * 講義の名前を変える（POST /sessions/:id/name、api 6。§14）。null で名前を外してページの題名に戻す。
+ * サーバーのフォルダ名とノートの見出しも変わり、付け替えた先のフォルダが返る。フォルダが無ければ 404 の ServerReplyError
+ */
+export async function saveSessionName(
+  server: Pick<Config['server'], 'port' | 'token'>,
+  sessionId: string,
+  name: string | null,
+): Promise<{ outputDir?: string }> {
+  const body = await requestJson(server, `/sessions/${encodeURIComponent(sessionId)}/name`, { method: 'POST', json: { name }, timeoutMs: 10_000 });
+  return typeof body['outputDir'] === 'string' ? { outputDir: body['outputDir'] } : {};
 }
 
 export async function fetchHealth(

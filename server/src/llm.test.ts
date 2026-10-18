@@ -16,8 +16,6 @@ import {
   outline,
   parseCodexDefaults,
   parseCorrections,
-  OUTLINE_SCHEMA,
-  OUTLINE_TITLE_MAX_CHARS,
   parseOutline,
   parseResponse,
   polish,
@@ -130,20 +128,6 @@ describe('outline', () => {
       ],
     });
     expect(parseOutline(same, parts.map((p) => p.id)).topics.map((t) => t.heading)).toEqual(['a', 'b', 'c']);
-  });
-
-  it('動画の題名（title）を読む。かぎ括弧と改行は落とし、空や長すぎるものは持たない（§14、2026-10-18）', () => {
-    const ids = parts.map((p) => p.id);
-    const withTitle = (title: unknown) => JSON.stringify({ title, overview: ['a'], topics: [{ heading: 'a', summary: [], startId: 'intro' }] });
-    expect(parseOutline(withTitle(' デザインの\nプロセス '), ids).title).toBe('デザインの プロセス');
-    expect(parseOutline(withTitle('「上達するために大事なこと」'), ids).title).toBe('上達するために大事なこと');
-    expect(parseOutline(withTitle(''), ids)).not.toHaveProperty('title');
-    expect(parseOutline(withTitle('あ'.repeat(OUTLINE_TITLE_MAX_CHARS + 1)), ids)).not.toHaveProperty('title');
-    expect(parseOutline(withTitle(3), ids)).not.toHaveProperty('title');
-    expect(parseOutline(JSON.stringify({ overview: ['a'], topics: [] }), ids)).not.toHaveProperty('title');
-    // 題名を頼んでいる（スキーマでも必須）
-    expect(buildOutlinePrompt(parts)).toContain('title: この動画の題名');
-    expect((OUTLINE_SCHEMA as { required: string[] }).required).toContain('title');
   });
 
   it('reports a failure instead of throwing', async () => {
