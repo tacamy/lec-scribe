@@ -1,14 +1,14 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import type { ServerConfig } from './config.ts';
 import { resolveBin, run } from './exec.ts';
 import { visionStatus } from './vision.ts';
-import { slugify } from './format.ts';
 import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayoutAndSync, workPath } from './layout.ts';
 import { Pipeline, readPipelineStatus, snapshotDone, writeStatus, type PipelineStatus } from './pipeline.ts';
+import { NAME_MAX_CHARS, applyName, cleanName, displayName, folderNameFor, readSessionInfo, writeSessionInfo } from './naming.ts';
 import { applyLlmOverrides, isValidModelName, readLlmOverrides, writeLlmOverrides, type LlmOverrides } from './settings.ts';
 import { isAuthorized } from './token.ts';
 import { addTrusted, askPermission, extensionIdFromOrigin, pairMessage, removeTrusted, sanitizeName, trustedByToken, type Trusted } from './pairing.ts';
@@ -26,11 +26,14 @@ export const VERSION = '0.1.0';
  *      POST /unpair（接続を解除）。古いサーバーでも拡張は自分の保存分を消せば済むので、最低の版は 1 のまま
  *   4: 2026-09-20。cancel の finish（ノート作成だけを止めて完了にする）と、status の result.notesCancelled。
  *      古いサーバーは finish を知らず、ただの中止として扱う（録音は拡張に残るので、送り直せる）。最低の版は 1 のまま
+ *   5: 2026-10-01。GET/POST /settings（ノート作成のモデル）
+ *   6: 2026-10-18。講義の名前（§14）: POST /sessions の name、POST /sessions/:id/name、status の name と実際の outputDir。
+ *      拡張は名前を変える前に版を確かめ、古ければ「サーバーを更新して」と出す。最低の版は 1 のまま
  */
-export const API_VERSION = 5;
+export const API_VERSION = 6;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
-type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; config?: unknown };
+type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; name?: unknown; config?: unknown };
 
 const SESSION_ID = /^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$|^[a-z0-9][a-z0-9-]{3,63}$/;
 /** PUT /sessions/:id/files/<name> で受け付ける作業ファイル。画像は slides/<SLIDE_FILE> */
@@ -278,16 +281,26 @@ export function createApp(
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'sessionId が不正です。' } });
         return;
       }
+      // 利用者が付けた名前（§14）は拡張の録音の側が正本。送られてこなければ外す（一覧で名前を外した）
+      const name = cleanName(meta.name ?? null);
+      const { name: _sent, ...rest } = meta;
       let dir = await findSessionDir(meta.sessionId);
+      // 自動で付けた名前（同じページの題名の講義を区別する）はサーバーだけが持つので、送り直しでも残す
+      const previous = dir ? await readSessionInfo(dir) : undefined;
+      const info = {
+        ...rest,
+        ...(typeof name === 'string' ? { name } : {}),
+        ...(typeof previous?.autoName === 'string' ? { autoName: previous.autoName } : {}),
+        receivedAt: new Date().toISOString(),
+      };
       if (!dir) {
-        const slug = slugify(meta.title);
-        // Finder で並べたときにタイトルで探せるよう、タイトルを先に、ID を後ろに付ける
-        dir = path.join(config.outDir, slug ? `${slug}_${meta.sessionId}` : meta.sessionId);
+        // Finder で並べたときに名前で探せるよう、名前を先に、ID を後ろに付ける
+        dir = path.join(config.outDir, folderNameFor(meta.sessionId, displayName(info)));
         dirCache.set(meta.sessionId, dir);
       }
       await ensureLayout(dir);
       await migrateQuietly(dir);
-      await writeFile(workPath(dir, 'session.json'), JSON.stringify({ ...meta, receivedAt: new Date().toISOString() }, null, 2));
+      await writeSessionInfo(dir, info);
       log(`session ${meta.sessionId} → ${dir}`);
       sendJson(res, 201, { ok: true, sessionId: meta.sessionId, outputDir: dir });
       return;
@@ -406,10 +419,39 @@ export function createApp(
       return;
     }
 
-    // GET /sessions/:id/status
+    // GET /sessions/:id/status。outputDir は今のフォルダ（名前を変えると pipeline.json の記録より新しい）、name は講義の名前（§14）
     if (req.method === 'GET' && parts[2] === 'status' && parts.length === 3) {
       const status = (await readPipelineStatus(dir)) ?? { stage: 'uploaded', outputDir: dir, updatedAt: new Date().toISOString() };
-      sendJson(res, 200, { ok: true, ...status });
+      const name = displayName(await readSessionInfo(dir));
+      sendJson(res, 200, { ok: true, ...status, outputDir: dir, ...(name ? { name } : {}) });
+      return;
+    }
+
+    // POST /sessions/:id/name { name: string | null } — 講義の名前を変える（§14）。null・空文字なら外して、自動の名前か
+    // ページの題名に戻す。notes.md・lecture.md の見出しとフォルダ名も変える。処理中は変えない（書き込み先がずれる）
+    if (req.method === 'POST' && parts[2] === 'name' && parts.length === 3) {
+      const body = ((await readJsonBody(req)) ?? {}) as { name?: unknown };
+      const name = cleanName(body.name ?? null);
+      if (name === undefined) {
+        sendJson(res, 400, { ok: false, error: { code: 'BAD_NAME', message: `名前は ${NAME_MAX_CHARS} 文字以内で、改行を含めずに付けてください。` } });
+        return;
+      }
+      if (pipeline.isRunning(dir)) {
+        sendJson(res, 409, { ok: false, error: { code: 'BUSY', message: '文字起こし中は名前を変えられません。終わってから変えてください。' } });
+        return;
+      }
+      const { name: _old, ...rest } = (await readSessionInfo(dir)) ?? { sessionId };
+      const next = { ...rest, ...(name ? { name } : {}) };
+      await writeSessionInfo(dir, next);
+      const display = displayName(next);
+      const moved = await applyName(dir, sessionId, display);
+      if (moved !== dir) {
+        dirCache.set(sessionId, moved);
+        const status = await readPipelineStatus(moved);
+        if (status) await writeStatus(moved, { ...status, outputDir: moved });
+        log(`名前を変えました: ${path.basename(dir)} → ${path.basename(moved)}`);
+      }
+      sendJson(res, 200, { ok: true, name: display ?? null, outputDir: moved });
       return;
     }
 

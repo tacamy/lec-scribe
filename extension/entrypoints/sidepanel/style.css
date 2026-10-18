@@ -115,6 +115,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .confirmBtns { display: flex; justify-content: flex-end; gap: 8px; }
 .confirmBtns button { padding: 6px 12px; font-size: 13px; font-weight: 500; background: transparent; border-color: var(--border); color: var(--fg); }
 .confirmBtns button.danger { background: var(--danger); border-color: transparent; color: #fff; }
+.confirmBtns button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+/* 名前を変えるダイアログ（§14） */
+.nameLabel { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+#nameInput { box-sizing: border-box; width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+#nameInput:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.confirm .nameHint { margin: 8px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .sessions .link { justify-self: start; margin-top: 6px; padding: 2px 0; background: none; border: 0; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; }
 .sessionNote { color: var(--warn); font-size: 12px; line-height: 1.5; }
 .tag { display: inline-flex; align-items: center; font-size: 11px; line-height: 1; padding: 5px 7px; border-radius: 4px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }

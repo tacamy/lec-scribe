@@ -62,6 +62,11 @@ export type SessionStatus = {
   notesProblem?: 'failed' | 'partial' | 'stopped';
   /** 整えられなかった理由（サーバーが返した文）。一覧の注意書きのツールチップに出す */
   notesError?: string;
+  /**
+   * サーバーが決めた講義の名前（§14。利用者が付けた名前、自動で付けた名前、ページの題名の順）。同じページの題名の講義が
+   * ほかにもあるとき、サーバーは動画の題名を足した名前を自動で付けるので、一覧はこれを出す
+   */
+  name?: string;
 };
 
 export type StoredSession = {
@@ -134,6 +139,32 @@ export async function setNotesProblem(sessionId: string, problem: SessionStatus[
   const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
   const { notesProblem: _oldProblem, notesError: _oldError, ...rest } = status;
   await writeJson(dir, STATUS_FILE, { ...rest, ...(problem ? { notesProblem: problem, ...(error ? { notesError: error } : {}) } : {}) });
+}
+
+/** 利用者が付けた名前（session.json の name）を書く。undefined なら外す（§14） */
+export async function setSessionName(sessionId: string, name: string | undefined): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const meta = await readJson<SessionMeta>(dir, SESSION_FILE);
+  if (!meta) return;
+  const { name: _old, ...rest } = meta;
+  await writeJson(dir, SESSION_FILE, { ...rest, ...(name ? { name } : {}) });
+}
+
+/** サーバーが返した講義の名前と今のフォルダ（status.json の name / outputDir）を書く（§14） */
+export async function setServerName(sessionId: string, name: string | undefined, outputDir?: string): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
+  const { name: _old, ...rest } = status;
+  await writeJson(dir, STATUS_FILE, { ...rest, ...(name ? { name } : {}), ...(outputDir ? { outputDir } : {}) });
+}
+
+/** 一覧に出す名前。利用者が付けた名前、サーバーが決めた名前、ページの題名の順（§14） */
+export function sessionName(session: Pick<StoredSession, 'meta' | 'status'>): string | undefined {
+  for (const v of [session.meta?.name, session.status?.name, session.meta?.title]) {
+    const s = v?.trim();
+    if (s) return s;
+  }
+  return undefined;
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

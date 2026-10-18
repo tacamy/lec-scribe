@@ -19,6 +19,8 @@ export type ServerStatus = {
    * notes が true でも notesError があれば、一部の節だけ文字起こしのまま（§13.5）
    */
   result?: { segments: number; durationSec: number; hasTimeline: boolean; notes?: boolean; notesError?: string; notesCancelled?: boolean };
+  /** 講義の名前（api 6 から。§14）。利用者が付けた名前、自動で付けた名前、ページの題名の順 */
+  name?: string;
 };
 
 /** Written to session.json when a capture starts. */
@@ -27,6 +29,11 @@ export type SessionMeta = {
   title?: string;
   url?: string;
   startedAt: string;
+  /**
+   * 利用者が一覧の「名前を変える」で付けた名前（§14、2026-10-18）。録音の側が正本で、送るときにサーバーへ渡す。
+   * 1 つのページに動画がいくつもあると、ページの題名（title）だけでは全部同じ名前になるため
+   */
+  name?: string;
 };
 
 /** Start 前に走らせる probe の要約（SPEC §6.3 手順 3） */

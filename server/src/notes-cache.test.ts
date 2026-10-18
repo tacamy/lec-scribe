@@ -128,7 +128,9 @@ describe('deriveFromCache（節の区切りだけ変わったときの組み替�
     expect(d.outline?.topics[0]?.startText).toBeUndefined(); // 節の先頭のままの話題には付けない
     // 既に startText があればそのまま
     const withText = { ...cache, outline: { ...cache.outline!, topics: cache.outline!.topics.map((t) => (t.startId === 'slide_002' ? { ...t, startText: '二枚目。' } : t)) } };
-    expect(deriveFromCache(withText, inputs).outline?.topics[1]?.startText).toBe('二枚目。');
+    expect(deriveFromCache(withText, inputs).outline?.topics[1]?.startText).toBe('二枚目。');    // 動画の題名（§14）も引き継ぐ
+    expect(d.outline).not.toHaveProperty('title');
+    expect(deriveFromCache({ ...cache, outline: { ...cache.outline!, title: 'デザインのプロセス' } }, inputs).outline?.title).toBe('デザインのプロセス');
   });
 
   it('発話のない節から始まっていた話題が前の節とつながったら、その節以降の最初の本文の文を startText にする', () => {

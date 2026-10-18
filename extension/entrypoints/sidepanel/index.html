@@ -98,6 +98,18 @@
         </div>
       </form>
     </dialog>
+    <!-- 講義の名前を変える（§14）。prompt() もサイドパネルでは出ないことがあるので HTML のダイアログにする -->
+    <dialog class="confirm" id="nameDialog">
+      <form method="dialog">
+        <label class="nameLabel" for="nameInput">名前を変える</label>
+        <input type="text" id="nameInput" maxlength="100" autocomplete="off" spellcheck="false" />
+        <p class="nameHint">~/LecScribeのフォルダ名とノートの見出しも変わります。空にすると、元の名前（ページの題名）に戻ります。</p>
+        <div class="confirmBtns">
+          <button type="button" id="nameCancel">キャンセル</button>
+          <button type="submit" class="primary" id="nameOk" value="ok">保存</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

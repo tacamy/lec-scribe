@@ -583,6 +583,24 @@ try {
     '2099-01-01 00:00:01',
     { timeout: 10_000 },
   );
+  // 名前を変える（§14）: 行の「名前を変える」→ ダイアログで保存 → サーバーのフォルダ名とノートの見出し、一覧の名前が変わる
+  const frameRow = `#sessionList li[data-session-id="${frameSession}"]`;
+  await panel.locator(`${frameRow} button`, { hasText: '名前を変える' }).click();
+  assert.equal(await panel.inputValue('#nameInput'), 'smoke frames', 'the dialog starts from the current name');
+  await panel.fill('#nameInput', 'スモーク 動画 1');
+  await panel.click('#nameOk');
+  await panel.waitForFunction((sel) => document.querySelector(`${sel} .sessionTitle`)?.textContent === 'スモーク 動画 1', frameRow, { timeout: 10_000 });
+  const renamedDir = `スモーク_動画_1_${frameSession}`;
+  assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [renamedDir]);
+  assert.equal(readFileSync(path.join(serverOut, renamedDir, 'notes.md'), 'utf8').split('\n')[0], '# スモーク 動画 1');
+  const renamedMeta = await panel.evaluate(async (id) => {
+    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
+    const read = async (name) => JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text());
+    return { meta: await read('session.json'), status: await read('status.json') };
+  }, frameSession);
+  assert.equal(renamedMeta.meta.name, 'スモーク 動画 1', JSON.stringify(renamedMeta.meta));
+  assert.equal(renamedMeta.status.outputDir, path.join(serverOut, renamedDir), JSON.stringify(renamedMeta.status));
+  console.log('name: renaming a row renamed the server folder, the notes heading and the row title');
   const beforeDiscard = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const discardedFrames = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
   assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);

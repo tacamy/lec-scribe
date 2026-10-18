@@ -41,6 +41,11 @@ export type PolishOutput = { id: string; text: string };
  */
 export type Outline = {
   overview: string[];
+  /**
+   * 動画の題名（2026-10-18）。同じページの題名の講義がほかにもあるとき、名前を区別するのに使う（naming.ts）。
+   * この項目を足す前のキャッシュには無い
+   */
+  title?: string;
   topics: Array<{
     heading: string;
     summary: string[];
@@ -81,6 +86,7 @@ export const POLISH_SCHEMA: JsonSchema = {
 export const OUTLINE_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
+    title: { type: 'string' },
     overview: { type: 'array', items: { type: 'string' } },
     topics: {
       type: 'array',
@@ -97,9 +103,12 @@ export const OUTLINE_SCHEMA: JsonSchema = {
       },
     },
   },
-  required: ['overview', 'topics'],
+  required: ['title', 'overview', 'topics'],
   additionalProperties: false,
 };
+
+/** 動画の題名（Outline.title）の長さの上限。これを超えるもの（文や段落を写した）は捨てる */
+export const OUTLINE_TITLE_MAX_CHARS = 40;
 
 /** 校正（誤変換の修正）の入出力。original は文字起こしそのまま、polished は整えた本文 */
 export type CheckInput = { id: string; original: string; polished: string };
@@ -144,6 +153,8 @@ ${body}`;
  * notes-cache.json に残り、古い版なら本文は使い回して話題だけ作り直す（§13.5b）。
  *   2: 話題の最初の文（startText）を持つ（2026-10-14）
  *   3: 準備の発話は前の話題に、直後に話題が始まる「（発話なし）」の部分は新しい話題に（2026-10-15）
+ * 動画の題名（title、2026-10-18）を足したときは上げていない: 題名は同じページの題名の講義を区別するときだけ使うので、
+ * 上げると「やり直す」のたびに全講義の話題が作り直されてしまう。題名が要るのにキャッシュに無いときだけ作り直す（pipeline.ts）
  */
 export const OUTLINE_VERSION = 3;
 
@@ -152,8 +163,9 @@ export function buildOutlinePrompt(sections: ReadonlyArray<{ id: string; text: s
   const body = sections
     .map((s) => `<<<PART id="${s.id}">>>\n${s.text.trim() || '（発話なし）'}\n<<<END>>>`)
     .join('\n\n');
-  return `あなたはスライド動画の解説をノートにまとめる編集者です。以下は動画の文字起こしを読みやすく整えた本文を、画面が切り替わったところ（スライドや操作画面の変化）で区切って順に並べたものです。画面の切り替わりは話の区切りと一致しないことが多い（操作のデモで画面が細かく変わる、同じスライドで別の話題に移る、など）ので、話題の区切りは内容から判断してください。次の 2 つを作ってください。
+  return `あなたはスライド動画の解説をノートにまとめる編集者です。以下は動画の文字起こしを読みやすく整えた本文を、画面が切り替わったところ（スライドや操作画面の変化）で区切って順に並べたものです。画面の切り替わりは話の区切りと一致しないことが多い（操作のデモで画面が細かく変わる、同じスライドで別の話題に移る、など）ので、話題の区切りは内容から判断してください。次の 3 つを作ってください。
 
+0. title: この動画の題名（日本語、20 文字以内、体言止め）。冒頭で講師が題名を言っていればそれを使い、なければ動画全体の主題を短く表す。講義名・章の番号・「〜について」は付けない。同じページにある別の動画と区別するために使う
 1. overview: 動画全体の要点。日本語の箇条書きで 5〜12 項目、各項目は 1 文。記号や番号は付けない。
 2. topics: 話題のまとまり。本文の順に並べ、各要素は次の 4 つ。
    - heading: その話題の見出し（日本語、20 文字以内、体言止め）
@@ -215,7 +227,7 @@ const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map((s) => Strin
  * 話題が 1 つも残らなければ overview だけの Outline になる
  */
 export function parseOutline(raw: string, ids: readonly string[]): Outline {
-  const parsed = extractJson(raw) as { overview?: unknown; topics?: unknown };
+  const parsed = extractJson(raw) as { title?: unknown; overview?: unknown; topics?: unknown };
   const order = new Map(ids.map((id, i) => [id, i]));
   const topics: Outline['topics'] = [];
   let last = -1;
@@ -236,7 +248,10 @@ export function parseOutline(raw: string, ids: readonly string[]): Outline {
     topics[0]!.startId = ids[0]!;
     delete topics[0]!.startText;
   }
-  return { overview: strings(parsed.overview), topics };
+  // 題名は 1 行の短い文字列だけ。改行やかぎ括弧で囲んだもの（「…」）は中身だけにする
+  const title = typeof parsed.title === 'string' ? parsed.title.replace(/\s+/g, ' ').trim().replace(/^[「『"]+|[」』"]+$/g, '').trim() : '';
+  const usable = title !== '' && Array.from(title).length <= OUTLINE_TITLE_MAX_CHARS;
+  return { ...(usable ? { title } : {}), overview: strings(parsed.overview), topics };
 }
 
 /** 校正の返答を読む。知らない id、空の文字列、直しになっていないもの（wrong と right が同じ）は捨てる */

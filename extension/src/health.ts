@@ -12,6 +12,9 @@ import { authHeaders, type Config } from './config';
 /** この拡張が必要とするサーバーの約束の版。サーバー側の API_VERSION（server/src/app.ts）と同じ意味 */
 export const REQUIRED_SERVER_API = 1;
 
+/** 講義の名前を変えられるサーバーの約束の版（POST /sessions/:id/name。§14、2026-10-18） */
+export const NAME_SERVER_API = 6;
+
 /** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
 export const APP_DIR = '~/LecScribe-app';
 /** 手で更新するときの 1 行。設定画面と警告文で同じものを出す */

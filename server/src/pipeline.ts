@@ -9,6 +9,7 @@ import { OUTLINE_VERSION, applyCorrections, checkWithFallback, createBackend, is
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry, type Section } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
+import { applyName, autoNameFor, displayName, readSessionInfo, sameTitleSessions, writeSessionInfo, type SessionInfo } from './naming.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -185,7 +186,10 @@ export class Pipeline {
         job.started = true;
         return this.process(dir, job);
       })
-      .finally(() => this.jobs.delete(dir));
+      .finally(() => {
+        // 名前を付けてフォルダを付け替えたら、新しい場所でも登録している（finishNaming）
+        for (const [key, value] of this.jobs) if (value === job) this.jobs.delete(key);
+      });
     this.jobs.set(dir, job);
     this.queue = job.task.catch(() => undefined);
     return job.task;
@@ -454,6 +458,53 @@ export class Pipeline {
     }
   }
 
+  /**
+   * 処理の最後に、講義の名前（§14）をフォルダに反映する。notes.md・lecture.md の見出しとフォルダ名を名前に合わせ、
+   * 同じページの題名のほかの講義にも、まだ名前が無くて動画の題名が分かっていれば名前を付ける。完了（done）を書く前に
+   * 済ませる（拡張が done を見た時点でフォルダが決まっているように）。付け替えたら新しい場所でも処理中として登録する
+   * （その間に名前の変更を受け付けない）。名前を付けられなくてもノートはできているので、失敗はログに残して元の場所を返す
+   */
+  private async finishNaming(dir: string, job: Job): Promise<string> {
+    try {
+      const session = await readSessionInfo(dir);
+      if (!session?.sessionId) return dir;
+      const moved = await applyName(dir, session.sessionId, displayName(session));
+      if (moved !== dir) {
+        this.jobs.set(moved, job);
+        this.log(`フォルダの名前を変えました: ${path.basename(dir)} → ${path.basename(moved)}`);
+      }
+      if (!session.name) await this.nameSiblings(moved, session);
+      return moved;
+    } catch (e) {
+      this.log(`名前をフォルダに反映できませんでした: ${e instanceof Error ? e.message : String(e)}`);
+      return dir;
+    }
+  }
+
+  /**
+   * 同じページの題名のほかの講義に名前を付ける。処理待ち・処理中のもの（自分の番で付く）、利用者が名前を付けたもの、
+   * 動画の題名がキャッシュに無いもの（題名を足す前に作ったノート。「やり直す」で付く）は触らない
+   */
+  private async nameSiblings(selfDir: string, session: SessionInfo): Promise<void> {
+    for (const sibling of await sameTitleSessions(this.config.outDir, selfDir, session.title)) {
+      if (this.jobs.has(sibling)) continue;
+      const info = await readSessionInfo(sibling);
+      if (!info?.sessionId || info.name) continue;
+      let next = info;
+      if (!info.autoName) {
+        const auto = autoNameFor(info.title, (await readNotesCache(sibling))?.outline?.title);
+        if (!auto) continue;
+        next = { ...info, autoName: auto };
+        await writeSessionInfo(sibling, next);
+      }
+      const moved = await applyName(sibling, info.sessionId, displayName(next));
+      if (moved === sibling) continue;
+      this.log(`同じページの題名の講義にも名前を付けました: ${path.basename(sibling)} → ${path.basename(moved)}`);
+      const st = await readPipelineStatus(moved);
+      if (st) await writeStatus(moved, { ...st, outputDir: moved });
+    }
+  }
+
   private async process(dir: string, job: Job): Promise<PipelineStatus> {
     const signal = job.controller.signal;
     const now = () => new Date().toISOString();
@@ -521,9 +572,7 @@ export class Pipeline {
           videoStart: events ? toVideoTime(events, s.start) : s.start,
           videoEnd: events ? toVideoTime(events, s.end) : s.end,
         }));
-        const session = (await readJson(workPath(dir, 'session.json'))) as
-          | { title?: string; url?: string; startedAt?: string }
-          | undefined;
+        const session = (await readJson(workPath(dir, 'session.json'))) as SessionInfo | undefined;
         /**
          * 載せる画像の並びから transcript.json・lecture.md・節・文字起こしのままのノートを作る。
          * 画像の救出（§13.4c）で並びが変わったら、ノート作成の段階で作り直す
@@ -548,7 +597,8 @@ export class Pipeline {
           // 割り当ては 1 回だけ。節は mapped の slide のまま束ね、lecture.md・notes.md で同じ節を使う。区間の数はもとの区間で数える
           const sections = groupAssigned(mapped, slides);
           const lectureInput = {
-            title: session?.title,
+            // 見出しは講義の名前（利用者が付けた名前、自動の名前、ページの題名の順。§14）
+            title: displayName(session),
             url: session?.url,
             startedAt: session?.startedAt,
             segments: mapped,
@@ -662,7 +712,12 @@ export class Pipeline {
           const stored = await readNotesCache(dir);
           // 失敗が残っているキャッシュは使い回さない（一時的な失敗が永久に固定されるため）
           // 話題の区切りの形が古い（OUTLINE_VERSION 未満。頼む内容を変えた）なら、本文は組み替えで使い回して話題だけ作り直す（§13.5）
-          const outlineStale = !!stored && (stored.outlineVersion ?? 1) < OUTLINE_VERSION;
+          // 同じページの題名の講義がほかにもあれば、名前を区別するのに動画の題名（outline.title）が要る（§14）。
+          // 利用者が名前を付けていれば要らない。題名を足す前のキャッシュには無いので、そのときだけ話題を作り直す
+          const needTitle = !result.session?.name && (await sameTitleSessions(this.config.outDir, dir, result.session?.title)).length > 0;
+          const titleMissing = needTitle && !!stored?.outline && !stored.outline.title;
+          const versionStale = !!stored && (stored.outlineVersion ?? 1) < OUTLINE_VERSION;
+          const outlineStale = versionStale || titleMissing;
           const cached = stored && stored.key === key && (stored.errors ?? []).length === 0 && stored.outline && !outlineStale ? stored : null;
           if (stored && !cached && stored.key === key && (stored.errors ?? []).length > 0) this.log('前回のノートに失敗が残っているので作り直します');
           let polished: Map<string, PolishOutput>;
@@ -753,7 +808,8 @@ export class Pipeline {
               reused = true;
             } else {
               // 本文は全部使い回せたが話題の区切りの形が古い: 話題だけ作り直す（outline の呼び出し 1 回）
-              if (todo.length === 0 && outlineStale) this.log('前回の話題の区切りが古い形なので、本文は使い回して話題だけ作り直します');
+              if (todo.length === 0 && versionStale) this.log('前回の話題の区切りが古い形なので、本文は使い回して話題だけ作り直します');
+              else if (todo.length === 0 && titleMissing) this.log('同じページの題名の講義がほかにもあるので、動画の題名を付けるために本文は使い回して話題だけ作り直します');
               // 整えた本文全体（整えられなかった節は文字起こしのまま）から全体の要点と話題の区切りを作る
               const outlineInput = inputs.map((s) => ({ id: s.id, text: polished.get(s.id)?.text ?? s.text }));
               const { outline: made, error: outlineError } = await outline(outlineInput, activeBackend, llmSettings, this.log);
@@ -785,10 +841,20 @@ export class Pipeline {
             // ノート作成だけの中止がここで入っても、本文と話題はもうできているので、時間の規則のままノートを書く
             if (notesStopped()) this.log('話題の境目の判定の途中で止められたので、時間の規則のままノートを作ります');
           }
+          // 同じページの題名の講義がほかにもあれば、動画の題名を足した名前を付ける（§14）。見出しはこの名前で書き、
+          // フォルダ名は処理が済んでから付け替える（finishNaming）
+          if (needTitle) {
+            const auto = autoNameFor(result.session?.title, topics?.title);
+            if (auto && auto !== result.session?.autoName) {
+              result.session = { ...result.session, autoName: auto };
+              await writeSessionInfo(dir, result.session);
+              this.log(`同じページの題名の講義がほかにもあるので、名前を「${auto}」にします`);
+            }
+          }
           await this.writeNotes(
             dir,
             buildNotesMarkdown({
-              title: result.session?.title,
+              title: displayName(result.session),
               url: result.session?.url,
               startedAt: result.session?.startedAt,
               sections: result.sections,
@@ -815,7 +881,8 @@ export class Pipeline {
 
       // 最後まで進んだので、やり直す前の状態の控えはもう要らない
       await rm(workPath(dir, PREVIOUS_FILE), { force: true }).catch(() => undefined);
-      return writeStatus(dir, { ...status, stage: 'done', updatedAt: now(), result: { ...result.summary, ...notes } });
+      const finalDir = await this.finishNaming(dir, job);
+      return writeStatus(finalDir, { ...status, stage: 'done', outputDir: finalDir, updatedAt: now(), result: { ...result.summary, ...notes } });
     } catch (e) {
       if (signal.aborted) return this.writeCancelled(dir, job);
       const message = e instanceof Error ? e.message : String(e);
