@@ -555,7 +555,7 @@ function titleEditor(title: string, onSave: (value: string | null) => void): HTM
   input.maxLength = 100;
   input.value = editing?.value ?? title;
   input.setAttribute('aria-label', '名前');
-  input.title = 'Enterで保存、Escで取り消し。空にして保存すると元の名前（ページの題名）に戻ります';
+  input.title = 'Enterで保存、Escで取り消し。空にして保存すると元の名前（ページタイトル）に戻ります';
   let finished = false;
   const finish = (save: boolean, byBlur = false) => {
     if (finished) return;
@@ -597,7 +597,7 @@ function titleEditor(title: string, onSave: (value: string | null) => void): HTM
 /**
  * 名前を変える。サーバーにフォルダがあれば（送ったあと）サーバーで先に変え（フォルダ名とノートの見出し）、通ってから
  * 録音の側（session.json の name）を書く。まだ送っていない録音、フォルダが無い（Finder で消した）講義は録音の側だけ変え、
- * 送るときにサーバーへ渡る。空にすると名前を外し、ページの題名に戻す
+ * 送るときにサーバーへ渡る。空にすると名前を外し、ページタイトルに戻す
  */
 async function renameSession(session: StoredSession, name: string | null, missing: boolean) {
   const run = saveName(session, name, missing);

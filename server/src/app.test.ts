@@ -974,7 +974,7 @@ describe('local server', () => {
       }
     });
 
-    it('名前を変えるとフォルダ名・見出し・status の outputDir が変わり、外すとページの題名に戻る', async () => {
+    it('名前を変えるとフォルダ名・見出し・status の outputDir が変わり、外すとページタイトルに戻る', async () => {
       const app = await startApp({ outDir: path.join(tmp, 'out-name-rename') });
       try {
         const sessionId = '20261018-100000-nam2';
@@ -995,7 +995,7 @@ describe('local server', () => {
         await fetch(`${app.base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
         await waitStage(app.base, sessionId, 'done');
         expect(await heading(body.outputDir)).toBe('# B の名前');
-        // 外すとページの題名に戻る
+        // 外すとページタイトルに戻る
         const cleared = (await (await rename(app.base, sessionId, null)).json()) as { name: string; outputDir: string };
         expect(cleared.name).toBe('ページ B');
         expect(path.basename(cleared.outputDir)).toBe(`ページ_B_${sessionId}`);
@@ -1026,7 +1026,7 @@ describe('local server', () => {
       }
     });
 
-    it('名前もページの題名も無い講義で名前を外すと、フォルダは ID だけ、見出しは「ノート」', async () => {
+    it('名前もページタイトルも無い講義で名前を外すと、フォルダは ID だけ、見出しは「ノート」', async () => {
       const app = await startApp({ outDir: path.join(tmp, 'out-name-untitled') });
       try {
         const sessionId = '20261018-100000-nam5';
@@ -1067,13 +1067,13 @@ describe('local server', () => {
         const resent = (await (await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: 'デザインのプロセス' }) })).json()) as { outputDir: string };
         expect(path.basename(resent.outputDir)).toBe(`デザインのプロセス_${sessionId}`);
         await expect(stat(created.outputDir)).rejects.toThrow();
-        // 形の合わない名前は使わない（送信は止めない）。名前が外れたので、フォルダもページの題名に戻す
+        // 形の合わない名前は使わない（送信は止めない）。名前が外れたので、フォルダもページタイトルに戻す
         const bad = await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: '一行目\n二行目' }) });
         expect(bad.status).toBe(201);
         const badDir = ((await bad.json()) as { outputDir: string }).outputDir;
         expect(path.basename(badDir)).toBe(`教材提供_${sessionId}`);
         expect(await sessionInfo(badDir)).not.toHaveProperty('name');
-        // 送る前に名前を外した録音を送り直しても、ページの題名のフォルダに戻る
+        // 送る前に名前を外した録音を送り直しても、ページタイトルのフォルダに戻る
         await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: 'A' }) });
         const cleared = (await (await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供' }) })).json()) as { outputDir: string };
         expect(path.basename(cleared.outputDir)).toBe(`教材提供_${sessionId}`);

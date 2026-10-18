@@ -169,7 +169,7 @@ export async function setOutputDir(sessionId: string, outputDir: string): Promis
   await patchStatusFile(await sessionDir(sessionId), { outputDir });
 }
 
-/** 一覧に出す名前。利用者が付けた名前、なければページの題名（§14） */
+/** 一覧に出す名前。利用者が付けた名前、なければページタイトル（§14） */
 export function sessionName(session: Pick<StoredSession, 'meta'>): string | undefined {
   for (const v of [session.meta?.name, session.meta?.title]) {
     const s = v?.trim();

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { NAME_MAX_CHARS, applyName, cleanName, displayName, folderNameFor, setHeading } from './naming.ts';
 
 describe('displayName（§14）', () => {
-  it('利用者が付けた名前、なければページの題名', () => {
+  it('利用者が付けた名前、なければページタイトル', () => {
     expect(displayName({ title: 'ページ', name: 'わたしの名前' })).toBe('わたしの名前');
     expect(displayName({ title: ' ページ ' })).toBe('ページ');
     expect(displayName({ title: 'ページ', name: '  ' })).toBe('ページ');
@@ -73,7 +73,7 @@ describe('setHeading / applyName', () => {
     expect(await readFile(path.join(moved, 'notes.md'), 'utf8')).toBe('# 別の名前\n\n本文\n');
   });
 
-  it('名前もページの題名も無ければ、フォルダは ID だけ、見出しは「ノート」（ノートを作ったときと同じ）', async () => {
+  it('名前もページタイトルも無ければ、フォルダは ID だけ、見出しは「ノート」（ノートを作ったときと同じ）', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'lec-naming-'));
     const dir = await makeSession(root, `わたしの名前_${sessionId}`);
     const moved = await applyName(dir, sessionId, undefined);

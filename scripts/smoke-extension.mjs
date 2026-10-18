@@ -615,7 +615,7 @@ try {
   }, frameSession);
   assert.equal(renamedMeta.meta.name, 'スモーク 動画 1', JSON.stringify(renamedMeta.meta));
   assert.equal(renamedMeta.status.outputDir, path.join(serverOut, renamedDir), JSON.stringify(renamedMeta.status));
-  // 空にして保存すると元の名前（ページの題名）に戻る
+  // 空にして保存すると元の名前（ページタイトル）に戻る
   await panel.click(`${frameRow} .sessionTitle`);
   await panel.fill(titleInput, '');
   await panel.press(titleInput, 'Enter');

@@ -6,8 +6,8 @@ import { noteHeading } from './merge.ts';
 
 /**
  * 講義の名前（§14、2026-10-18）。フォルダ名・notes.md と lecture.md の見出し・拡張の一覧に出す名前は、
- * 利用者が付けた名前（session.json の name。拡張の一覧で見出しをクリックして付ける）があればそれ、なければページの題名（title）。
- * 1 つのページに動画がいくつもあると、ページの題名だけでは全部同じ名前になって区別できないため
+ * 利用者が付けた名前（session.json の name。拡張の一覧で見出しをクリックして付ける）があればそれ、なければページタイトル（title）。
+ * 1 つのページに動画がいくつもあると、ページタイトルだけでは全部同じ名前になって区別できないため
  */
 export type SessionInfo = {
   sessionId?: string;
@@ -33,7 +33,7 @@ export function displayName(session: SessionInfo | undefined): string | undefine
 }
 
 /**
- * 利用者が送ってきた名前を整える。空文字・null は「名前を外す」（ページの題名に戻す）で null。
+ * 利用者が送ってきた名前を整える。空文字・null は「名前を外す」（ページタイトルに戻す）で null。
  * 文字列でない、長すぎる、制御文字を含む（改行で見出しやフォルダ名が壊れる）ものは undefined（受け付けない）
  */
 export function cleanName(raw: unknown): string | null | undefined {

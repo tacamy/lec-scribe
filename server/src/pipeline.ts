@@ -547,7 +547,7 @@ export class Pipeline {
           // 割り当ては 1 回だけ。節は mapped の slide のまま束ね、lecture.md・notes.md で同じ節を使う。区間の数はもとの区間で数える
           const sections = groupAssigned(mapped, slides);
           const lectureInput = {
-            // 見出しは講義の名前（利用者が付けた名前、なければページの題名。§14）
+            // 見出しは講義の名前（利用者が付けた名前、なければページタイトル。§14）
             title: displayName(session),
             url: session?.url,
             startedAt: session?.startedAt,

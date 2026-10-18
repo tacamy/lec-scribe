@@ -125,7 +125,7 @@ async function requestJson(
 }
 
 /**
- * 講義の名前を変える（POST /sessions/:id/name、api 6。§14）。null で名前を外してページの題名に戻す。
+ * 講義の名前を変える（POST /sessions/:id/name、api 6。§14）。null で名前を外してページタイトルに戻す。
  * サーバーのフォルダ名とノートの見出しも変わり、付け替えた先のフォルダが返る。
  * フォルダが無ければ code NO_SESSION、受け口の無い古いサーバー（api 6 より前）なら code NOT_FOUND の ServerReplyError
  */

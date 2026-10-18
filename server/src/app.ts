@@ -452,7 +452,7 @@ export function createApp(
         return;
       }
 
-      // POST /sessions/:id/name { name: string | null } — 講義の名前を変える（§14）。null・空文字なら外して、ページの題名に戻す。
+      // POST /sessions/:id/name { name: string | null } — 講義の名前を変える（§14）。null・空文字なら外して、ページタイトルに戻す。
       // notes.md・lecture.md の見出しとフォルダ名も変える。処理待ち・処理中は変えない（書き込み先がずれる）
       if (req.method === 'POST' && parts[2] === 'name' && parts.length === 3) {
         const body = (await readJsonBody(req)) as Record<string, unknown> | undefined;
