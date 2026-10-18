@@ -64,6 +64,8 @@ export type ToBackground =
    * 省略時は処理中・送信待ちだけ消す（成果物があれば残す）。keepRecording で Chrome 側の録音は残す（やり直しの中止）
    */
   | { target: 'sw'; type: 'DISCARD'; sessionId: string; output?: 'keep' | 'delete'; keepRecording?: boolean }
+  /** 一覧で名前を変えてサーバーのフォルダが付け替わった（§14）。直前の講義なら、状態の出力先も新しいフォルダにする */
+  | { target: 'sw'; type: 'SESSION_RENAMED'; sessionId: string; outputDir: string }
   /** 指定タブの <video> を調べる（Start 前の表示用） */
   | { target: 'sw'; type: 'PROBE'; tabId: number }
   /** 検知用 content script からの動画の状態 */
@@ -216,6 +218,7 @@ export const sendToBackground = {
   finishNotes: (sessionId: string) => send<StateReply & { finished: boolean }>({ target: 'sw', type: 'FINISH_NOTES', sessionId }),
   discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
     send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),
+  sessionRenamed: (sessionId: string, outputDir: string) => send<StateReply>({ target: 'sw', type: 'SESSION_RENAMED', sessionId, outputDir }),
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
   detectStatus: (sessionId: string, status: VideoStatus) =>
     send<object>({ target: 'sw', type: 'DETECT_STATUS', sessionId, status }),

@@ -9,7 +9,7 @@ import { OUTLINE_VERSION, applyCorrections, checkWithFallback, createBackend, is
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry, type Section } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
-import { displayName, type SessionInfo } from './naming.ts';
+import { displayName, readSessionInfo } from './naming.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -522,7 +522,7 @@ export class Pipeline {
           videoStart: events ? toVideoTime(events, s.start) : s.start,
           videoEnd: events ? toVideoTime(events, s.end) : s.end,
         }));
-        const session = (await readJson(workPath(dir, 'session.json'))) as SessionInfo | undefined;
+        const session = await readSessionInfo(dir);
         /**
          * 載せる画像の並びから transcript.json・lecture.md・節・文字起こしのままのノートを作る。
          * 画像の救出（§13.4c）で並びが変わったら、ノート作成の段階で作り直す

@@ -591,7 +591,17 @@ try {
   // Esc で取り消すと何も変わらない
   await panel.press(titleInput, 'Escape');
   await panel.waitForSelector(`${frameRow} .sessionTitle`, { timeout: 5_000 });
+  // 入力中に一覧が描き直されても、入力欄のまま残り、途中の文字で保存しない（Chromium は入れ替えの途中で blur を出す。2026-10-18 のレビュー）
   await panel.click(`${frameRow} .sessionTitle`);
+  await panel.fill(titleInput, 'デザ');
+  await panel.evaluate((sel) => (document.querySelector(sel).dataset.before = '1'), titleInput);
+  const stateBefore = await panel.evaluate(async () => (await chrome.storage.session.get('session')).session);
+  // 一覧に関係する状態（sessionId）だけを変えて、パネルに描き直させる
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: { ...s, sessionId: 'rerender-probe' } }), stateBefore);
+  await panel.waitForFunction((sel) => { const el = document.querySelector(sel); return el && !el.dataset.before; }, titleInput, { timeout: 5_000 });
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), stateBefore);
+  assert.equal(await panel.inputValue(titleInput), 'デザ', 'the editor keeps the typed text across a re-render');
+  assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [outDir], 'a re-render must not save the half-typed name');
   await panel.fill(titleInput, 'スモーク 動画 1');
   await panel.press(titleInput, 'Enter');
   await panel.waitForFunction((sel) => document.querySelector(`${sel} .sessionTitle`)?.textContent === 'スモーク 動画 1', frameRow, { timeout: 10_000 });

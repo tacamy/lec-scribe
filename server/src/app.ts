@@ -72,6 +72,22 @@ export function createApp(
     return isAuthorized(req.headers.authorization, token) || trustedByToken(trusted, req.headers.authorization) !== null;
   }
   const dirCache = new Map<string, string>();
+  /**
+   * 講義ごとの順番待ち（§14、2026-10-18 のレビュー）。名前の変更はフォルダを付け替えるので、同じ講義への受け付け・送信（PUT）・
+   * 処理の開始・名前の変更が重なると、付け替え前のパスで書いて失敗したり、ID の同じフォルダが 2 つできたりする。
+   * これらは 1 つずつ通し、フォルダはその中で探し直す（処理そのものはここに入らないので、処理中の名前の変更は 409 で断る）
+   */
+  const sessionLocks = new Map<string, Promise<unknown>>();
+  function withSessionLock<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+    const previous = sessionLocks.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(work);
+    const tail = next.catch(() => undefined);
+    sessionLocks.set(sessionId, tail);
+    void tail.then(() => {
+      if (sessionLocks.get(sessionId) === tail) sessionLocks.delete(sessionId);
+    });
+    return next;
+  }
 
   async function findSessionDir(sessionId: string): Promise<string | null> {
     const cached = dirCache.get(sessionId);
@@ -281,30 +297,35 @@ export function createApp(
         sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'sessionId が不正です。' } });
         return;
       }
+      const sessionId = meta.sessionId;
       // 利用者が付けた名前（§14）は拡張の録音の側が正本。送られてこなければ外す（一覧で名前を外した）。
-      // 形の合わない名前は使わない（録音の送信は止めない。拡張の入力欄は 100 文字・1 行に限っている）
+      // 形の合わない名前は使わない（録音の送信は止めない。拡張の入力欄も同じ条件で確かめている）
       const name = cleanName(meta.name ?? null);
-      if (name === undefined) log(`名前の形が合わないので使いません: ${meta.sessionId}`);
+      if (name === undefined) log(`名前の形が合わないので使いません: ${sessionId}`);
       const { name: _sent, ...rest } = meta;
       const info = { ...rest, ...(name ? { name } : {}), receivedAt: new Date().toISOString() };
-      let dir = await findSessionDir(meta.sessionId);
-      if (!dir) {
-        // Finder で並べたときに名前で探せるよう、名前を先に、ID を後ろに付ける
-        dir = path.join(config.outDir, folderNameFor(meta.sessionId, displayName(info)));
-        dirCache.set(meta.sessionId, dir);
-      }
-      await ensureLayout(dir);
-      await migrateQuietly(dir);
-      await writeSessionInfo(dir, info);
-      // 前に途中まで送ってあった録音に、送る前に名前を付けていた: フォルダ名と見出しを名前に合わせる（処理中は触らない）
-      if (name && !pipeline.isRunning(dir) && path.basename(dir) !== folderNameFor(meta.sessionId, name)) {
-        const moved = await applyName(dir, meta.sessionId, name);
-        if (moved !== dir) log(`名前に合わせてフォルダを付け替えました: ${path.basename(dir)} → ${path.basename(moved)}`);
-        dir = moved;
-        dirCache.set(meta.sessionId, dir);
-      }
-      log(`session ${meta.sessionId} → ${dir}`);
-      sendJson(res, 201, { ok: true, sessionId: meta.sessionId, outputDir: dir });
+      const outputDir = await withSessionLock(sessionId, async () => {
+        let dir = await findSessionDir(sessionId);
+        const previous = dir ? await readSessionInfo(dir) : undefined;
+        if (!dir) {
+          // Finder で並べたときに名前で探せるよう、名前を先に、ID を後ろに付ける
+          dir = path.join(config.outDir, folderNameFor(sessionId, displayName(info)));
+          dirCache.set(sessionId, dir);
+        }
+        await ensureLayout(dir);
+        await migrateQuietly(dir);
+        await writeSessionInfo(dir, info);
+        // 前に途中まで送ってあった録音の名前を、送る前に変えた・外した: フォルダ名と見出しを合わせる（処理中は触らない）
+        if (previous && (previous.name ?? null) !== (info.name ?? null) && !pipeline.isRunning(dir)) {
+          const moved = await applyName(dir, sessionId, displayName(info));
+          if (moved !== dir) log(`名前に合わせてフォルダを付け替えました: ${path.basename(dir)} → ${path.basename(moved)}`);
+          dir = moved;
+          dirCache.set(sessionId, dir);
+        }
+        return dir;
+      });
+      log(`session ${sessionId} → ${outputDir}`);
+      sendJson(res, 201, { ok: true, sessionId, outputDir });
       return;
     }
 
@@ -313,153 +334,160 @@ export function createApp(
       sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'sessionId が不正です。' } });
       return;
     }
-    const dir = await findSessionDir(sessionId);
-    if (!dir) {
-      sendJson(res, 404, { ok: false, error: { code: 'NO_SESSION', message: `セッション ${sessionId} がありません。POST /sessions が先です。` } });
-      return;
-    }
+    // フォルダを書き換える受け口（受け付け以外の送信・処理の開始・名前の変更）は講義ごとに 1 つずつ通す（withSessionLock）
+    const locked = req.method === 'PUT' || (req.method === 'POST' && (parts[2] === 'finalize' || parts[2] === 'name'));
+    const sessionRoutes = async (): Promise<void> => {
+      const dir = await findSessionDir(sessionId);
+      if (!dir) {
+        sendJson(res, 404, { ok: false, error: { code: 'NO_SESSION', message: `セッション ${sessionId} がありません。POST /sessions が先です。` } });
+        return;
+      }
 
-    // PUT /sessions/:id/files/<name>
-    if (req.method === 'PUT' && parts[2] === 'files') {
-      let name: string;
-      try {
-        name = decodeURIComponent(parts.slice(3).join('/'));
-      } catch {
-        // 壊れた %xx（%E0%A4%A など）。URIError のまま投げると 500 になる
-        sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'ファイル名の %xx が壊れています。' } });
-        return;
-      }
-      const isSlide = name.startsWith(`${SLIDES_DIR}/`) && SLIDE_FILE.test(name.slice(SLIDES_DIR.length + 1));
-      if (!isSlide && !UPLOAD_NAME.test(name)) {
-        sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
-        return;
-      }
-      // 画像の正本も作業ファイルも .lecscribe/ に置く（画像は .lecscribe/slides/。ユーザー向けの slides/ には
-      // notes.md に載せた分だけを処理が写す。§14）
-      const target = workPath(dir, name);
-      const tmp = `${target}.part`;
-      await mkdir(path.dirname(target), { recursive: true });
-      await streamPipeline(req, createWriteStream(tmp));
-      await rename(tmp, target);
-      const { size } = await stat(target);
-      sendJson(res, 200, { ok: true, name, bytes: size });
-      return;
-    }
-
-    // POST /sessions/:id/finalize
-    if (req.method === 'POST' && parts[2] === 'finalize' && parts.length === 3) {
-      await migrateQuietly(dir);
-      try {
-        await stat(workPath(dir, 'audio.webm'));
-      } catch {
-        sendJson(res, 409, { ok: false, error: { code: 'NO_AUDIO', message: 'audio.webm がまだありません。' } });
-        return;
-      }
-      if (pipeline.isRunning(dir)) {
-        sendJson(res, 202, { ok: true, stage: 'queued', outputDir: dir });
-        return;
-      }
-      // 「やり直す」なら、上書きする前に完了していた状態の控えを取る。中止されたらこれに戻す（§11.3）
-      await snapshotDone(dir);
-      // 前回の文字起こしの条件（transcript）は引き継ぐ。同じ音声なら whisperkit を飛ばせる
-      const previous = await readPipelineStatus(dir);
-      const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString(), transcript: previous?.transcript };
-      await writeStatus(dir, queued);
-      void pipeline.enqueue(dir);
-      sendJson(res, 202, { ok: true, ...queued });
-      return;
-    }
-
-    // POST /sessions/:id/cancel { delete?: boolean; force?: boolean; finish?: boolean } — 処理を中止する。delete でフォルダごと消す。
-    // finish はノート作成だけを止めて、文字起こしのままのノートで完了にする（初回の処理でノート作成中に「中止」したとき。§11.3）。
-    // ノート作成中でなければ何もしない（finished: false）。処理は続くので、拡張はそのまま進み具合を見続ける
-    if (req.method === 'POST' && parts[2] === 'cancel' && parts.length === 3) {
-      const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean; force?: boolean; finish?: boolean };
-      if (body.finish === true) {
-        const finished = await pipeline.finishWithoutNotes(dir);
-        if (finished) log(`finished without notes ${sessionId}`);
-        sendJson(res, 200, { ok: true, cancelled: false, deleted: false, finished });
-        return;
-      }
-      const cancelled = await pipeline.cancel(dir);
-      let deleted = false;
-      if (body.delete === true) {
-        // 成果物（notes.md）が既にあるフォルダは消さない。「やり直す」中の中止で完成済みのノートを失わないため。
-        // 利用者が一覧の「削除」で明示したとき（force）だけ、notes.md があっても消す
-        const hasNotes = body.force === true ? false : await stat(path.join(dir, NOTES_FILE)).then(() => true).catch(() => false);
-        if (hasNotes) {
-          log(`cancel ${sessionId}: notes.md があるので削除しない`);
-        } else {
-          await rm(dir, { recursive: true, force: true });
-          dirCache.delete(sessionId);
-          deleted = true;
-          log(`deleted ${sessionId} (${dir})`);
+      // PUT /sessions/:id/files/<name>
+      if (req.method === 'PUT' && parts[2] === 'files') {
+        let name: string;
+        try {
+          name = decodeURIComponent(parts.slice(3).join('/'));
+        } catch {
+          // 壊れた %xx（%E0%A4%A など）。URIError のまま投げると 500 になる
+          sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: 'ファイル名の %xx が壊れています。' } });
+          return;
         }
-      } else if (cancelled) {
-        log(`cancelled ${sessionId}`);
+        const isSlide = name.startsWith(`${SLIDES_DIR}/`) && SLIDE_FILE.test(name.slice(SLIDES_DIR.length + 1));
+        if (!isSlide && !UPLOAD_NAME.test(name)) {
+          sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: `受け付けないファイル名です: ${name}` } });
+          return;
+        }
+        // 画像の正本も作業ファイルも .lecscribe/ に置く（画像は .lecscribe/slides/。ユーザー向けの slides/ には
+        // notes.md に載せた分だけを処理が写す。§14）
+        const target = workPath(dir, name);
+        const tmp = `${target}.part`;
+        await mkdir(path.dirname(target), { recursive: true });
+        await streamPipeline(req, createWriteStream(tmp));
+        await rename(tmp, target);
+        const { size } = await stat(target);
+        sendJson(res, 200, { ok: true, name, bytes: size });
+        return;
       }
-      sendJson(res, 200, { ok: true, cancelled, deleted });
-      return;
-    }
 
-    // POST /sessions/:id/open { target?: 'folder' | 'lecture' } — 出力を Finder / 既定のアプリで開く
-    if (req.method === 'POST' && parts[2] === 'open' && parts.length === 3) {
-      const body = ((await readJsonBody(req)) ?? {}) as { target?: string };
-      const target = body.target === 'lecture' ? path.join(dir, NOTES_FILE) : dir;
-      try {
-        await stat(target);
-      } catch {
-        sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${path.basename(target)} がまだありません。` } });
+      // POST /sessions/:id/finalize
+      if (req.method === 'POST' && parts[2] === 'finalize' && parts.length === 3) {
+        await migrateQuietly(dir);
+        try {
+          await stat(workPath(dir, 'audio.webm'));
+        } catch {
+          sendJson(res, 409, { ok: false, error: { code: 'NO_AUDIO', message: 'audio.webm がまだありません。' } });
+          return;
+        }
+        if (pipeline.isRunning(dir)) {
+          sendJson(res, 202, { ok: true, stage: 'queued', outputDir: dir });
+          return;
+        }
+        // 「やり直す」なら、上書きする前に完了していた状態の控えを取る。中止されたらこれに戻す（§11.3）
+        await snapshotDone(dir);
+        // 前回の文字起こしの条件（transcript）は引き継ぐ。同じ音声なら whisperkit を飛ばせる
+        const previous = await readPipelineStatus(dir);
+        const queued: PipelineStatus = { stage: 'queued', outputDir: dir, updatedAt: new Date().toISOString(), transcript: previous?.transcript };
+        await writeStatus(dir, queued);
+        void pipeline.enqueue(dir);
+        sendJson(res, 202, { ok: true, ...queued });
         return;
       }
-      const r = await run(config.openBin, [target]).catch((e: unknown) => ({ code: -1, stdout: '', stderr: String(e) }));
-      if (r.code !== 0) {
-        sendJson(res, 500, { ok: false, error: { code: 'OPEN_FAILED', message: `開けませんでした: ${r.stderr.trim() || r.code}` } });
-        return;
-      }
-      sendJson(res, 200, { ok: true, opened: target });
-      return;
-    }
 
-    // GET /sessions/:id/status。outputDir は今のフォルダ（名前を変えるとフォルダが付け替わるので、pipeline.json の記録は使わない）
-    if (req.method === 'GET' && parts[2] === 'status' && parts.length === 3) {
-      const status = (await readPipelineStatus(dir)) ?? { stage: 'uploaded', outputDir: dir, updatedAt: new Date().toISOString() };
-      sendJson(res, 200, { ok: true, ...status, outputDir: dir });
-      return;
-    }
+      // POST /sessions/:id/cancel { delete?: boolean; force?: boolean; finish?: boolean } — 処理を中止する。delete でフォルダごと消す。
+      // finish はノート作成だけを止めて、文字起こしのままのノートで完了にする（初回の処理でノート作成中に「中止」したとき。§11.3）。
+      // ノート作成中でなければ何もしない（finished: false）。処理は続くので、拡張はそのまま進み具合を見続ける
+      if (req.method === 'POST' && parts[2] === 'cancel' && parts.length === 3) {
+        const body = ((await readJsonBody(req)) ?? {}) as { delete?: boolean; force?: boolean; finish?: boolean };
+        if (body.finish === true) {
+          const finished = await pipeline.finishWithoutNotes(dir);
+          if (finished) log(`finished without notes ${sessionId}`);
+          sendJson(res, 200, { ok: true, cancelled: false, deleted: false, finished });
+          return;
+        }
+        const cancelled = await pipeline.cancel(dir);
+        let deleted = false;
+        if (body.delete === true) {
+          // 成果物（notes.md）が既にあるフォルダは消さない。「やり直す」中の中止で完成済みのノートを失わないため。
+          // 利用者が一覧の「削除」で明示したとき（force）だけ、notes.md があっても消す
+          const hasNotes = body.force === true ? false : await stat(path.join(dir, NOTES_FILE)).then(() => true).catch(() => false);
+          if (hasNotes) {
+            log(`cancel ${sessionId}: notes.md があるので削除しない`);
+          } else {
+            await rm(dir, { recursive: true, force: true });
+            dirCache.delete(sessionId);
+            deleted = true;
+            log(`deleted ${sessionId} (${dir})`);
+          }
+        } else if (cancelled) {
+          log(`cancelled ${sessionId}`);
+        }
+        sendJson(res, 200, { ok: true, cancelled, deleted });
+        return;
+      }
 
-    // POST /sessions/:id/name { name: string | null } — 講義の名前を変える（§14）。null・空文字なら外して、ページの題名に戻す。
-    // notes.md・lecture.md の見出しとフォルダ名も変える。処理待ち・処理中は変えない（書き込み先がずれる）
-    if (req.method === 'POST' && parts[2] === 'name' && parts.length === 3) {
-      const body = (await readJsonBody(req)) as Record<string, unknown> | undefined;
-      // name が無い・本文が読めないときは外す扱いにしない（取り違えで名前を消さない）
-      if (!body || typeof body !== 'object' || Array.isArray(body) || !('name' in body)) {
-        sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: '名前（name）がありません。' } });
+      // POST /sessions/:id/open { target?: 'folder' | 'lecture' } — 出力を Finder / 既定のアプリで開く
+      if (req.method === 'POST' && parts[2] === 'open' && parts.length === 3) {
+        const body = ((await readJsonBody(req)) ?? {}) as { target?: string };
+        const target = body.target === 'lecture' ? path.join(dir, NOTES_FILE) : dir;
+        try {
+          await stat(target);
+        } catch {
+          sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${path.basename(target)} がまだありません。` } });
+          return;
+        }
+        const r = await run(config.openBin, [target]).catch((e: unknown) => ({ code: -1, stdout: '', stderr: String(e) }));
+        if (r.code !== 0) {
+          sendJson(res, 500, { ok: false, error: { code: 'OPEN_FAILED', message: `開けませんでした: ${r.stderr.trim() || r.code}` } });
+          return;
+        }
+        sendJson(res, 200, { ok: true, opened: target });
         return;
       }
-      const name = cleanName(body['name']);
-      if (name === undefined) {
-        sendJson(res, 400, { ok: false, error: { code: 'BAD_NAME', message: `名前は ${NAME_MAX_CHARS} 文字以内で、改行を含めずに付けてください。` } });
-        return;
-      }
-      if (pipeline.isRunning(dir)) {
-        sendJson(res, 409, { ok: false, error: { code: 'BUSY', message: '文字起こし中は名前を変えられません。終わってから変えてください。' } });
-        return;
-      }
-      const { name: _old, ...rest } = (await readSessionInfo(dir)) ?? { sessionId };
-      const next = { ...rest, ...(name ? { name } : {}) };
-      await writeSessionInfo(dir, next);
-      const display = displayName(next);
-      const moved = await applyName(dir, sessionId, display);
-      if (moved !== dir) {
-        dirCache.set(sessionId, moved);
-        log(`名前を変えました: ${path.basename(dir)} → ${path.basename(moved)}`);
-      }
-      sendJson(res, 200, { ok: true, name: display ?? null, outputDir: moved });
-      return;
-    }
 
-    sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${req.method} ${url.pathname}` } });
+      // GET /sessions/:id/status。outputDir は今のフォルダ（名前を変えるとフォルダが付け替わるので、pipeline.json の記録は使わない）
+      if (req.method === 'GET' && parts[2] === 'status' && parts.length === 3) {
+        const status = (await readPipelineStatus(dir)) ?? { stage: 'uploaded', outputDir: dir, updatedAt: new Date().toISOString() };
+        sendJson(res, 200, { ok: true, ...status, outputDir: dir });
+        return;
+      }
+
+      // POST /sessions/:id/name { name: string | null } — 講義の名前を変える（§14）。null・空文字なら外して、ページの題名に戻す。
+      // notes.md・lecture.md の見出しとフォルダ名も変える。処理待ち・処理中は変えない（書き込み先がずれる）
+      if (req.method === 'POST' && parts[2] === 'name' && parts.length === 3) {
+        const body = (await readJsonBody(req)) as Record<string, unknown> | undefined;
+        // name が無い・本文が読めないときは外す扱いにしない（取り違えで名前を消さない）
+        if (!body || typeof body !== 'object' || Array.isArray(body) || !('name' in body)) {
+          sendJson(res, 400, { ok: false, error: { code: 'BAD_REQUEST', message: '名前（name）がありません。' } });
+          return;
+        }
+        const name = cleanName(body['name']);
+        if (name === undefined) {
+          sendJson(res, 400, { ok: false, error: { code: 'BAD_NAME', message: `名前は${NAME_MAX_CHARS}文字以内で、改行やタブを含めずに付けてください。` } });
+          return;
+        }
+        if (pipeline.isRunning(dir)) {
+          sendJson(res, 409, { ok: false, error: { code: 'BUSY', message: '文字起こし中は名前を変えられません。終わってから変えてください。' } });
+          return;
+        }
+        // 作業ファイルを .lecscribe/ に移す前の古い配置なら、先に移す（session.json を読み書きできるように）
+        await migrateQuietly(dir);
+        const { name: _old, ...rest } = (await readSessionInfo(dir)) ?? { sessionId };
+        const next = { ...rest, ...(name ? { name } : {}) };
+        await writeSessionInfo(dir, next);
+        const display = displayName(next);
+        const moved = await applyName(dir, sessionId, display);
+        if (moved !== dir) {
+          dirCache.set(sessionId, moved);
+          log(`名前を変えました: ${path.basename(dir)} → ${path.basename(moved)}`);
+        }
+        sendJson(res, 200, { ok: true, name: display ?? null, outputDir: moved });
+        return;
+      }
+
+      sendJson(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: `${req.method} ${url.pathname}` } });
+    };
+    await (locked ? withSessionLock(sessionId, sessionRoutes) : sessionRoutes());
   }
 
   return { server, pipeline, findSessionDir };

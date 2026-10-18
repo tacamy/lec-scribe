@@ -28,6 +28,7 @@ import {
   TIMELINE_FILE,
   deleteSession,
   listFiles,
+  patchStatusFile,
   readFile,
   readJson,
   sessionDir,
@@ -342,9 +343,9 @@ function startPolling(
   void tick();
 }
 
+/** status.json の一部を書き換える。録音と送信を止めないよう、書けなくても投げない */
 async function patchStatus(dir: FileSystemDirectoryHandle, patch: Partial<SessionStatus>): Promise<void> {
-  const current = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' };
-  await writeJson(dir, STATUS_FILE, { ...current, ...patch }).catch(() => undefined);
+  await patchStatusFile(dir, patch).catch(() => undefined);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, port: number): Promise<T> {

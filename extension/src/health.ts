@@ -12,9 +12,6 @@ import { authHeaders, type Config } from './config';
 /** この拡張が必要とするサーバーの約束の版。サーバー側の API_VERSION（server/src/app.ts）と同じ意味 */
 export const REQUIRED_SERVER_API = 1;
 
-/** 講義の名前を変えられるサーバーの約束の版（POST /sessions/:id/name。§14、2026-10-18） */
-export const NAME_SERVER_API = 6;
-
 /** install.sh がサーバーを置く場所（LEC_SCRIBE_APP_DIR を指定していなければここ） */
 export const APP_DIR = '~/LecScribe-app';
 /** 手で更新するときの 1 行。設定画面と警告文で同じものを出す */
@@ -90,25 +87,22 @@ export class ForeignServerError extends Error {
   }
 }
 
-/**
- * /health を読む。繋がらなければ投げる（呼び出し側が「見つからない」として扱う）。
- * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
- * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
- */
+/** サーバーが LecScribe として断った（404 など）。場合分けできるように HTTP の番号とサーバーの code を持つ */
+export class ServerReplyError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ServerReplyError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 /**
  * サーバーの API を呼ぶ共通形: LecScribe の応答か確かめ、失敗はサーバーの日本語メッセージ（無ければ HTTP の番号）で投げる。
  * fetchHealth / fetchLlmSettings / saveLlmSettings で同じ定型を繰り返さないため（2026-10-01 のレビュー）
  */
-/** サーバーが LecScribe として断った（404 など）。status で場合分けできるように番号を持つ */
-export class ServerReplyError extends Error {
-  readonly status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ServerReplyError';
-    this.status = status;
-  }
-}
-
 async function requestJson(
   server: Pick<Config['server'], 'port' | 'token'>,
   path: string,
@@ -126,13 +120,14 @@ async function requestJson(
   });
   const body: unknown = await res.json().catch(() => undefined);
   if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new ServerReplyError(body.error?.message ?? `HTTP ${res.status}`, res.status);
+  if (!res.ok || !body.ok) throw new ServerReplyError(body.error?.message ?? `HTTP ${res.status}`, res.status, body.error?.code);
   return body as Record<string, unknown>;
 }
 
 /**
  * 講義の名前を変える（POST /sessions/:id/name、api 6。§14）。null で名前を外してページの題名に戻す。
- * サーバーのフォルダ名とノートの見出しも変わり、付け替えた先のフォルダが返る。フォルダが無ければ 404 の ServerReplyError
+ * サーバーのフォルダ名とノートの見出しも変わり、付け替えた先のフォルダが返る。
+ * フォルダが無ければ code NO_SESSION、受け口の無い古いサーバー（api 6 より前）なら code NOT_FOUND の ServerReplyError
  */
 export async function saveSessionName(
   server: Pick<Config['server'], 'port' | 'token'>,
@@ -143,6 +138,11 @@ export async function saveSessionName(
   return typeof body['outputDir'] === 'string' ? { outputDir: body['outputDir'] } : {};
 }
 
+/**
+ * /health を読む。繋がらなければ投げる（呼び出し側が「見つからない」として扱う）。
+ * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
+ * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
+ */
 export async function fetchHealth(
   server: Pick<Config['server'], 'port' | 'token'>,
   options: { auth?: boolean; timeoutMs?: number } = {},

@@ -238,6 +238,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return captureFrame();
     case 'UPLOAD':
       return { state: await upload(msg.sessionId) };
+    case 'SESSION_RENAMED':
+      return { state: await onSessionRenamed(msg.sessionId, msg.outputDir) };
     case 'PROCESS_STATUS':
       return onProcessStatus(msg.sessionId, msg.progress);
     case 'CAPTURE_ENDED':
@@ -750,6 +752,18 @@ async function cancelOnServer(sessionId: string, server: Config['server'], remov
   } catch {
     // サーバーが落ちていれば処理も止まっている
   }
+}
+
+/**
+ * 一覧で名前を変えてサーバーのフォルダが付け替わった（§14、2026-10-18 のレビュー）。直前の講義なら、Server 行の「完了 · …」と
+ * 「出力フォルダを開く」が失敗したときに出す場所も新しいフォルダにする（古いフォルダはもう無い）
+ */
+async function onSessionRenamed(sessionId: string, outputDir: string): Promise<SessionState> {
+  const state = await readState();
+  if (state.lastSession?.sessionId !== sessionId || state.lastSession.outputDir === outputDir) return state;
+  const next: SessionState = { ...state, lastSession: { ...state.lastSession, outputDir } };
+  await writeState(next);
+  return next;
 }
 
 /** If the worker restarted and the offscreen document is gone, the session cannot continue. */
