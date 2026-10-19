@@ -126,5 +126,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .sessionTitle.editable, #tabValue.editable { cursor: text; border-radius: 4px; }
 .sessionTitle.editable:hover, #tabValue.editable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .sessionTitle.editable:focus-visible, #tabValue.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.sessionTitleInput { box-sizing: border-box; width: 100%; min-width: 0; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg); color: var(--fg); font: inherit; }
+/* 入力欄にしても行の高さを変えない（上下の余白なし、枠の 1px を負の余白で打ち消す）。録音中に入力欄を開いたまま Stop を押すと、
+   押した瞬間のフォーカス外れで入力欄が文字に戻り、行が縮んでボタンが上へずれて押せていなかった（2026-10-19 のレビュー） */
+.sessionTitleInput { box-sizing: border-box; width: 100%; min-width: 0; margin: -1px 0; padding: 0 6px; line-height: inherit; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg); color: var(--fg); font: inherit; }
 .sessionTitleInput:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }

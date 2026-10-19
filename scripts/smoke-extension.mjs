@@ -751,7 +751,7 @@ try {
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
 
   // §14: 録音中に「名前」の行を押して名前を付ける。本物の録音は headless では動かないので、OPFS に録音中の形のセッションを置き、
-  // 状態だけ録音中にして、パネルの表示と録音の側（session.json の name）への書き込みを見る
+  // 状態だけ録音中にして、パネルの表示と、service worker が録音の側（session.json）と状態（state.name）に書くことを見る
   const recordingId = '20000102-000000-recn';
   await panel.evaluate(async (sessionId) => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions', { create: true });
@@ -762,35 +762,64 @@ try {
       await writable.close();
     }
   }, recordingId);
+  const readRecordingMeta = () =>
+    panel.evaluate(async (sessionId) => {
+      const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(sessionId);
+      return JSON.parse(await (await (await dir.getFileHandle('session.json')).getFile()).text());
+    }, recordingId);
+  const readState = async () => (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const stateBeforeRecording = await panel.evaluate(async () => (await chrome.storage.session.get('session')).session);
   const recordingState = { ...stateBeforeRecording, state: 'CAPTURING', sessionId: recordingId, title: '録音中のページ', startedAt: new Date().toISOString() };
   await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), recordingState);
   await panel.waitForFunction(() => document.getElementById('tabValue')?.classList.contains('editable') && document.getElementById('tabValue')?.textContent === '録音中のページ', null, { timeout: 5_000 });
+  // 「名前」の行はいちばん上
+  assert.equal(await panel.evaluate(() => document.querySelector('#rows .row:not([hidden])')?.id), 'tabRow');
   assert.equal(await panel.evaluate(() => document.querySelector('#tabRow .label')?.textContent), '名前');
+  const rowHeight = () => panel.evaluate(() => document.getElementById('tabRow').getBoundingClientRect().height);
+  const heightBefore = await rowHeight();
   await panel.click('#tabValue');
   const recordingInput = '#tabRow input.sessionTitleInput';
   assert.equal(await panel.inputValue(recordingInput), '録音中のページ', 'the editor starts from the page title');
+  // 入力欄にしても行の高さは変わらない（Stop ボタンがずれて押せなくならない）
+  assert.ok(Math.abs((await rowHeight()) - heightBefore) < 0.5, `row height changed: ${heightBefore} → ${await rowHeight()}`);
+  // 貼り付けたタブは空白になる
+  await panel.fill(recordingInput, 'デザイン基礎3\t第1回');
+  assert.equal(await panel.inputValue(recordingInput), 'デザイン基礎3 第1回');
   await panel.fill(recordingInput, 'デザイン基礎3 - 第1回');
   await panel.press(recordingInput, 'Enter');
   await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === 'デザイン基礎3 - 第1回', null, { timeout: 5_000 });
-  const recordingMeta = await panel.evaluate(async (sessionId) => {
-    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(sessionId);
-    return JSON.parse(await (await (await dir.getFileHandle('session.json')).getFile()).text());
-  }, recordingId);
-  assert.equal(recordingMeta.name, 'デザイン基礎3 - 第1回', JSON.stringify(recordingMeta));
-  // パネルを開き直しても、録音の側から読んで名前を出す
+  // キーボードで閉じたら名前の行にフォーカスが戻る
+  assert.equal(await panel.evaluate(() => document.activeElement?.id), 'tabValue');
+  await panel.waitForFunction(async () => (await chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' })).state.name === 'デザイン基礎3 - 第1回', null, { timeout: 5_000 });
+  assert.equal((await readRecordingMeta()).name, 'デザイン基礎3 - 第1回');
+  // パネルを開き直しても、状態の名前を出す
   await panel.reload();
   await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === 'デザイン基礎3 - 第1回', null, { timeout: 5_000 });
-  // 空にして保存すると、ページタイトルに戻る
+  // 空にして保存すると、ページタイトルに戻る（録音の側の name も外れる）
   await panel.click('#tabValue');
   await panel.fill(recordingInput, '');
   await panel.press(recordingInput, 'Enter');
   await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === '録音中のページ', null, { timeout: 5_000 });
+  await panel.waitForFunction(async () => (await chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' })).state.name === undefined, null, { timeout: 5_000 });
+  assert.equal((await readRecordingMeta()).name, undefined);
+  // 入力の途中で録音が止まったら、入力欄を閉じて知らせる（止まったあとの名前は送る中身に入らないので書かない）
+  await panel.click('#tabValue');
+  await panel.fill(recordingInput, '止まる直前の名前');
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: { ...s, state: 'COMPLETED' } }), recordingState);
+  await panel.waitForFunction(() => !document.querySelector('#tabRow input'), null, { timeout: 5_000 });
+  assert.match(await panel.evaluate(() => document.getElementById('message')?.textContent ?? ''), /録音が止まったので/);
+  assert.equal((await readRecordingMeta()).name, undefined);
+  // 止まったあとに届いた名前は service worker が断る
+  const late = await panel.evaluate((sessionId) => chrome.runtime.sendMessage({ target: 'sw', type: 'SET_ACTIVE_NAME', sessionId, name: '遅れた名前' }), recordingId);
+  assert.equal(late.ok, false, JSON.stringify(late));
+  assert.equal(late.error.code, 'NOT_CAPTURING', JSON.stringify(late));
+  assert.equal((await readRecordingMeta()).name, undefined);
+  assert.equal((await readState()).name, undefined);
   await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), stateBeforeRecording);
   await panel.evaluate(async (sessionId) => (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).removeEntry(sessionId, { recursive: true }), recordingId);
   await panel.reload();
   await panel.waitForSelector('#startBtn', { state: 'attached' });
-  console.log('name: while recording, clicking the 名前 row named the recording in its session.json; an empty name restored the page title');
+  console.log('name: while recording, the 名前 row (top) named the recording through the worker; empty restored the title; a stop mid-edit closed the editor; late names were refused');
 
   // §15.1: 一覧は全件を描いておき、11 件目からは見た目だけ畳む。録音は時間がかかるので、OPFS に空のセッションを直接置いて件数を増やす
   // （録音済み・未送信の形。処理済みにするとパネルがサーバーにフォルダの有無を聞きに行く）。ID を古くして一覧の末尾に並べる

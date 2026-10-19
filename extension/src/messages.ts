@@ -64,6 +64,11 @@ export type ToBackground =
    * 省略時は処理中・送信待ちだけ消す（成果物があれば残す）。keepRecording で Chrome 側の録音は残す（やり直しの中止）
    */
   | { target: 'sw'; type: 'DISCARD'; sessionId: string; output?: 'keep' | 'delete'; keepRecording?: boolean }
+  /**
+   * 録音中の講義に名前を付ける（§14、2026-10-19）。録音の停止・送信と同じ順番待ちの中で、まだ録音中のときだけ録音の側に書き、
+   * 状態（state.name）にも残す。null で外す。止まったあとなら NOT_CAPTURING で断る
+   */
+  | { target: 'sw'; type: 'SET_ACTIVE_NAME'; sessionId: string; name: string | null }
   /** 一覧で名前を変えてサーバーのフォルダが付け替わった（§14）。直前の講義なら、状態の出力先も新しいフォルダにする */
   | { target: 'sw'; type: 'SESSION_RENAMED'; sessionId: string; outputDir: string }
   /** 指定タブの <video> を調べる（Start 前の表示用） */
@@ -89,6 +94,8 @@ export type ToOffscreen =
   | { target: 'offscreen'; type: 'SESSION_FILES'; sessionId: string }
   | { target: 'offscreen'; type: 'REVOKE'; urls: string[] }
   | { target: 'offscreen'; type: 'DISCARD'; sessionId: string }
+  /** 録音の側（session.json）の name を書く。null で外す（§14） */
+  | { target: 'offscreen'; type: 'SET_NAME'; sessionId: string; name: string | null }
   /** 検知用 content script が取得したフレーム（SPEC §6.6 SLIDE）。offscreen が OPFS に保存する */
   | {
       target: 'offscreen';
@@ -218,6 +225,7 @@ export const sendToBackground = {
   finishNotes: (sessionId: string) => send<StateReply & { finished: boolean }>({ target: 'sw', type: 'FINISH_NOTES', sessionId }),
   discard: (sessionId: string, options: { output?: 'keep' | 'delete'; keepRecording?: boolean } = {}) =>
     send<StateReply>({ target: 'sw', type: 'DISCARD', sessionId, ...options }),
+  setActiveName: (sessionId: string, name: string | null) => send<StateReply>({ target: 'sw', type: 'SET_ACTIVE_NAME', sessionId, name }),
   sessionRenamed: (sessionId: string, outputDir: string) => send<StateReply>({ target: 'sw', type: 'SESSION_RENAMED', sessionId, outputDir }),
   probe: (tabId: number) => send<{ probe: ProbeSummary }>({ target: 'sw', type: 'PROBE', tabId }),
   detectStatus: (sessionId: string, status: VideoStatus) =>
@@ -238,6 +246,7 @@ export const sendToOffscreen = {
   sessionFiles: (sessionId: string) => send<SessionFilesResult>({ target: 'offscreen', type: 'SESSION_FILES', sessionId }),
   revoke: (urls: string[]) => send<object>({ target: 'offscreen', type: 'REVOKE', urls }),
   discard: (sessionId: string) => send<object>({ target: 'offscreen', type: 'DISCARD', sessionId }),
+  setName: (sessionId: string, name: string | null) => send<object>({ target: 'offscreen', type: 'SET_NAME', sessionId, name }),
   slide: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE' }>, 'target' | 'type'>) =>
     send<SlideSaveResult>({ target: 'offscreen', type: 'SLIDE', ...params }),
   slideUpdate: (params: Omit<Extract<ToOffscreen, { type: 'SLIDE_UPDATE' }>, 'target' | 'type'>) =>
