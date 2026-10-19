@@ -4,7 +4,7 @@ import { ForeignServerError, ServerReplyError, fetchHealth, outdatedMessage, sav
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
-import { NAME_MAX_CHARS, checkSessionName, listSessions, sessionName, setNotesProblem, setOutputDir, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
+import { NAME_MAX_CHARS, listSessions, normalizeSessionName, sessionName, setNotesProblem, setOutputDir, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
 import {
   INITIAL_STATE,
@@ -202,8 +202,7 @@ function render(state: SessionState) {
   dot.dataset.state = state.state;
   stateLabel.textContent = STATE_LABEL[state.state];
   dots.hidden = !BUSY_STATES.has(state.state);
-  tabValue.textContent = state.title ?? '—';
-  tabValue.title = state.title ?? '';
+  renderActiveName(state);
 
   // 録音中だけ状態の行を出す。録音完了直後は Audio 行に長さとサイズを残す
   const showAudio = active || (state.state === 'COMPLETED' && !!state.lastSession);
@@ -227,7 +226,7 @@ function render(state: SessionState) {
 
   if (state.error) {
     showMessage(`${state.error.message} (${state.error.code})`);
-  } else {
+  } else if (Date.now() >= noticeUntil) {
     message.hidden = true;
   }
 
@@ -473,6 +472,16 @@ function showMessage(text: string, kind: 'error' | 'info' = 'error') {
   message.hidden = false;
 }
 
+/**
+ * 状態に結び付かない知らせ（名前を保存できなかった、など）。render() は状態にエラーが無いとメッセージを隠すので、
+ * 録音中は検知の報告（約 5 秒ごと）ですぐ消えてしまう。しばらくは隠さない（2026-10-19 のレビュー）
+ */
+let noticeUntil = 0;
+function showNotice(text: string) {
+  showMessage(text);
+  noticeUntil = Date.now() + 10_000;
+}
+
 function applyStats(stats: CaptureStats) {
   elapsed.textContent = formatElapsed(stats.elapsedMs);
   // RMS of speech sits around 0.02–0.2; stretch it so the meter is readable.
@@ -529,67 +538,124 @@ $<HTMLButtonElement>('confirmCancel').addEventListener('click', () => confirmDia
  * 一覧は状態が変わると描き直すので、入力中の行と文字を覚えておき、描き直しても入力欄のまま残す
  */
 let editing: { sessionId: string; value: string } | null = null;
-/** 一覧を入れ替えている最中（titleEditor のフォーカス外れを無視する） */
+/**
+ * 入力欄を入れ替えている最中（titleEditor のフォーカス外れを無視する）。Chromium は外す途中、まだつながっている間に
+ * フォーカス外れを出すので、isConnected では見分けられない（2026-10-18 のレビュー）
+ */
 let rerendering = false;
+/** キーボード（Enter・Esc）で一覧の入力欄を閉じたら、描き直したあとその行の見出しにフォーカスを戻す */
+let refocusTitle: string | null = null;
+
+/** 見出しを編集できる見出しにする（押す・Enter・F2 で入力欄。一覧の行と、録音中の「名前」の行で同じ） */
+function setEditable(el: HTMLElement, editable: boolean, label: string) {
+  el.classList.toggle('editable', editable);
+  if (editable) {
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', `${label}（押すと名前を変えられます）`);
+  } else {
+    el.removeAttribute('tabindex');
+    el.removeAttribute('role');
+    el.removeAttribute('aria-label');
+  }
+}
+
+/** 押す・Enter・F2 で onStart を呼ぶ */
+function onEditKey(el: HTMLElement, onStart: () => void) {
+  el.addEventListener('click', () => onStart());
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== 'F2') return;
+    e.preventDefault();
+    onStart();
+  });
+}
+
+/** 一覧の行の入力欄（入力中の文字は editing に残し、描き直しても戻す） */
+function listEditor(sessionId: string, title: string, onSave: (value: string | null) => void): HTMLInputElement {
+  const draft = editing?.sessionId === sessionId ? editing : (editing = { sessionId, value: title });
+  return titleEditor(title, {
+    draft,
+    onSave: (value, byKeyboard) => {
+      editing = null;
+      if (byKeyboard) refocusTitle = sessionId;
+      onSave(value);
+    },
+    onCancel: (byKeyboard) => {
+      editing = null;
+      if (byKeyboard) refocusTitle = sessionId;
+      void renderSessions();
+    },
+  });
+}
 
 /** 見出しを入力欄にする */
 function startEditing(sessionId: string, title: string, nameEl: HTMLElement, onSave: (value: string | null) => void) {
   editing = { sessionId, value: title };
   hideSessionTip(false);
-  const input = titleEditor(title, onSave);
+  const input = listEditor(sessionId, title, onSave);
   nameEl.replaceWith(input);
   input.focus();
   input.select();
 }
 
+const codePoints = (s: string) => Array.from(s).length;
+
 /**
  * 名前の入力欄。保存は Enter とフォーカスが外れたとき（ほかの所を押した）。日本語の変換を確定する Enter では保存しない。
- * 描き直しで入力欄が外されたときのフォーカス外れは保存しない（描き直した側に入力欄がある）。Chromium は外す途中、まだ
- * つながっている間にフォーカス外れを出すので、isConnected では見分けられない。描き直しの間だけ立てる印（rerendering）で見る
- * （2026-10-18 のレビュー）。サーバーと同じ条件（100 文字まで、改行・タブなし）に合わない名前は保存しない
+ * 何も変えていなければ保存しない（長いページタイトルのままでも失敗にしない）。名前はサーバーと同じ条件に揃えて保存する
+ * （normalizeSessionName: 改行やタブは空白、100 文字まで）。入力の途中でも、貼り付けた改行・タブは空白にし、100 文字を
+ * 超えて長くする入力は戻す（初めから長いページタイトルは、削るまでそのまま）。2026-10-19 のレビュー
  */
-function titleEditor(title: string, onSave: (value: string | null) => void): HTMLInputElement {
+function titleEditor(
+  title: string,
+  options: { onSave: (value: string | null, byKeyboard: boolean) => void; onCancel: (byKeyboard: boolean) => void; draft?: { value: string } },
+): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'sessionTitleInput';
-  input.maxLength = 100;
-  input.value = editing?.value ?? title;
+  input.value = options.draft?.value ?? title;
   input.setAttribute('aria-label', '名前');
   input.title = 'Enterで保存、Escで取り消し。空にして保存すると元の名前（ページタイトル）に戻ります';
-  let finished = false;
-  const finish = (save: boolean, byBlur = false) => {
-    if (finished) return;
-    const value = save ? checkSessionName(input.value) : undefined;
-    if (save && value === undefined) {
-      showMessage(`名前は${NAME_MAX_CHARS}文字以内で、改行やタブを含めずに付けてください`);
-      // Enter なら直せるように入力欄のまま。ほかの所を押したなら取り消す
-      if (!byBlur) return;
-    }
-    finished = true;
-    editing = null;
-    if (value !== undefined && (value ?? '') !== title) {
-      input.disabled = true;
-      onSave(value);
-    } else {
-      void renderSessions();
-    }
+  let previous = input.value;
+  const tidy = () => {
+    const cleaned = Array.from(input.value)
+      .map((c) => (c.codePointAt(0)! < 0x20 || c.codePointAt(0) === 0x7f ? ' ' : c))
+      .join('');
+    const next = codePoints(cleaned) > NAME_MAX_CHARS && codePoints(cleaned) > codePoints(previous) ? previous : cleaned;
+    if (next !== input.value) input.value = next;
+    previous = input.value;
+    if (options.draft) options.draft.value = input.value;
   };
-  input.addEventListener('input', () => {
-    if (editing) editing.value = input.value;
+  let finished = false;
+  const finish = (save: boolean, byKeyboard: boolean) => {
+    if (finished) return;
+    finished = true;
+    if (!save || input.value.trim() === title.trim()) {
+      options.onCancel(byKeyboard);
+      return;
+    }
+    input.disabled = true;
+    options.onSave(normalizeSessionName(input.value), byKeyboard);
+  };
+  input.addEventListener('input', (e) => {
+    // 変換中は触らない（確定したときに compositionend で整える）
+    if (!(e as InputEvent).isComposing) tidy();
+    else if (options.draft) options.draft.value = input.value;
   });
+  input.addEventListener('compositionend', tidy);
   input.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
-      finish(true);
+      finish(true, true);
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      finish(false);
+      finish(false, true);
     }
   });
   input.addEventListener('blur', () => {
     if (rerendering || !input.isConnected) return;
-    finish(true, true);
+    finish(true, false);
   });
   return input;
 }
@@ -645,6 +711,92 @@ async function saveName(session: StoredSession, name: string | null, missing: bo
   await setSessionName(session.sessionId, name ?? undefined);
 }
 
+/**
+ * 録音中の講義の名前（§14、2026-10-19）。録音中は上の「名前」の行に出し、押すと一覧と同じ入力欄になる。
+ * 名前の保存は service worker に頼む（SET_ACTIVE_NAME）。service worker は録音の停止・送信と同じ順番待ちの中で、録音中であることを
+ * 確かめてから録音の側（session.json の name）に書き、状態（state.name）にも残す。止まったあとに届いたら断る。こうすると、
+ * Stop ボタン・タブを閉じた・Chrome が録音を終えた、のどの止まり方でも、送る中身に名前が入るか、入らないことを知らせられる
+ * （2026-10-19 のレビュー）。名前は状態から出すので、別のウィンドウのパネルにも同じ名前が出る
+ */
+let activeEdit: { input: HTMLInputElement; sessionId: string; title: string } | null = null;
+/** 名前を保存している途中（Stop はこれを待ってから止める） */
+let activeSave: Promise<unknown> | null = null;
+/** 保存の返事を待っている間に出す名前（返事が来たら状態の名前に戻す） */
+let pendingName: { sessionId: string; name: string | null } | null = null;
+
+function renderActiveName(state: SessionState) {
+  if (activeEdit) {
+    // 入力の途中で録音が止まったら、入力欄を閉じる（止まったあとの名前は送る中身に入らないので、一覧で付けてもらう）
+    if (state.state === 'CAPTURING' && state.sessionId === activeEdit.sessionId) return;
+    const changed = activeEdit.input.value.trim() !== activeEdit.title.trim();
+    closeActiveEditor(false);
+    if (changed) showNotice('録音が止まったので、名前は付けていません。一覧の見出しを押して付けてください');
+  }
+  const sessionId = isActive(state) ? state.sessionId : undefined;
+  const pending = pendingName && pendingName.sessionId === sessionId ? pendingName : null;
+  const name = pending ? pending.name : state.name;
+  const text = name ?? state.title ?? '—';
+  tabValue.textContent = text;
+  tabValue.title = text;
+  // 変えられるのは録音中だけ（止めている途中・送信のあとは一覧で変える）
+  setEditable(tabValue, state.state === 'CAPTURING' && !!sessionId, text);
+}
+
+function closeActiveEditor(byKeyboard: boolean) {
+  if (!activeEdit) return;
+  const { input } = activeEdit;
+  activeEdit = null;
+  // 入れ替えで出るフォーカス外れは保存にしない
+  rerendering = true;
+  try {
+    input.replaceWith(tabValue);
+  } finally {
+    rerendering = false;
+  }
+  if (byKeyboard) tabValue.focus();
+}
+
+function startActiveEditing() {
+  const state = current;
+  const sessionId = state.sessionId;
+  if (state.state !== 'CAPTURING' || !sessionId || activeEdit) return;
+  const shown = state.name ?? state.title ?? '';
+  const input = titleEditor(shown, {
+    onSave: (value, byKeyboard) => {
+      closeActiveEditor(byKeyboard);
+      saveActiveName(sessionId, value);
+    },
+    onCancel: (byKeyboard) => {
+      closeActiveEditor(byKeyboard);
+      renderActiveName(current);
+    },
+  });
+  activeEdit = { input, sessionId, title: shown };
+  tabValue.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+/** 名前を service worker に渡す。返事が来るまでは入れた名前を出しておき、断られたら知らせて戻す */
+function saveActiveName(sessionId: string, name: string | null) {
+  pendingName = { sessionId, name };
+  renderActiveName(current);
+  const run = sendToBackground
+    .setActiveName(sessionId, name)
+    .then(({ state }) => {
+      current = state;
+    })
+    .catch((e: unknown) => showNotice(`名前を保存できませんでした: ${toErrorInfo(e).message}`))
+    .finally(() => {
+      if (pendingName?.sessionId === sessionId && pendingName.name === name) pendingName = null;
+      if (activeSave === run) activeSave = null;
+      renderActiveName(current);
+    });
+  activeSave = run;
+}
+
+onEditKey(tabValue, () => startActiveEditing());
+
 /** 確認を出して、OK なら true。Esc やキャンセルで false */
 function askConfirm(text: string, okLabel: string): Promise<boolean> {
   confirmText.textContent = text;
@@ -692,6 +844,10 @@ async function renderSessions() {
   if (editor) {
     editor.focus();
     editor.setSelectionRange(editor.value.length, editor.value.length);
+  } else if (refocusTitle) {
+    // キーボードで入力欄を閉じたら、その行の見出しにフォーカスを戻す
+    sessionList.querySelector<HTMLElement>(`li[data-session-id="${refocusTitle}"] .sessionTitle`)?.focus();
+    refocusTitle = null;
   }
   renderMoreToggle();
   hiddenToggle.hidden = hiddenCount === 0;
@@ -777,21 +933,13 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   // 見出しをクリックすると名前を変えられる（§14）。処理中・送信待ちの行は変えない（サーバーもフォルダを付け替えない）
   const save = (value: string | null) => {
     void renameSession(session, value, missing).catch((e: unknown) => {
-      showMessage(`名前を変えられませんでした: ${toErrorInfo(e).message}`);
+      showNotice(`名前を変えられませんでした: ${toErrorInfo(e).message}`);
       void renderSessions();
     });
   };
   if (!inFlight) {
-    name.classList.add('editable');
-    name.tabIndex = 0;
-    name.setAttribute('role', 'button');
-    name.setAttribute('aria-label', `${title}（押すと名前を変えられます）`);
-    name.addEventListener('click', () => startEditing(session.sessionId, title, name, save));
-    name.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' && e.key !== 'F2') return;
-      e.preventDefault();
-      startEditing(session.sessionId, title, name, save);
-    });
+    setEditable(name, true, title);
+    onEditKey(name, () => startEditing(session.sessionId, title, name, save));
   }
   const parts = [formatSessionId(session.sessionId), formatBytes(session.audioBytes), `${session.slideCount} 枚`];
   if (session.status?.durationMs !== undefined) parts.splice(1, 0, formatElapsed(session.status.durationMs));
@@ -811,7 +959,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
   });
   li.addEventListener('focusout', () => hideSessionTip());
   // 名前を変えている途中の行は、描き直しても入力欄のまま
-  main.append(editing?.sessionId === session.sessionId && !inFlight ? titleEditor(title, save) : name);
+  main.append(editing?.sessionId === session.sessionId && !inFlight ? listEditor(session.sessionId, title, save) : name);
 
   const btns = document.createElement('div');
   btns.className = 'sessionBtns';
@@ -909,6 +1057,7 @@ function sessionItem(session: StoredSession): HTMLLIElement {
 
 async function act(run: () => Promise<{ state: SessionState }>) {
   message.hidden = true;
+  noticeUntil = 0;
   try {
     sessionsKey = ''; // 操作後は一覧を必ず描き直す
     outputMissing.clear(); // フォルダの有無も聞き直す
@@ -931,7 +1080,11 @@ startBtn.addEventListener('click', () => {
 
 stopBtn.addEventListener('click', () => {
   stopBtn.disabled = true;
-  void act(() => sendToBackground.stop());
+  void act(async () => {
+    // 録音中の名前を保存している途中なら終わるのを待つ（service worker でも順番に処理するが、送る順を確実にする。§14）
+    await activeSave?.catch(() => undefined);
+    return sendToBackground.stop();
+  });
 });
 
 openBtn.addEventListener('click', () => {

@@ -50,6 +50,8 @@ export type SessionState = {
   title?: string;
   /** ISO 8601. Set once the offscreen document has started capturing. */
   startedAt?: string;
+  /** 録音中の講義に利用者が付けた名前（§14、2026-10-19）。録音が止まると状態ごと消え、以後は録音の側の session.json にだけ残る */
+  name?: string;
   warnings: WarningCode[];
   error?: ErrorInfo;
   /** スライド用フレームの取得元。'direct' = content script が <video> を直接読む、'none' = 音声のみ */

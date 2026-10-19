@@ -30,6 +30,7 @@ import {
   listFiles,
   patchStatusFile,
   readFile,
+  setSessionName,
   readJson,
   sessionDir,
   writeJson,
@@ -158,6 +159,10 @@ async function handleMessage(msg: ToOffscreen): Promise<object | void> {
       return revokeUrls(msg.urls);
     case 'DISCARD':
       return discardSession(msg.sessionId);
+    case 'SET_NAME':
+      // 録音の側の session.json の name（§14）。録音中は session.json を書き換えないので、ここで書いても送る中身と食い違わない
+      await setSessionName(msg.sessionId, msg.name ?? undefined);
+      return {};
     case 'SLIDE':
       return saveSlide(msg);
     case 'SLIDE_UPDATE':

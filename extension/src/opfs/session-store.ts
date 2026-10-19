@@ -144,15 +144,17 @@ export async function setNotesProblem(sessionId: string, problem: SessionStatus[
 export const NAME_MAX_CHARS = 100;
 
 /**
- * 入力された名前を、サーバー（cleanName）と同じ条件で確かめる（§14）。前後の空白は落とし、空なら null（名前を外す）。
- * 長すぎる・改行やタブなどの制御文字を含むなら undefined（保存しない。送ってもサーバーが使わないため）
+ * 入力された名前を、サーバー（cleanName）が受け付ける形に揃える（§14、2026-10-19 のレビュー）。改行やタブなどの制御文字は空白にし、
+ * 前後の空白を落として 100 文字（code point）までにする。空なら null（名前を外す）。入力欄で失敗を出すと、Stop を押したときの
+ * フォーカス外れでは知らせが消えて名前が黙って捨てられたため、揃えて保存する
  */
-export function checkSessionName(raw: string): string | null | undefined {
-  const name = raw.trim();
-  if (name === '') return null;
-  const chars = Array.from(name);
-  if (chars.some((c) => c.codePointAt(0)! < 0x20 || c.codePointAt(0) === 0x7f)) return undefined;
-  return chars.length > NAME_MAX_CHARS ? undefined : name;
+export function normalizeSessionName(raw: string): string | null {
+  const cleaned = Array.from(raw)
+    .map((c) => (c.codePointAt(0)! < 0x20 || c.codePointAt(0) === 0x7f ? ' ' : c))
+    .join('')
+    .trim();
+  if (cleaned === '') return null;
+  return Array.from(cleaned).slice(0, NAME_MAX_CHARS).join('').trim();
 }
 
 /** 利用者が付けた名前（session.json の name）を書く。undefined なら外す（§14）。session.json が読めなければ投げる */

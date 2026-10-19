@@ -238,6 +238,8 @@ async function handleMessage(msg: ToBackground, sender: chrome.runtime.MessageSe
       return captureFrame();
     case 'UPLOAD':
       return { state: await upload(msg.sessionId) };
+    case 'SET_ACTIVE_NAME':
+      return { state: await setActiveName(msg.sessionId, msg.name) };
     case 'SESSION_RENAMED':
       return { state: await onSessionRenamed(msg.sessionId, msg.outputDir) };
     case 'PROCESS_STATUS':
@@ -752,6 +754,24 @@ async function cancelOnServer(sessionId: string, server: Config['server'], remov
   } catch {
     // サーバーが落ちていれば処理も止まっている
   }
+}
+
+/**
+ * 録音中の講義に名前を付ける（§14、2026-10-19）。メッセージは serialized() の中で順に処理するので、Stop ボタン・タブを閉じた・
+ * Chrome が録音を終えた、のどの止まり方とも順番が決まる。録音中ならここで録音の側（session.json）に書き終えてから止める（送る中身に
+ * 名前が入る）。止まったあとに届いたら断る（送る中身に入らないので、一覧で付けてもらう）
+ */
+async function setActiveName(sessionId: string, name: string | null): Promise<SessionState> {
+  const state = await readState();
+  if (state.state !== 'CAPTURING' || state.sessionId !== sessionId) {
+    throw new LecError('NOT_CAPTURING', '録音が止まったので、ここでは名前を付けられません。一覧の見出しを押して付けてください。');
+  }
+  await ensureOffscreenDocument();
+  await sendToOffscreen.setName(sessionId, name);
+  const { name: _old, ...rest } = state;
+  const next: SessionState = { ...rest, ...(name ? { name } : {}) };
+  await writeState(next);
+  return next;
 }
 
 /**

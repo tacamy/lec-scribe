@@ -40,6 +40,11 @@
       </section>
 
       <section class="rows" id="rows">
+        <!-- 録音中の講義の名前（§14）。いちばん上に置く（2026-10-19）。録音中は押すと名前を付けられる -->
+        <div class="row" id="tabRow" hidden>
+          <span class="label">名前</span>
+          <span class="value ellipsis" id="tabValue" title="">—</span>
+        </div>
         <div class="row" id="audioRow" hidden>
           <span class="label">Audio</span>
           <span class="value" id="audioValue">—</span>
@@ -52,10 +57,6 @@
         <div class="row" id="slidesRow" hidden>
           <span class="label">Slides</span>
           <span class="value" id="slidesValue">—</span>
-        </div>
-        <div class="row" id="tabRow" hidden>
-          <span class="label">Tab</span>
-          <span class="value ellipsis" id="tabValue" title="">—</span>
         </div>
         <div class="row">
           <span class="label">Server</span>
