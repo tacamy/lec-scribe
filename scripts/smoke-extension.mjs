@@ -750,6 +750,48 @@ try {
   assert.ok(serverApi >= requiredApi, `server api ${serverApi} < the extension's REQUIRED_SERVER_API ${requiredApi}`);
   console.log(`version: server api ${serverApi} satisfies the extension's ${requiredApi}`);
 
+  // §14: 録音中に「名前」の行を押して名前を付ける。本物の録音は headless では動かないので、OPFS に録音中の形のセッションを置き、
+  // 状態だけ録音中にして、パネルの表示と録音の側（session.json の name）への書き込みを見る
+  const recordingId = '20000102-000000-recn';
+  await panel.evaluate(async (sessionId) => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions', { create: true });
+    const dir = await root.getDirectoryHandle(sessionId, { create: true });
+    for (const [name, value] of [['session.json', { sessionId, title: '録音中のページ', startedAt: new Date().toISOString() }], ['status.json', { stage: 'capturing' }]]) {
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(JSON.stringify(value));
+      await writable.close();
+    }
+  }, recordingId);
+  const stateBeforeRecording = await panel.evaluate(async () => (await chrome.storage.session.get('session')).session);
+  const recordingState = { ...stateBeforeRecording, state: 'CAPTURING', sessionId: recordingId, title: '録音中のページ', startedAt: new Date().toISOString() };
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), recordingState);
+  await panel.waitForFunction(() => document.getElementById('tabValue')?.classList.contains('editable') && document.getElementById('tabValue')?.textContent === '録音中のページ', null, { timeout: 5_000 });
+  assert.equal(await panel.evaluate(() => document.querySelector('#tabRow .label')?.textContent), '名前');
+  await panel.click('#tabValue');
+  const recordingInput = '#tabRow input.sessionTitleInput';
+  assert.equal(await panel.inputValue(recordingInput), '録音中のページ', 'the editor starts from the page title');
+  await panel.fill(recordingInput, 'デザイン基礎3 - 第1回');
+  await panel.press(recordingInput, 'Enter');
+  await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === 'デザイン基礎3 - 第1回', null, { timeout: 5_000 });
+  const recordingMeta = await panel.evaluate(async (sessionId) => {
+    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(sessionId);
+    return JSON.parse(await (await (await dir.getFileHandle('session.json')).getFile()).text());
+  }, recordingId);
+  assert.equal(recordingMeta.name, 'デザイン基礎3 - 第1回', JSON.stringify(recordingMeta));
+  // パネルを開き直しても、録音の側から読んで名前を出す
+  await panel.reload();
+  await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === 'デザイン基礎3 - 第1回', null, { timeout: 5_000 });
+  // 空にして保存すると、ページタイトルに戻る
+  await panel.click('#tabValue');
+  await panel.fill(recordingInput, '');
+  await panel.press(recordingInput, 'Enter');
+  await panel.waitForFunction(() => document.getElementById('tabValue')?.textContent === '録音中のページ', null, { timeout: 5_000 });
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), stateBeforeRecording);
+  await panel.evaluate(async (sessionId) => (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).removeEntry(sessionId, { recursive: true }), recordingId);
+  await panel.reload();
+  await panel.waitForSelector('#startBtn', { state: 'attached' });
+  console.log('name: while recording, clicking the 名前 row named the recording in its session.json; an empty name restored the page title');
+
   // §15.1: 一覧は全件を描いておき、11 件目からは見た目だけ畳む。録音は時間がかかるので、OPFS に空のセッションを直接置いて件数を増やす
   // （録音済み・未送信の形。処理済みにするとパネルがサーバーにフォルダの有無を聞きに行く）。ID を古くして一覧の末尾に並べる
   const FAKE_SESSIONS = 12;

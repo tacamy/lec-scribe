@@ -123,8 +123,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .feedback { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 .feedback a { color: inherit; text-decoration: underline; }
 /* 見出しをクリックして名前を変える（§14） */
-.sessionTitle.editable { cursor: text; border-radius: 4px; }
-.sessionTitle.editable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
-.sessionTitle.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sessionTitle.editable, #tabValue.editable { cursor: text; border-radius: 4px; }
+.sessionTitle.editable:hover, #tabValue.editable:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.sessionTitle.editable:focus-visible, #tabValue.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .sessionTitleInput { box-sizing: border-box; width: 100%; min-width: 0; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg); color: var(--fg); font: inherit; }
 .sessionTitleInput:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }

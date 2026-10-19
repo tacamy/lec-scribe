@@ -4,7 +4,7 @@ import { ForeignServerError, ServerReplyError, fetchHealth, outdatedMessage, sav
 import { toErrorInfo } from '../../src/errors';
 import { formatBytes, formatElapsed, formatSessionId, notesProblemOf, notesProblemText, videoTimeNow } from '../../src/format';
 import { sendToBackground, sendToOffscreen, type CaptureStats, type ProbeSummary, type ServerStatus } from '../../src/messages';
-import { NAME_MAX_CHARS, checkSessionName, listSessions, sessionName, setNotesProblem, setOutputDir, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
+import { NAME_MAX_CHARS, checkSessionName, listSessions, readSessionMeta, sessionName, setNotesProblem, setOutputDir, setSessionHidden, setSessionName, type StoredSession } from '../../src/opfs/session-store';
 import type { VideoStatus } from '../../src/probe';
 import {
   INITIAL_STATE,
@@ -202,8 +202,7 @@ function render(state: SessionState) {
   dot.dataset.state = state.state;
   stateLabel.textContent = STATE_LABEL[state.state];
   dots.hidden = !BUSY_STATES.has(state.state);
-  tabValue.textContent = state.title ?? '—';
-  tabValue.title = state.title ?? '';
+  renderActiveName(state);
 
   // 録音中だけ状態の行を出す。録音完了直後は Audio 行に長さとサイズを残す
   const showAudio = active || (state.state === 'COMPLETED' && !!state.lastSession);
@@ -548,11 +547,11 @@ function startEditing(sessionId: string, title: string, nameEl: HTMLElement, onS
  * つながっている間にフォーカス外れを出すので、isConnected では見分けられない。描き直しの間だけ立てる印（rerendering）で見る
  * （2026-10-18 のレビュー）。サーバーと同じ条件（100 文字まで、改行・タブなし）に合わない名前は保存しない
  */
-function titleEditor(title: string, onSave: (value: string | null) => void): HTMLInputElement {
+function titleEditor(title: string, onSave: (value: string | null) => void, onCancel: () => void = () => void renderSessions()): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'sessionTitleInput';
-  input.maxLength = 100;
+  // 長さは保存するときに checkSessionName で数える（maxLength は UTF-16 で数え、入れておいた長いページタイトルに足せなくなるため）
   input.value = editing?.value ?? title;
   input.setAttribute('aria-label', '名前');
   input.title = 'Enterで保存、Escで取り消し。空にして保存すると元の名前（ページタイトル）に戻ります';
@@ -571,7 +570,7 @@ function titleEditor(title: string, onSave: (value: string | null) => void): HTM
       input.disabled = true;
       onSave(value);
     } else {
-      void renderSessions();
+      onCancel();
     }
   };
   input.addEventListener('input', () => {
@@ -644,6 +643,95 @@ async function saveName(session: StoredSession, name: string | null, missing: bo
   }
   await setSessionName(session.sessionId, name ?? undefined);
 }
+
+/**
+ * 録音中の講義の名前（§14、2026-10-19）。録音中は上の「名前」の行に出し、押すと一覧と同じ入力欄になる。
+ * まだ ~/LecScribe にフォルダが無いので、録音の側（session.json の name）に書くだけ。Stop のあと送るときにその名前でフォルダができる。
+ * 名前は録音の側から読んで覚えておく（パネルを開き直しても出す）
+ */
+let activeName: { sessionId: string; name: string | undefined } | null = null;
+/** 録音中の名前の入力欄（開いている間は、状態が変わっても行を描き直さない） */
+let activeEditor: HTMLInputElement | null = null;
+
+function renderActiveName(state: SessionState) {
+  if (activeEditor) return;
+  const sessionId = isActive(state) ? state.sessionId : undefined;
+  if (sessionId && activeName?.sessionId !== sessionId) {
+    activeName = { sessionId, name: undefined };
+    void readSessionMeta(sessionId)
+      .catch(() => undefined)
+      .then((meta) => {
+        if (activeName?.sessionId !== sessionId) return;
+        activeName = { sessionId, name: meta?.name?.trim() || undefined };
+        renderActiveName(current);
+      });
+  }
+  const name = sessionId && activeName?.sessionId === sessionId ? activeName.name : undefined;
+  const text = name ?? state.title ?? '—';
+  tabValue.textContent = text;
+  tabValue.title = text;
+  // 変えられるのは録音中だけ（止めている途中・送信のあとは一覧で変える）
+  const editable = state.state === 'CAPTURING' && !!sessionId;
+  tabValue.classList.toggle('editable', editable);
+  if (editable) {
+    tabValue.tabIndex = 0;
+    tabValue.setAttribute('role', 'button');
+    tabValue.setAttribute('aria-label', `${text}（押すと名前を変えられます）`);
+  } else {
+    tabValue.removeAttribute('tabindex');
+    tabValue.removeAttribute('role');
+    tabValue.removeAttribute('aria-label');
+  }
+}
+
+function startActiveEditing() {
+  const state = current;
+  const sessionId = state.sessionId;
+  if (state.state !== 'CAPTURING' || !sessionId || activeEditor) return;
+  const shown = (activeName?.sessionId === sessionId ? activeName.name : undefined) ?? state.title ?? '';
+  const close = () => {
+    activeEditor?.replaceWith(tabValue);
+    activeEditor = null;
+  };
+  const input = titleEditor(
+    shown,
+    (value) => {
+      close();
+      void saveActiveName(sessionId, value);
+    },
+    () => {
+      close();
+      renderActiveName(current);
+    },
+  );
+  activeEditor = input;
+  tabValue.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+/** 録音中の名前を録音の側に書く。書いている途中に Stop を押されたら、Stop は書き終わるのを待つ（renames） */
+async function saveActiveName(sessionId: string, name: string | null) {
+  const run = setSessionName(sessionId, name ?? undefined).then(() => {
+    if (activeName?.sessionId === sessionId) activeName = { sessionId, name: name ?? undefined };
+  });
+  renames.set(sessionId, run);
+  try {
+    await run;
+  } catch (e) {
+    showMessage(`名前を保存できませんでした: ${toErrorInfo(e).message}`);
+  } finally {
+    if (renames.get(sessionId) === run) renames.delete(sessionId);
+    renderActiveName(current);
+  }
+}
+
+tabValue.addEventListener('click', () => startActiveEditing());
+tabValue.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== 'F2') return;
+  e.preventDefault();
+  startActiveEditing();
+});
 
 /** 確認を出して、OK なら true。Esc やキャンセルで false */
 function askConfirm(text: string, okLabel: string): Promise<boolean> {
@@ -931,7 +1019,12 @@ startBtn.addEventListener('click', () => {
 
 stopBtn.addEventListener('click', () => {
   stopBtn.disabled = true;
-  void act(() => sendToBackground.stop());
+  void act(async () => {
+    // 録音中の名前を保存している途中なら終わるのを待つ（Stop のあとすぐ送るので、送る中身に名前を入れる。§14）
+    const id = current.sessionId;
+    if (id) await renames.get(id)?.catch(() => undefined);
+    return sendToBackground.stop();
+  });
 });
 
 openBtn.addEventListener('click', () => {

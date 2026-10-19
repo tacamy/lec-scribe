@@ -155,6 +155,11 @@ export function checkSessionName(raw: string): string | null | undefined {
   return chars.length > NAME_MAX_CHARS ? undefined : name;
 }
 
+/** 録音の情報（session.json）を読む。無い・読めなければ undefined */
+export async function readSessionMeta(sessionId: string): Promise<SessionMeta | undefined> {
+  return readJson<SessionMeta>(await sessionDir(sessionId), SESSION_FILE);
+}
+
 /** 利用者が付けた名前（session.json の name）を書く。undefined なら外す（§14）。session.json が読めなければ投げる */
 export async function setSessionName(sessionId: string, name: string | undefined): Promise<void> {
   const dir = await sessionDir(sessionId);
