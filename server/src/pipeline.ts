@@ -9,6 +9,7 @@ import { OUTLINE_VERSION, applyCorrections, checkWithFallback, createBackend, is
 import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCache } from './notes-cache.ts';
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry, type Section } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
+import { displayName, readSessionInfo } from './naming.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -521,9 +522,7 @@ export class Pipeline {
           videoStart: events ? toVideoTime(events, s.start) : s.start,
           videoEnd: events ? toVideoTime(events, s.end) : s.end,
         }));
-        const session = (await readJson(workPath(dir, 'session.json'))) as
-          | { title?: string; url?: string; startedAt?: string }
-          | undefined;
+        const session = await readSessionInfo(dir);
         /**
          * 載せる画像の並びから transcript.json・lecture.md・節・文字起こしのままのノートを作る。
          * 画像の救出（§13.4c）で並びが変わったら、ノート作成の段階で作り直す
@@ -548,7 +547,8 @@ export class Pipeline {
           // 割り当ては 1 回だけ。節は mapped の slide のまま束ね、lecture.md・notes.md で同じ節を使う。区間の数はもとの区間で数える
           const sections = groupAssigned(mapped, slides);
           const lectureInput = {
-            title: session?.title,
+            // 見出しは講義の名前（利用者が付けた名前、なければページタイトル。§14）
+            title: displayName(session),
             url: session?.url,
             startedAt: session?.startedAt,
             segments: mapped,
@@ -788,7 +788,7 @@ export class Pipeline {
           await this.writeNotes(
             dir,
             buildNotesMarkdown({
-              title: result.session?.title,
+              title: displayName(result.session),
               url: result.session?.url,
               startedAt: result.session?.startedAt,
               sections: result.sections,

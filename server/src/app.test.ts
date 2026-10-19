@@ -928,4 +928,213 @@ describe('local server', () => {
     const res = await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
     expect(res.status).toBe(409);
   });
+
+  describe('講義の名前（§14、2026-10-18）', () => {
+    const json = { ...headers, 'content-type': 'application/json' };
+    const startApp = async (overrides: Partial<ServerConfig>) => {
+      const { server: s } = createApp({ ...config, ...overrides }, TOKEN);
+      await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+      return { base: `http://127.0.0.1:${(s.address() as AddressInfo).port}`, close: () => new Promise<void>((resolve) => s.close(() => resolve())) };
+    };
+    /** セッションを作って音声と画像を置き、処理を始める。meta は POST /sessions に足す（title・name） */
+    const begin = async (b: string, sessionId: string, meta: object) => {
+      const created = (await (await fetch(`${b}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, ...meta }) })).json()) as { outputDir: string };
+      await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+      await fetch(`${b}/sessions/${sessionId}/files/slides/slide_001.png`, { method: 'PUT', headers, body: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) });
+      await fetch(`${b}/sessions/${sessionId}/files/slides.json`, { method: 'PUT', headers, body: JSON.stringify([{ filename: 'slide_001.png', videoTime: 0, t: 0 }]) });
+      await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+      return created.outputDir;
+    };
+    type Status = PipelineStatus;
+    const waitStage = async (b: string, sessionId: string, stage: string): Promise<Status> => {
+      for (let i = 0; i < 200; i++) {
+        const st = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as Status;
+        if (st.stage === stage) return st;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error(`stage ${stage} に入らなかった`);
+    };
+    const rename = async (b: string, sessionId: string, name: unknown) =>
+      fetch(`${b}/sessions/${sessionId}/name`, { method: 'POST', headers: json, body: JSON.stringify({ name }) });
+    const heading = async (dir: string) => (await readFile(path.join(dir, 'notes.md'), 'utf8')).split('\n')[0];
+    const sessionInfo = async (dir: string) => JSON.parse(await readFile(path.join(dir, '.lecscribe', 'session.json'), 'utf8')) as Record<string, unknown>;
+
+    it('名前を付けて送ると、フォルダ名とノートの見出しはその名前になる', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-sent') });
+      try {
+        const sessionId = '20261018-100000-nam1';
+        const dir = await begin(app.base, sessionId, { title: 'ページ', name: '第1回 デザインのプロセス' });
+        expect(path.basename(dir)).toBe(`第1回_デザインのプロセス_${sessionId}`);
+        const done = await waitStage(app.base, sessionId, 'done');
+        expect(done.outputDir).toBe(dir);
+        expect(await heading(dir)).toBe('# 第1回 デザインのプロセス');
+        expect(await sessionInfo(dir)).toMatchObject({ title: 'ページ', name: '第1回 デザインのプロセス' });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('名前を変えるとフォルダ名・見出し・status の outputDir が変わり、外すとページタイトルに戻る', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-rename') });
+      try {
+        const sessionId = '20261018-100000-nam2';
+        const first = await begin(app.base, sessionId, { title: 'ページ B' });
+        await waitStage(app.base, sessionId, 'done');
+        const res = await rename(app.base, sessionId, ' B の名前 ');
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { name: string; outputDir: string };
+        expect(body.name).toBe('B の名前');
+        expect(path.basename(body.outputDir)).toBe(`B_の名前_${sessionId}`);
+        await expect(stat(first)).rejects.toThrow();
+        expect(await heading(body.outputDir)).toBe('# B の名前');
+        expect((await readFile(path.join(body.outputDir, '.lecscribe', 'lecture.md'), 'utf8')).split('\n')[0]).toBe('# B の名前');
+        expect(await sessionInfo(body.outputDir)).toMatchObject({ title: 'ページ B', name: 'B の名前' });
+        // status の outputDir は今のフォルダ（pipeline.json に残る付け替え前の記録ではなく）
+        expect((await waitStage(app.base, sessionId, 'done')).outputDir).toBe(body.outputDir);
+        // 名前を付けたまま「やり直す」と、見出しは名前のまま
+        await fetch(`${app.base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+        await waitStage(app.base, sessionId, 'done');
+        expect(await heading(body.outputDir)).toBe('# B の名前');
+        // 外すとページタイトルに戻る
+        const cleared = (await (await rename(app.base, sessionId, null)).json()) as { name: string; outputDir: string };
+        expect(cleared.name).toBe('ページ B');
+        expect(path.basename(cleared.outputDir)).toBe(`ページ_B_${sessionId}`);
+        expect(await heading(cleared.outputDir)).toBe('# ページ B');
+        expect(await sessionInfo(cleared.outputDir)).not.toHaveProperty('name');
+        expect((await (await rename(app.base, sessionId, '')).json()) as { name: string }).toMatchObject({ name: 'ページ B' });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('名前の無い・形の合わない要求は 400、無い講義は 404 で、名前を消さない', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-bad') });
+      try {
+        const sessionId = '20261018-100000-nam4';
+        await begin(app.base, sessionId, { title: 'ページ D', name: 'D の名前' });
+        const done = await waitStage(app.base, sessionId, 'done');
+        expect((await rename(app.base, sessionId, '一行目\n二行目')).status).toBe(400);
+        expect((await rename(app.base, sessionId, 'あ'.repeat(101))).status).toBe(400);
+        expect((await rename(app.base, sessionId, 3)).status).toBe(400);
+        // name の項目が無い・本文が壊れている（取り違え）なら、外す扱いにしない
+        expect((await fetch(`${app.base}/sessions/${sessionId}/name`, { method: 'POST', headers: json, body: JSON.stringify({ Name: 'x' }) })).status).toBe(400);
+        expect((await fetch(`${app.base}/sessions/${sessionId}/name`, { method: 'POST', headers: json, body: '{' })).status).toBe(400);
+        expect(await sessionInfo(done.outputDir)).toMatchObject({ name: 'D の名前' });
+        expect((await rename(app.base, '20261018-100000-none', '名前')).status).toBe(404);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('名前もページタイトルも無い講義で名前を外すと、フォルダは ID だけ、見出しは「ノート」', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-untitled') });
+      try {
+        const sessionId = '20261018-100000-nam5';
+        await begin(app.base, sessionId, { name: 'X' });
+        const done = await waitStage(app.base, sessionId, 'done');
+        expect(await heading(done.outputDir)).toBe('# X');
+        const cleared = (await (await rename(app.base, sessionId, null)).json()) as { name: string | null; outputDir: string };
+        expect(cleared.name).toBeNull();
+        expect(path.basename(cleared.outputDir)).toBe(sessionId);
+        expect(await heading(cleared.outputDir)).toBe('# ノート');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('処理待ち・処理中は名前を変えられない（409）', async () => {
+      const slowCodex = await writeStub('codex-slow-name', 'sleep 30');
+      const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-name-busy') });
+      try {
+        const sessionId = '20261018-100000-nam3';
+        await begin(app.base, sessionId, { title: 'ページ C' });
+        await waitStage(app.base, sessionId, 'polishing');
+        const res = await rename(app.base, sessionId, '名前');
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+        await fetch(`${app.base}/sessions/${sessionId}/cancel`, { method: 'POST', headers: json, body: JSON.stringify({ delete: true }) });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('前に途中まで送ってあった録音を、名前を付けてから送り直すと、フォルダ名を名前に合わせる', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-resend') });
+      try {
+        const sessionId = '20261018-100000-nam6';
+        const created = (await (await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供' }) })).json()) as { outputDir: string };
+        expect(path.basename(created.outputDir)).toBe(`教材提供_${sessionId}`);
+        const resent = (await (await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: 'デザインのプロセス' }) })).json()) as { outputDir: string };
+        expect(path.basename(resent.outputDir)).toBe(`デザインのプロセス_${sessionId}`);
+        await expect(stat(created.outputDir)).rejects.toThrow();
+        // 形の合わない名前は使わない（送信は止めない）。名前が外れたので、フォルダもページタイトルに戻す
+        const bad = await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: '一行目\n二行目' }) });
+        expect(bad.status).toBe(201);
+        const badDir = ((await bad.json()) as { outputDir: string }).outputDir;
+        expect(path.basename(badDir)).toBe(`教材提供_${sessionId}`);
+        expect(await sessionInfo(badDir)).not.toHaveProperty('name');
+        // 送る前に名前を外した録音を送り直しても、ページタイトルのフォルダに戻る
+        await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供', name: 'A' }) });
+        const cleared = (await (await fetch(`${app.base}/sessions`, { method: 'POST', headers: json, body: JSON.stringify({ sessionId, title: '教材提供' }) })).json()) as { outputDir: string };
+        expect(path.basename(cleared.outputDir)).toBe(`教材提供_${sessionId}`);
+        expect((await readdir(path.join(tmp, 'out-name-resend'))).filter((d) => d.endsWith(sessionId))).toEqual([`教材提供_${sessionId}`]);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('同じ講義への名前の変更が重なっても、1 つずつ通ってフォルダと session.json が食い違わない', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-race') });
+      try {
+        const sessionId = '20261018-100000-nam7';
+        await begin(app.base, sessionId, { title: 'ページ E' });
+        await waitStage(app.base, sessionId, 'done');
+        const [a, b] = await Promise.all([rename(app.base, sessionId, '名前 A'), rename(app.base, sessionId, '名前 B')]);
+        expect([a.status, b.status]).toEqual([200, 200]);
+        const dirs = (await readdir(path.join(tmp, 'out-name-race'))).filter((d) => d.endsWith(sessionId));
+        expect(dirs).toEqual([`名前_B_${sessionId}`]);
+        expect(await sessionInfo(path.join(tmp, 'out-name-race', dirs[0]!))).toMatchObject({ name: '名前 B' });
+        expect(await heading(path.join(tmp, 'out-name-race', dirs[0]!))).toBe('# 名前 B');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('大文字小文字だけ違う名前に変えても、フォルダ名が変わる（macOS の既定は大文字小文字を区別しない）', async () => {
+      const app = await startApp({ outDir: path.join(tmp, 'out-name-case') });
+      try {
+        const sessionId = '20261018-100000-nam8';
+        await begin(app.base, sessionId, { title: 'ページ F', name: 'lecture 1' });
+        await waitStage(app.base, sessionId, 'done');
+        const body = (await (await rename(app.base, sessionId, 'Lecture 1')).json()) as { outputDir: string };
+        expect(path.basename(body.outputDir)).toBe(`Lecture_1_${sessionId}`);
+        expect((await readdir(path.join(tmp, 'out-name-case'))).filter((d) => d.endsWith(sessionId))).toEqual([`Lecture_1_${sessionId}`]);
+        expect(await heading(body.outputDir)).toBe('# Lecture 1');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('作業ファイルを .lecscribe/ に移す前の古い配置でも、先に移してから名前を変える', async () => {
+      const outDir = path.join(tmp, 'out-name-legacy');
+      const app = await startApp({ outDir });
+      try {
+        const sessionId = '20261018-100000-nam9';
+        const dir = path.join(outDir, `${sessionId}_legacy`);
+        await mkdir(path.join(dir, 'slides'), { recursive: true });
+        await writeFile(path.join(dir, 'session.json'), JSON.stringify({ sessionId, title: 'legacy', url: 'https://example.com/legacy' }));
+        await writeFile(path.join(dir, 'notes.md'), '# legacy\n\n本文\n');
+        await writeFile(path.join(dir, 'lecture.md'), '# legacy\n');
+        const res = await rename(app.base, sessionId, '新しい名前');
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { outputDir: string };
+        expect(path.basename(body.outputDir)).toBe(`新しい名前_${sessionId}`);
+        expect(await sessionInfo(body.outputDir)).toMatchObject({ title: 'legacy', url: 'https://example.com/legacy', name: '新しい名前' });
+        expect(await heading(body.outputDir)).toBe('# 新しい名前');
+        expect((await readFile(path.join(body.outputDir, '.lecscribe', 'lecture.md'), 'utf8')).split('\n')[0]).toBe('# 新しい名前');
+      } finally {
+        await app.close();
+      }
+    });
+  });
 });

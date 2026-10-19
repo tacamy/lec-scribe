@@ -583,6 +583,46 @@ try {
     '2099-01-01 00:00:01',
     { timeout: 10_000 },
   );
+  // 名前を変える（§14）: 行の見出しをクリック → 入力欄で Enter → サーバーのフォルダ名とノートの見出し、一覧の名前が変わる
+  const frameRow = `#sessionList li[data-session-id="${frameSession}"]`;
+  await panel.click(`${frameRow} .sessionTitle`);
+  const titleInput = `${frameRow} input.sessionTitleInput`;
+  assert.equal(await panel.inputValue(titleInput), 'smoke frames', 'the editor starts from the current name');
+  // Esc で取り消すと何も変わらない
+  await panel.press(titleInput, 'Escape');
+  await panel.waitForSelector(`${frameRow} .sessionTitle`, { timeout: 5_000 });
+  // 入力中に一覧が描き直されても、入力欄のまま残り、途中の文字で保存しない（Chromium は入れ替えの途中で blur を出す。2026-10-18 のレビュー）
+  await panel.click(`${frameRow} .sessionTitle`);
+  await panel.fill(titleInput, 'デザ');
+  await panel.evaluate((sel) => (document.querySelector(sel).dataset.before = '1'), titleInput);
+  const stateBefore = await panel.evaluate(async () => (await chrome.storage.session.get('session')).session);
+  // 一覧に関係する状態（sessionId）だけを変えて、パネルに描き直させる
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: { ...s, sessionId: 'rerender-probe' } }), stateBefore);
+  await panel.waitForFunction((sel) => { const el = document.querySelector(sel); return el && !el.dataset.before; }, titleInput, { timeout: 5_000 });
+  await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), stateBefore);
+  assert.equal(await panel.inputValue(titleInput), 'デザ', 'the editor keeps the typed text across a re-render');
+  assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [outDir], 'a re-render must not save the half-typed name');
+  await panel.fill(titleInput, 'スモーク 動画 1');
+  await panel.press(titleInput, 'Enter');
+  await panel.waitForFunction((sel) => document.querySelector(`${sel} .sessionTitle`)?.textContent === 'スモーク 動画 1', frameRow, { timeout: 10_000 });
+  const renamedDir = `スモーク_動画_1_${frameSession}`;
+  assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [renamedDir]);
+  assert.equal(readFileSync(path.join(serverOut, renamedDir, 'notes.md'), 'utf8').split('\n')[0], '# スモーク 動画 1');
+  const renamedMeta = await panel.evaluate(async (id) => {
+    const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
+    const read = async (name) => JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text());
+    return { meta: await read('session.json'), status: await read('status.json') };
+  }, frameSession);
+  assert.equal(renamedMeta.meta.name, 'スモーク 動画 1', JSON.stringify(renamedMeta.meta));
+  assert.equal(renamedMeta.status.outputDir, path.join(serverOut, renamedDir), JSON.stringify(renamedMeta.status));
+  // 空にして保存すると元の名前（ページタイトル）に戻る
+  await panel.click(`${frameRow} .sessionTitle`);
+  await panel.fill(titleInput, '');
+  await panel.press(titleInput, 'Enter');
+  await panel.waitForFunction((sel) => document.querySelector(`${sel} .sessionTitle`)?.textContent === 'smoke frames', frameRow, { timeout: 10_000 });
+  assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [`smoke_frames_${frameSession}`]);
+  assert.equal(readFileSync(path.join(serverOut, `smoke_frames_${frameSession}`, 'notes.md'), 'utf8').split('\n')[0], '# smoke frames');
+  console.log('name: clicking a row title renamed the server folder, the notes heading and the row; an empty name restored the page title');
   const beforeDiscard = (await panel.evaluate(() => chrome.runtime.sendMessage({ target: 'sw', type: 'GET_STATE' }))).state;
   const discardedFrames = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'DISCARD', sessionId: id }), frameSession);
   assert.equal(discardedFrames.ok, true, `${JSON.stringify(discardedFrames)}\nstate before discard: ${JSON.stringify(beforeDiscard)}`);

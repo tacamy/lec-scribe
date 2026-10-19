@@ -117,11 +117,15 @@ export async function listFiles(dir: FileSystemDirectoryHandle): Promise<File[]>
   return files.sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
+/** status.json の一部を書き換える（読んでから足す）。offscreen・一覧で同じ形を使う */
+export async function patchStatusFile(dir: FileSystemDirectoryHandle, patch: Partial<SessionStatus>): Promise<void> {
+  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
+  await writeJson(dir, STATUS_FILE, { ...status, ...patch });
+}
+
 /** 一覧で隠す・戻す（status.json の hidden）。録音のデータは残す */
 export async function setSessionHidden(sessionId: string, hidden: boolean): Promise<void> {
-  const dir = await sessionDir(sessionId);
-  const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
-  await writeJson(dir, STATUS_FILE, { ...status, hidden });
+  await patchStatusFile(await sessionDir(sessionId), { hidden });
 }
 
 /**
@@ -134,6 +138,44 @@ export async function setNotesProblem(sessionId: string, problem: SessionStatus[
   const status = (await readJson<SessionStatus>(dir, STATUS_FILE)) ?? { stage: 'captured' as const };
   const { notesProblem: _oldProblem, notesError: _oldError, ...rest } = status;
   await writeJson(dir, STATUS_FILE, { ...rest, ...(problem ? { notesProblem: problem, ...(error ? { notesError: error } : {}) } : {}) });
+}
+
+/** 名前の長さの上限。サーバーの NAME_MAX_CHARS（server/src/naming.ts）と同じ */
+export const NAME_MAX_CHARS = 100;
+
+/**
+ * 入力された名前を、サーバー（cleanName）と同じ条件で確かめる（§14）。前後の空白は落とし、空なら null（名前を外す）。
+ * 長すぎる・改行やタブなどの制御文字を含むなら undefined（保存しない。送ってもサーバーが使わないため）
+ */
+export function checkSessionName(raw: string): string | null | undefined {
+  const name = raw.trim();
+  if (name === '') return null;
+  const chars = Array.from(name);
+  if (chars.some((c) => c.codePointAt(0)! < 0x20 || c.codePointAt(0) === 0x7f)) return undefined;
+  return chars.length > NAME_MAX_CHARS ? undefined : name;
+}
+
+/** 利用者が付けた名前（session.json の name）を書く。undefined なら外す（§14）。session.json が読めなければ投げる */
+export async function setSessionName(sessionId: string, name: string | undefined): Promise<void> {
+  const dir = await sessionDir(sessionId);
+  const meta = await readJson<SessionMeta>(dir, SESSION_FILE);
+  if (!meta) throw new Error('録音の情報（session.json）が読めないので、名前を保存できません');
+  const { name: _old, ...rest } = meta;
+  await writeJson(dir, SESSION_FILE, { ...rest, ...(name ? { name } : {}) });
+}
+
+/** 名前を変えて付け替わったフォルダ（status.json の outputDir）を書く（§14） */
+export async function setOutputDir(sessionId: string, outputDir: string): Promise<void> {
+  await patchStatusFile(await sessionDir(sessionId), { outputDir });
+}
+
+/** 一覧に出す名前。利用者が付けた名前、なければページタイトル（§14） */
+export function sessionName(session: Pick<StoredSession, 'meta'>): string | undefined {
+  for (const v of [session.meta?.name, session.meta?.title]) {
+    const s = v?.trim();
+    if (s) return s;
+  }
+  return undefined;
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

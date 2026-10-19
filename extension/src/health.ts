@@ -87,11 +87,18 @@ export class ForeignServerError extends Error {
   }
 }
 
-/**
- * /health を読む。繋がらなければ投げる（呼び出し側が「見つからない」として扱う）。
- * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
- * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
- */
+/** サーバーが LecScribe として断った（404 など）。場合分けできるように HTTP の番号とサーバーの code を持つ */
+export class ServerReplyError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ServerReplyError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 /**
  * サーバーの API を呼ぶ共通形: LecScribe の応答か確かめ、失敗はサーバーの日本語メッセージ（無ければ HTTP の番号）で投げる。
  * fetchHealth / fetchLlmSettings / saveLlmSettings で同じ定型を繰り返さないため（2026-10-01 のレビュー）
@@ -113,10 +120,29 @@ async function requestJson(
   });
   const body: unknown = await res.json().catch(() => undefined);
   if (!isLecScribeReply(body)) throw new ForeignServerError(server.port);
-  if (!res.ok || !body.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+  if (!res.ok || !body.ok) throw new ServerReplyError(body.error?.message ?? `HTTP ${res.status}`, res.status, body.error?.code);
   return body as Record<string, unknown>;
 }
 
+/**
+ * 講義の名前を変える（POST /sessions/:id/name、api 6。§14）。null で名前を外してページタイトルに戻す。
+ * サーバーのフォルダ名とノートの見出しも変わり、付け替えた先のフォルダが返る。
+ * フォルダが無ければ code NO_SESSION、受け口の無い古いサーバー（api 6 より前）なら code NOT_FOUND の ServerReplyError
+ */
+export async function saveSessionName(
+  server: Pick<Config['server'], 'port' | 'token'>,
+  sessionId: string,
+  name: string | null,
+): Promise<{ outputDir?: string }> {
+  const body = await requestJson(server, `/sessions/${encodeURIComponent(sessionId)}/name`, { method: 'POST', json: { name }, timeoutMs: 10_000 });
+  return typeof body['outputDir'] === 'string' ? { outputDir: body['outputDir'] } : {};
+}
+
+/**
+ * /health を読む。繋がらなければ投げる（呼び出し側が「見つからない」として扱う）。
+ * 応答はあるが LecScribe でなければ ForeignServerError（LecScribe の /health は拡張からの要求を拒まない）。
+ * 応答しないサーバー（ポートは開いているが返さない等）で待ち続けないよう既定 3 秒で打ち切る
+ */
 export async function fetchHealth(
   server: Pick<Config['server'], 'port' | 'token'>,
   options: { auth?: boolean; timeoutMs?: number } = {},

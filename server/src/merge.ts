@@ -390,6 +390,11 @@ function formatDate(iso: string | undefined): string | undefined {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** lecture.md・notes.md の 1 行目の見出し。名前（§14）が無ければ「ノート」。名前を変えたときの書き換え（naming.ts）も同じ形を使う */
+export function noteHeading(title: string | undefined): string {
+  return `# ${title?.trim() || 'ノート'}`;
+}
+
 export function buildLectureMarkdown(input: {
   title?: string;
   url?: string;
@@ -407,7 +412,7 @@ export function buildLectureMarkdown(input: {
   const leadSec = input.leadSec ?? CHANGE_LEAD_SEC;
   const sections = input.sections ?? groupSections(input.segments, input.slides, leadSec);
 
-  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}`, ''];
+  const lines: string[] = [noteHeading(input.title), ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
@@ -478,7 +483,7 @@ export function buildNotesMarkdown(input: {
   polished: ReadonlyMap<string, { text: string }>;
   outline?: Outline;
 }): string {
-  const lines: string[] = [`# ${input.title?.trim() || 'ノート'}`, ''];
+  const lines: string[] = [noteHeading(input.title), ''];
   const recorded = formatDate(input.startedAt);
   if (recorded) lines.push(`- 収録: ${recorded}`);
   if (input.url) lines.push(`- 元ページ: ${input.url}`);
