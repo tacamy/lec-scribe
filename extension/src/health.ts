@@ -48,8 +48,6 @@ export type LlmSettingsInfo = {
   llm?: string;
   llmModel?: string;
   llmCheckModel?: string;
-  /** 設定画面で変えた値が効いているか（false なら起動時の設定のまま） */
-  overridden?: boolean;
   /** Codex で今使えるモデル（表示順。api 7 から。§15.2） */
   models?: Array<{ slug: string; name: string }>;
   /** 系統ごとの、今の一覧でいちばん新しい版（terra → gpt-6.1-terra など。「最新の〜」はこれになる。api 7 から） */
@@ -64,7 +62,7 @@ export async function fetchLlmSettings(server: Pick<Config['server'], 'port' | '
 
 export async function saveLlmSettings(
   server: Pick<Config['server'], 'port' | 'token'>,
-  update: { llmModel?: string; llmCheckModel?: string; reset?: boolean },
+  update: { llmModel?: string; llmCheckModel?: string },
 ): Promise<LlmSettingsInfo> {
   return (await requestJson(server, '/settings', { method: 'POST', json: update })) as LlmSettingsInfo;
 }

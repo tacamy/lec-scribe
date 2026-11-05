@@ -25,13 +25,14 @@ case "$KIND" in
       codex login
     fi
     say "ノート作成を有効にします（codex）"
-    # LEC_SCRIBE_LLM_MODEL= は「前のバックエンド用のモデル名を消す」指定（agent.mjs は plist の設定を引き継ぐため）
-    LEC_SCRIBE_LLM=codex LEC_SCRIBE_LLM_MODEL= node "$APP_DIR/server/scripts/agent.mjs" install
+    # LEC_SCRIBE_LLM_MODEL= と LEC_SCRIBE_LLM_CHECK_MODEL= は「前に入れたモデル名を消す」指定（agent.mjs は plist の設定を
+    # 引き継ぐため）。codex は指定がなければ設定画面の「推奨」と同じモデルになる（SPEC §13.5）
+    LEC_SCRIBE_LLM=codex LEC_SCRIBE_LLM_MODEL= LEC_SCRIBE_LLM_CHECK_MODEL= node "$APP_DIR/server/scripts/agent.mjs" install
     ;;
   ollama)
     command -v ollama >/dev/null 2>&1 || fail "Ollama が見つかりません。https://ollama.com から入れて、モデル（例: ollama pull qwen2.5:32b）を用意してください。"
     say "ノート作成を有効にします（ollama）"
-    LEC_SCRIBE_LLM=ollama LEC_SCRIBE_LLM_MODEL= node "$APP_DIR/server/scripts/agent.mjs" install
+    LEC_SCRIBE_LLM=ollama LEC_SCRIBE_LLM_MODEL= LEC_SCRIBE_LLM_CHECK_MODEL= node "$APP_DIR/server/scripts/agent.mjs" install
     ;;
   none)
     say "ノート作成を無効にします（notes.md は文字起こしそのままになります）"

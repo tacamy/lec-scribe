@@ -1124,11 +1124,14 @@ try {
     await modelsPage.evaluate(() => document.getElementById('modelCatalog')?.textContent),
     'いまCodex 0.166.0で使えるモデル: gpt-6.1-sol、gpt-6-astra、gpt-6.1-terra、gpt-6-sol、gpt-6-luna、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna',
   );
-  await modelsPage.selectOption('#modelPreset', 'recommended');
+  // 何も指定していない codex のサーバーは「推奨」で動いていて、画面にもそう出る（2026-11-05）
+  assert.equal(await modelsPage.inputValue('#modelPreset'), 'recommended');
   assert.equal(
     await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
     '最新のTerra（今はgpt-6.1-terra）が本文を整えて要点を作り、最新のAstra（今はgpt-6-astra）が誤変換だけを校正します。',
   );
+  // 「起動時の設定に戻す」はやめた（構成はプリセットとカスタムで全部選べる。2026-11-05）
+  assert.equal(await modelsPage.locator('#resetModels').count(), 0);
   await modelsPage.click('#saveModels');
   await modelsPage.waitForFunction(() => document.getElementById('modelResult')?.classList.contains('ok'), null, { timeout: 5_000 });
   const modelsAuth = { authorization: `Bearer ${await panel.evaluate(async () => (await chrome.storage.local.get('config')).config.server.token)}` };
@@ -1140,10 +1143,6 @@ try {
   await modelsPage.selectOption('#modelPreset', 'custom');
   const choices = await modelsPage.evaluate(() => [...document.querySelectorAll('#modelChoices option')].map((o) => o.value));
   assert.deepEqual(choices.slice(0, 5), ['latest:terra', 'latest:astra', 'latest:sol', 'latest:luna', 'gpt-6.1-sol']);
-  // 保存した上書きを消して、起動時の設定に戻す（ほかの確認に持ち越さない）
-  await modelsPage.selectOption('#modelPreset', 'recommended');
-  await modelsPage.click('#resetModels');
-  await modelsPage.waitForFunction(() => document.getElementById('resetModels')?.hidden === true, null, { timeout: 5_000 });
   // 前の版の「推奨」（モデル名で固定）を保存したままなら、カスタムとして出し、選び直すと追従することを案内する（2026-11-05 のレビュー）
   const legacySaved = await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, {
     method: 'POST',
@@ -1158,9 +1157,9 @@ try {
     await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
     '前の版の「推奨」（モデル名で固定）のままです。「推奨」を選び直して保存すると、新しいモデルに自動で切り替わるようになります。',
   );
-  await modelsPage.click('#resetModels');
-  await modelsPage.waitForFunction(() => document.getElementById('resetModels')?.hidden === true, null, { timeout: 5_000 });
   await modelsPage.close();
+  // 保存した上書きを消してから起動し直す（ほかの確認に持ち越さない）
+  rmSync(path.join(serverTmp, 'settings.json'), { force: true });
   await restartServer([]);
   console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog, offer the live list, and point out a saved pre-tier preset');
 

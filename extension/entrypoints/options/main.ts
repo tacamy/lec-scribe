@@ -16,7 +16,6 @@ const modelResult = $('modelResult');
 const modelMain = $<HTMLInputElement>('modelMain');
 const modelCheck = $<HTMLInputElement>('modelCheck');
 const customModels = $('customModels');
-const resetModelsBtn = $<HTMLButtonElement>('resetModels');
 const modelPresetSel = $<HTMLSelectElement>('modelPreset');
 const presetDetail = $('presetDetail');
 const modelChoices = $<HTMLDataListElement>('modelChoices');
@@ -280,7 +279,6 @@ function renderModelChoice(info: LlmSettingsInfo) {
   modelPresetSel.value = presetOf(llmModel, llmCheckModel);
   modelMain.value = llmModel;
   modelCheck.value = llmCheckModel;
-  resetModelsBtn.hidden = info.overridden !== true;
   renderCatalog(info);
   renderPresetDetail();
 }
@@ -337,13 +335,3 @@ $('saveModels').addEventListener('click', async () => {
   }
 });
 
-resetModelsBtn.addEventListener('click', async () => {
-  try {
-    const saved = await saveLlmSettings(config.server, { reset: true });
-    modelsDirty = false;
-    renderModelChoice(saved);
-    showModelResult('起動時の設定に戻しました。', true);
-  } catch (e) {
-    showModelResult(e instanceof Error ? e.message : String(e), false);
-  }
-});

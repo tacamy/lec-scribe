@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ServerConfig } from './config.ts';
 
@@ -8,7 +8,8 @@ import type { ServerConfig } from './config.ts';
  * サーバーの設定は起動時の環境変数（launchd の plist）で決まるが、モデルの選び替えのたびに
  * ターミナルで登録し直させないよう、設定画面からの変更は `~/.lec-scribe/settings.json` に保存し、
  * 起動時の値より優先する。反映は次のノート作成から（pipeline は処理のたびに config を読む）。
- * 「サーバー起動時の設定に戻す」はこのファイルを消すだけ。
+ * 起動時の設定をまた効かせたいときは、このファイルを消してサーバーを起動し直す（設定画面の
+ * 「起動時の設定に戻す」は 2026-11-05 にやめた。構成はプリセットとカスタムで全部選べるため）。
  */
 
 export type LlmOverrides = {
@@ -38,12 +39,8 @@ export async function readLlmOverrides(file: string): Promise<LlmOverrides> {
   }
 }
 
-/** 上書きを保存する（null なら削除 = 起動時の設定に戻す） */
-export async function writeLlmOverrides(file: string, overrides: LlmOverrides | null): Promise<void> {
-  if (overrides === null) {
-    await rm(file, { force: true });
-    return;
-  }
+/** 上書きを保存する */
+export async function writeLlmOverrides(file: string, overrides: LlmOverrides): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(overrides, null, 2)}\n`, { mode: 0o600 });
 }

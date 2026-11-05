@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,14 +11,14 @@ describe('設定画面からの上書き（settings.json、2026-10-01）', () =>
     for (const ng of ['a b', 'モデル', '-leading', 'x'.repeat(65), 1, null, undefined, 'a;rm']) expect(isValidModelName(ng as unknown), String(ng)).toBe(false);
   });
 
-  it('書いて読める。null で消える。無い・壊れた・形が不正なファイルは {} になる', async () => {
+  it('書いて読める。消した・無い・壊れた・形が不正なファイルは {} になる', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-scribe-settings-'));
     const file = path.join(dir, 'nested', 'settings.json');
     expect(await readLlmOverrides(file)).toEqual({});
     await writeLlmOverrides(file, { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' });
     expect(await readLlmOverrides(file)).toEqual({ llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' });
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({ llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' });
-    await writeLlmOverrides(file, null);
+    await rm(file);
     expect(await readLlmOverrides(file)).toEqual({});
     await writeFile(file, 'not json');
     expect(await readLlmOverrides(file)).toEqual({});
