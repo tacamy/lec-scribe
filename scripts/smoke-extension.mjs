@@ -1131,7 +1131,8 @@ try {
   );
   await modelsPage.click('#saveModels');
   await modelsPage.waitForFunction(() => document.getElementById('modelResult')?.classList.contains('ok'), null, { timeout: 5_000 });
-  const savedModels = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, { headers: { authorization: `Bearer ${await panel.evaluate(async () => (await chrome.storage.local.get('config')).config.server.token)}` } })).json();
+  const modelsAuth = { authorization: `Bearer ${await panel.evaluate(async () => (await chrome.storage.local.get('config')).config.server.token)}` };
+  const savedModels = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, { headers: modelsAuth })).json();
   assert.equal(savedModels.llmModel, 'latest:terra', JSON.stringify(savedModels));
   assert.equal(savedModels.llmCheckModel, 'latest:astra', JSON.stringify(savedModels));
   assert.deepEqual(savedModels.latest, { sol: 'gpt-6.1-sol', astra: 'gpt-6-astra', terra: 'gpt-6.1-terra', luna: 'gpt-6-luna' });
@@ -1143,9 +1144,25 @@ try {
   await modelsPage.selectOption('#modelPreset', 'recommended');
   await modelsPage.click('#resetModels');
   await modelsPage.waitForFunction(() => document.getElementById('resetModels')?.hidden === true, null, { timeout: 5_000 });
+  // 前の版の「推奨」（モデル名で固定）を保存したままなら、カスタムとして出し、選び直すと追従することを案内する（2026-11-05 のレビュー）
+  const legacySaved = await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, {
+    method: 'POST',
+    headers: { ...modelsAuth, 'content-type': 'application/json' },
+    body: JSON.stringify({ llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' }),
+  });
+  assert.equal(legacySaved.status, 200);
+  await modelsPage.reload();
+  await modelsPage.waitForFunction(() => (document.getElementById('presetDetail')?.textContent ?? '').startsWith('前の版'), null, { timeout: 10_000 });
+  assert.equal(await modelsPage.inputValue('#modelPreset'), 'custom');
+  assert.equal(
+    await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
+    '前の版の「推奨」（モデル名で固定）のままです。「推奨」を選び直して保存すると、新しいモデルに自動で切り替わるようになります。',
+  );
+  await modelsPage.click('#resetModels');
+  await modelsPage.waitForFunction(() => document.getElementById('resetModels')?.hidden === true, null, { timeout: 5_000 });
   await modelsPage.close();
   await restartServer([]);
-  console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog and offer the live list');
+  console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog, offer the live list, and point out a saved pre-tier preset');
 
   const codexSlowStub = stub('codex-slow', 'sleep 30');
   await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);

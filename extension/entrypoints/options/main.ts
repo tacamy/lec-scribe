@@ -186,6 +186,25 @@ const MODEL_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }>
   economy: { llmModel: 'latest:terra', llmCheckModel: 'latest:terra' },
 };
 
+/**
+ * 前の版（2026-11-05 まで）のプリセット。api 7 未満のサーバーは latest: を知らず、そのままモデル名として codex に渡してしまうので、
+ * そのサーバーにはこちらを使う。新しいサーバーで設定がこの組のままなら、選び直すよう案内する（2026-11-05 のレビュー）
+ */
+const LEGACY_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }> = {
+  recommended: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' },
+  quality: { llmModel: 'gpt-6-astra', llmCheckModel: 'gpt-6-astra' },
+  economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-5.6-terra' },
+};
+
+const PRESET_NAME: Record<string, string> = { recommended: '推奨', quality: '高品質', economy: '節約' };
+
+/** サーバーが latest: を解決できるか（api 7 以上）。できなければモデル名のプリセットを使う */
+let tiersSupported = true;
+
+function presets(): Record<string, { llmModel: string; llmCheckModel: string }> {
+  return tiersSupported ? MODEL_PRESETS : LEGACY_PRESETS;
+}
+
 /** 系統の表示名 */
 const TIER_LABEL: Record<string, string> = { terra: 'Terra', astra: 'Astra', sol: 'Sol', luna: 'Luna' };
 
@@ -201,8 +220,18 @@ function modelLabel(value: string, resolved: string | undefined): string {
 let latestByTier: Record<string, string> = {};
 
 function presetDetailText(preset: string): string {
-  const values = MODEL_PRESETS[preset];
-  if (!values) return 'モデル名を直接指定します。「latest:terra」のように書くと、その系統のいちばん新しいモデルを使います。校正の欄を空にすると校正なしになります。';
+  const values = presets()[preset];
+  if (!values) {
+    // 前の版のプリセットを保存したまま（モデル名で固定）なら、選び直すと新しいモデルに追従することを知らせる
+    const legacy = tiersSupported ? presetIn(LEGACY_PRESETS, modelMain.value.trim(), modelCheck.value.trim()) : 'custom';
+    if (legacy !== 'custom') {
+      const name = PRESET_NAME[legacy];
+      return `前の版の「${name}」（モデル名で固定）のままです。「${name}」を選び直して保存すると、新しいモデルに自動で切り替わるようになります。`;
+    }
+    return tiersSupported
+      ? 'モデル名を直接指定します。「latest:terra」のように書くと、その系統のいちばん新しいモデルを使います。校正の欄を空にすると校正なしになります。'
+      : 'モデル名を直接指定します。校正の欄を空にすると校正なしになります。';
+  }
   const now = (value: string) => latestByTier[value.slice('latest:'.length)];
   const main = modelLabel(values.llmModel, now(values.llmModel));
   const check = modelLabel(values.llmCheckModel, now(values.llmCheckModel));
@@ -215,7 +244,7 @@ function presetDetailText(preset: string): string {
 function renderCatalog(info: LlmSettingsInfo) {
   const models = info.models ?? [];
   latestByTier = info.latest ?? {};
-  const choices = [...['terra', 'astra', 'sol', 'luna'].map((t) => `latest:${t}`), ...models.map((m) => m.slug)];
+  const choices = [...(tiersSupported ? ['terra', 'astra', 'sol', 'luna'].map((t) => `latest:${t}`) : []), ...models.map((m) => m.slug)];
   modelChoices.replaceChildren(
     ...choices.map((value) => {
       const option = document.createElement('option');
@@ -228,11 +257,15 @@ function renderCatalog(info: LlmSettingsInfo) {
   modelCatalog.textContent = models.length ? `いまCodex${info.codexVersion ? ` ${info.codexVersion}` : ''}で使えるモデル: ${models.map((m) => m.slug).join('、')}` : '';
 }
 
-function presetOf(llmModel: string, llmCheckModel: string): string {
-  for (const [key, v] of Object.entries(MODEL_PRESETS)) {
+function presetIn(table: Record<string, { llmModel: string; llmCheckModel: string }>, llmModel: string, llmCheckModel: string): string {
+  for (const [key, v] of Object.entries(table)) {
     if (v.llmModel === llmModel && v.llmCheckModel === llmCheckModel) return key;
   }
   return 'custom';
+}
+
+function presetOf(llmModel: string, llmCheckModel: string): string {
+  return presetIn(presets(), llmModel, llmCheckModel);
 }
 
 function renderPresetDetail() {
@@ -262,6 +295,7 @@ async function renderModels(health: Health | null) {
   const usable = !!health && (health.api ?? 0) >= 5 && health.llm === 'codex' && health.authorized === true;
   modelBox.hidden = !usable;
   if (!usable) return;
+  tiersSupported = (health.api ?? 0) >= 7;
   const generation = ++modelsGeneration;
   try {
     const current = await fetchLlmSettings(config.server);
@@ -276,7 +310,7 @@ async function renderModels(health: Health | null) {
 
 modelPresetSel.addEventListener('change', () => {
   modelsDirty = true;
-  const values = MODEL_PRESETS[modelPresetSel.value];
+  const values = presets()[modelPresetSel.value];
   if (values) {
     modelMain.value = values.llmModel;
     modelCheck.value = values.llmCheckModel;
@@ -292,7 +326,7 @@ function showModelResult(text: string, ok: boolean) {
 
 $('saveModels').addEventListener('click', async () => {
   const preset = modelPresetSel.value;
-  const values = MODEL_PRESETS[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
+  const values = presets()[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
   try {
     const saved = await saveLlmSettings(config.server, values);
     modelsDirty = false;

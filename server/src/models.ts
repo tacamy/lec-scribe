@@ -11,6 +11,9 @@ import { run } from './exec.ts';
 
 export type CodexModel = { slug: string; name: string; priority: number };
 
+/** 一覧と、それを取った CLI の版 */
+export type CatalogSnapshot = { models: CodexModel[]; version: string | null };
+
 /** 系統で指定するときの頭。`latest:terra` は Terra の系統でいちばん新しい版 */
 export const LATEST_PREFIX = 'latest:';
 
@@ -40,7 +43,10 @@ export function parseCatalog(raw: string): CodexModel[] {
       : undefined;
   if (!Array.isArray(list)) return [];
   const out: CodexModel[] = [];
-  for (const item of list as Array<Record<string, unknown>>) {
+  for (const raw of list as unknown[]) {
+    // 形の崩れた要素（null など）は飛ばす。1 つのために一覧ごと捨てない
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
     const slug = item['slug'];
     if (typeof slug !== 'string' || item['visibility'] !== 'list') continue;
     const name = typeof item['display_name'] === 'string' ? item['display_name'] : slug;
@@ -65,68 +71,117 @@ export function latestOfTier(models: readonly CodexModel[], tier: string): strin
 
 /**
  * 設定の値を、呼び出しに渡すモデル名にする。`latest:<系統>` は一覧でいちばん新しい版に、それ以外はそのまま。
- * 一覧が取れない・その系統が無いときは空（呼び出し先の既定のモデル）にして、理由を返す
+ * 一覧が取れない・その系統が無いときは空にして、理由（problem）を返す。代わりに何を使うかは呼び出し元が決める
+ * （校正や画像の判定は「空 = 行わない」なので、空のまま渡すと黙って止まる）
  */
-export function resolveModel(value: string, models: readonly CodexModel[] | null): { model: string; note?: string } {
+export function resolveModel(value: string, models: readonly CodexModel[] | null): { model: string; problem?: string } {
   if (!value.startsWith(LATEST_PREFIX)) return { model: value };
-  const tier = value.slice(LATEST_PREFIX.length);
-  if (!models) return { model: '', note: `モデルの一覧が取れないので、${value} の代わりに既定のモデルを使います` };
+  // 画面では「最新のTerra」と出すので、`latest:Terra` と書かれても同じ系統として扱う
+  const tier = value.slice(LATEST_PREFIX.length).trim().toLowerCase();
+  if (!models) return { model: '', problem: 'モデルの一覧が取れない' };
   const slug = latestOfTier(models, tier);
-  return slug ? { model: slug } : { model: '', note: `一覧に ${tier} の系統のモデルが無いので、${value} の代わりに既定のモデルを使います` };
+  return slug ? { model: slug } : { model: '', problem: `一覧に ${tier} の系統のモデルが無い` };
 }
 
-/** 一覧を取り直す間隔。新しいモデルは CLI を上げたときに出るので、頻繁に取る必要はない */
+/** 一覧を取り直す間隔。新しいモデルは CLI を上げたときに出る（そのときは版の違いで取り直す）ので、頻繁に取る必要はない */
 const CATALOG_TTL_MS = 60 * 60 * 1000;
+/** 取れなかったあと、取り直すまでの間。CLI の版が変わったらすぐ取り直す */
+const FAILURE_TTL_MS = 5 * 60 * 1000;
 const CATALOG_TIMEOUT_MS = 60_000;
+const VERSION_TIMEOUT_MS = 10_000;
 
 /**
- * Codex CLI のモデルの一覧を取って覚える。`codex debug models`（必要ならネットワークで更新）が失敗したら、
- * CLI に同梱の一覧（`--bundled`）を使う。どちらも駄目なら null（「最新の〜」は既定のモデルになる）
+ * Codex CLI のモデルの一覧を取って覚える。`codex debug models`（Codex がネットワークで更新し、つながらなければ
+ * 自前のキャッシュを返す）が失敗したら、CLI に同梱の一覧（`--bundled`）を使う。どちらも駄目なら null（「最新の〜」は
+ * 呼び出し元が代わりのモデルにする）。
+ *
+ * 使うたびに `codex --version`（0.01 秒ほど）を確かめ、版が変わっていたら覚えを捨てる。`brew upgrade codex` の直後の
+ * ノート作成から新しいモデルを使うため（2026-11-05 のレビュー）
  */
 export class ModelCatalog {
-  private cached: { at: number; models: CodexModel[]; version: string | null } | null = null;
-  private pending: Promise<CodexModel[] | null> | null = null;
+  private cached: { at: number; snapshot: CatalogSnapshot; bundled: boolean } | null = null;
+  private failed: { at: number; version: string | null } | null = null;
+  private pending: Promise<CatalogSnapshot | null> | null = null;
+  /** close() で取得中のコマンドを止める（サーバーを閉じたあとに子プロセスを残さない） */
+  private readonly closed = new AbortController();
   private readonly codexBin: () => string;
   private readonly log: (message: string) => void;
+  private readonly now: () => number;
 
-  constructor(codexBin: () => string, log: (message: string) => void = () => undefined) {
+  constructor(codexBin: () => string, log: (message: string) => void = () => undefined, now: () => number = Date.now) {
     this.codexBin = codexBin;
     this.log = log;
+    this.now = now;
   }
 
-  /** 一覧（表示順）。取れなければ null */
-  async list(): Promise<CodexModel[] | null> {
-    if (this.cached && Date.now() - this.cached.at < CATALOG_TTL_MS) return this.cached.models;
-    this.pending ??= this.fetch().finally(() => {
+  /** 一覧（表示順）と CLI の版。取れなければ null。同時に呼ばれたら 1 回の取得を分け合う */
+  snapshot(): Promise<CatalogSnapshot | null> {
+    this.pending ??= this.refresh().finally(() => {
       this.pending = null;
     });
     return this.pending;
   }
 
-  /** 一覧を取った CLI の版（`codex --version`）。取れなければ null */
-  async version(): Promise<string | null> {
-    await this.list();
-    return this.cached?.version ?? null;
+  /** 一覧（表示順）。取れなければ null */
+  async list(): Promise<CodexModel[] | null> {
+    return (await this.snapshot())?.models ?? null;
   }
 
-  private async fetch(): Promise<CodexModel[] | null> {
+  /** 取得中のコマンドを止め、以後は取らない */
+  close(): void {
+    this.closed.abort();
+  }
+
+  private signal(ms: number): AbortSignal {
+    return AbortSignal.any([this.closed.signal, AbortSignal.timeout(ms)]);
+  }
+
+  private async refresh(): Promise<CatalogSnapshot | null> {
+    if (this.closed.signal.aborted) return this.cached?.snapshot ?? null;
     const bin = this.codexBin();
-    for (const args of [['debug', 'models'], ['debug', 'models', '--bundled']]) {
-      try {
-        const r = await run(bin, args, { binary: true, signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) });
-        if (r.code !== 0 || !r.stdoutBytes) continue;
-        const models = parseCatalog(new TextDecoder().decode(r.stdoutBytes));
-        if (models.length === 0) continue;
-        const v = await run(bin, ['--version'], { signal: AbortSignal.timeout(10_000) }).catch(() => null);
-        const version = v && v.code === 0 ? (/(\d+\.\d+\.\d+)/.exec(v.stdout)?.[1] ?? null) : null;
-        this.cached = { at: Date.now(), models, version };
-        return models;
-      } catch {
-        // 次の取り方を試す
-      }
+    const version = await this.cliVersion(bin);
+    const sameCli = !!this.cached && this.cached.snapshot.version === version;
+    if (this.cached && sameCli && this.now() - this.cached.at < CATALOG_TTL_MS) return this.cached.snapshot;
+    // 失敗を覚えておき、しばらくは取り直さない（設定画面を開くたび・ノート作成のたびに失敗するコマンドを流さない）
+    if (this.failed && this.failed.version === version && this.now() - this.failed.at < FAILURE_TTL_MS) return this.cached?.snapshot ?? null;
+    const live = await this.read(bin, ['debug', 'models']);
+    if (live) return this.store(live, version, false);
+    // 取り直せなくても、同じ CLI で取った一覧が手元にあればそちらを使い続ける（同梱の一覧のほうが古いことがある）
+    const keep = sameCli && this.cached?.bundled === false;
+    if (!keep) {
+      const bundled = await this.read(bin, ['debug', 'models', '--bundled']);
+      if (bundled) return this.store(bundled, version, true);
     }
-    this.log('Codex のモデルの一覧を取れませんでした（「最新の〜」の指定は既定のモデルになります）');
-    // 古い一覧があればそれを使い続ける
-    return this.cached?.models ?? null;
+    this.failed = { at: this.now(), version };
+    if (!this.closed.signal.aborted) {
+      this.log(keep ? 'Codex のモデルの一覧を取り直せませんでした（前に取った一覧を使い続けます）' : 'Codex のモデルの一覧を取れませんでした（「最新の〜」の指定は代わりのモデルになります）');
+    }
+    return this.cached?.snapshot ?? null;
+  }
+
+  private store(models: CodexModel[], version: string | null, bundled: boolean): CatalogSnapshot {
+    this.cached = { at: this.now(), snapshot: { models, version }, bundled };
+    this.failed = null;
+    return this.cached.snapshot;
+  }
+
+  private async read(bin: string, args: string[]): Promise<CodexModel[] | null> {
+    try {
+      const r = await run(bin, args, { binary: true, signal: this.signal(CATALOG_TIMEOUT_MS) });
+      if (r.code !== 0 || !r.stdoutBytes) return null;
+      const models = parseCatalog(new TextDecoder().decode(r.stdoutBytes));
+      return models.length > 0 ? models : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async cliVersion(bin: string): Promise<string | null> {
+    try {
+      const r = await run(bin, ['--version'], { signal: this.signal(VERSION_TIMEOUT_MS) });
+      return r.code === 0 ? (/(\d+\.\d+\.\d+)/.exec(r.stdout)?.[1] ?? null) : null;
+    } catch {
+      return null;
+    }
   }
 }

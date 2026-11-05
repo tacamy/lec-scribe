@@ -30,10 +30,13 @@ export const VERSION = '0.1.0';
  *   5: 2026-10-01。GET/POST /settings（ノート作成のモデル）
  *   6: 2026-10-18。講義の名前（§14）: POST /sessions の name、POST /sessions/:id/name、status の outputDir は今のフォルダ。
  *      受け口の無い古いサーバーは NOT_FOUND で答えるので、拡張は「サーバーが古い」と出す。最低の版は 1 のまま
- *   7: 2026-11-05。モデルの「最新の〜」（latest:terra など）と、GET /settings の models・resolved・codexVersion。
+ *   7: 2026-11-05。モデルの「最新の〜」（latest:terra など）と、GET /settings の models・latest・codexVersion。
  *      設定画面は項目が無ければ候補と解決後の名前を出さないだけ。最低の版は 1 のまま
  */
 export const API_VERSION = 7;
+
+/** 設定画面への応答で、Codex のモデルの一覧を待つ長さ（拡張の打ち切り 3 秒より短く） */
+const SETTINGS_CATALOG_WAIT_MS = 1500;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; name?: unknown; config?: unknown };
@@ -72,19 +75,26 @@ export function createApp(
 
   /**
    * 設定画面に返すモデルの設定（§15.2）。codex のときは、Codex で今使えるモデル（models）と、系統ごとのいちばん新しい版
-   * （latest。「最新の〜」はこれになる）、一覧を取った CLI の版（codexVersion）も返す（api 7、2026-11-05）
+   * （latest。「最新の〜」はこれになる）、一覧を取った CLI の版（codexVersion）も返す（api 7、2026-11-05）。
+   * 一覧は SETTINGS_CATALOG_WAIT_MS だけ待ち、間に合わなければ項目なしで答える（拡張の打ち切りは 3 秒。取得はそのまま続いて覚えるので、
+   * 次に開いたときには出る。2026-11-05 のレビュー）
    */
   async function settingsView() {
     const base = { llm: config.llm, llmModel: config.llmModel, llmCheckModel: config.llmCheckModel };
     if (config.llm !== 'codex') return base;
-    const models = await pipeline.models.list();
-    if (!models) return base;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), SETTINGS_CATALOG_WAIT_MS);
+    });
+    const snapshot = await Promise.race([pipeline.models.snapshot(), late]).finally(() => clearTimeout(timer));
+    if (!snapshot) return base;
+    const { models, version } = snapshot;
     const tiers = [...new Set(models.map((m) => tierOf(m.slug)?.tier).filter((t): t is string => !!t))];
     return {
       ...base,
       models: models.map((m) => ({ slug: m.slug, name: m.name })),
       latest: Object.fromEntries(tiers.map((t) => [t, latestOfTier(models, t)!])),
-      codexVersion: await pipeline.models.version(),
+      codexVersion: version,
     };
   }
 
@@ -505,6 +515,8 @@ export function createApp(
     await (locked ? withSessionLock(sessionId, sessionRoutes) : sessionRoutes());
   }
 
+  // 閉じたら取得中のモデルの一覧のコマンドも止める（子プロセスを残さない。2026-11-05 のレビュー）
+  server.on('close', () => pipeline.models.close());
   return { server, pipeline, findSessionDir };
 }
 

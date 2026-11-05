@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -27,6 +27,8 @@ describe('parseCatalog / tierOf / latestOfTier（§13.5、2026-11-05）', () => 
     expect(models[2]).toEqual({ slug: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', priority: 4 });
     expect(parseCatalog('[]')).toEqual([]);
     expect(parseCatalog('{"other": 1}')).toEqual([]);
+    // 形の崩れた要素があっても、ほかのモデルは取り出す（2026-11-05 のレビュー）
+    expect(parseCatalog('{"models":[null,1,"x",{"slug":"gpt-6-terra","visibility":"list"}]}').map((m) => m.slug)).toEqual(['gpt-6-terra']);
   });
 
   it('名前から版と系統を読む', () => {
@@ -46,45 +48,125 @@ describe('parseCatalog / tierOf / latestOfTier（§13.5、2026-11-05）', () => 
     expect(latestOfTier([{ slug: 'gpt-7-terra', name: 'b', priority: 5 }, { slug: 'gpt-7.0-terra', name: 'a', priority: 1 }], 'terra')).toBe('gpt-7.0-terra');
   });
 
-  it('latest:<系統> は一覧でいちばん新しい版に、それ以外はそのまま。解決できなければ既定のモデル（空）にして理由を返す', () => {
+  it('latest:<系統> は一覧でいちばん新しい版に、それ以外はそのまま。解決できなければ空にして理由を返す', () => {
     expect(resolveModel('latest:terra', models)).toEqual({ model: 'gpt-6.1-terra' });
     expect(resolveModel('gpt-5.6-terra', models)).toEqual({ model: 'gpt-5.6-terra' });
     expect(resolveModel('', models)).toEqual({ model: '' });
     expect(resolveModel('latest:nova', models).model).toBe('');
-    expect(resolveModel('latest:nova', models).note).toMatch(/nova/);
+    expect(resolveModel('latest:nova', models).problem).toMatch(/nova/);
     expect(resolveModel('latest:terra', null).model).toBe('');
-    expect(resolveModel('latest:terra', null).note).toMatch(/一覧が取れない/);
+    expect(resolveModel('latest:terra', null).problem).toMatch(/一覧が取れない/);
+    // 画面の「最新のTerra」のとおりに大文字で書かれても同じ系統（2026-11-05 のレビュー）
+    expect(resolveModel('latest:Terra', models)).toEqual({ model: 'gpt-6.1-terra' });
   });
 });
 
 describe('ModelCatalog', () => {
-  const stub = async (body: string) => {
+  /**
+   * 置いたファイルで振る舞いを変えられる codex。version（版）・mode（ok / fail = 更新だけ失敗 / failall / slow）・catalog.json。
+   * 呼ばれた引数を calls に「--version」「debug」「debug:--bundled」の形で残す
+   */
+  const stub = async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'lec-models-'));
     const file = path.join(dir, 'codex');
-    await writeFile(file, `#!/bin/sh\n${body}\n`);
+    await writeFile(
+      file,
+      [
+        '#!/bin/sh',
+        'd="$(dirname "$0")"',
+        'printf "%s " "$1${3:+:$3}" >> "$d/calls"',
+        'mode="$(cat "$d/mode" 2>/dev/null || echo ok)"',
+        'if [ "$1" = "--version" ]; then echo "codex-cli $(cat "$d/version")"; exit 0; fi',
+        'if [ "$mode" = "slow" ]; then exec sleep 30; fi',
+        'if [ "$mode" = "failall" ]; then echo "nope" >&2; exit 1; fi',
+        'if [ "$mode" = "fail" ] && [ "$3" != "--bundled" ]; then echo "network error" >&2; exit 1; fi',
+        'cat "$d/catalog.json"',
+        '',
+      ].join('\n'),
+    );
     await chmod(file, 0o755);
-    return { file, dir };
+    await writeFile(path.join(dir, 'version'), '0.166.0');
+    await writeFile(path.join(dir, 'catalog.json'), CATALOG);
+    const set = (name: 'version' | 'mode' | 'catalog.json', value: string) => writeFile(path.join(dir, name), value);
+    const calls = async () => (await readFile(path.join(dir, 'calls'), 'utf8').catch(() => '')).trim();
+    return { file, dir, set, calls };
+  };
+  /** 進められる時計 */
+  const clock = () => {
+    let t = 1_000_000;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
   };
 
-  it('codex debug models の一覧と CLI の版を返し、しばらく覚えておく', async () => {
-    const { file, dir } = await stub(
-      `printf x >> "${'$'}(dirname "$0")/calls"; if [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi; cat <<'JSON'\n${CATALOG}\nJSON`,
-    );
-    const catalog = new ModelCatalog(() => file);
-    expect((await catalog.list())?.map((m) => m.slug)).toContain('gpt-6.1-terra');
-    expect(await catalog.version()).toBe('0.166.0');
+  it('一覧と CLI の版を返し、しばらく覚えておく。版は毎回確かめる', async () => {
+    const c = await stub();
+    const catalog = new ModelCatalog(() => c.file);
+    const first = await catalog.snapshot();
+    expect(first?.models.map((m) => m.slug)).toContain('gpt-6.1-terra');
+    expect(first?.version).toBe('0.166.0');
     await catalog.list();
-    const { readFile } = await import('node:fs/promises');
-    expect((await readFile(path.join(dir, 'calls'), 'utf8')).length).toBe(2); // debug models と --version の 1 回ずつ
+    expect(await c.calls()).toBe('--version debug --version');
   });
 
-  it('更新に失敗したら CLI に同梱の一覧（--bundled）を使い、どちらも駄目なら null', async () => {
-    const bundled = await stub(`if [ "$3" = "--bundled" ]; then cat <<'JSON'\n${CATALOG}\nJSON\nexit 0; fi; echo "network error" >&2; exit 1`);
-    expect((await new ModelCatalog(() => bundled.file).list())?.length).toBe(6);
-    const broken = await stub('echo "nope" >&2; exit 1');
+  it('CLI の版が変わったら、覚えていた一覧を捨てて取り直す（brew upgrade codex の直後から新しいモデル）', async () => {
+    const c = await stub();
+    const catalog = new ModelCatalog(() => c.file);
+    expect(await catalog.list().then((m) => m && latestOfTier(m, 'terra'))).toBe('gpt-6.1-terra');
+    await c.set('version', '0.170.0');
+    await c.set('catalog.json', JSON.stringify({ models: [{ slug: 'gpt-7-terra', display_name: 'GPT-7 Terra', visibility: 'list', priority: 1 }] }));
+    const after = await catalog.snapshot();
+    expect(after?.version).toBe('0.170.0');
+    expect(latestOfTier(after!.models, 'terra')).toBe('gpt-7-terra');
+  });
+
+  it('更新に失敗したら同梱の一覧（--bundled）を使い、どちらも駄目なら null。失敗はしばらく覚えて取り直さない', async () => {
+    const c = await stub();
+    await c.set('mode', 'fail');
+    expect((await new ModelCatalog(() => c.file).list())?.length).toBe(6);
+
+    const broken = await stub();
+    await broken.set('mode', 'failall');
+    const t = clock();
     const logs: string[] = [];
-    expect(await new ModelCatalog(() => broken.file, (m) => logs.push(m)).list()).toBeNull();
-    expect(logs.join('\n')).toMatch(/モデルの一覧を取れませんでした/);
+    const catalog = new ModelCatalog(() => broken.file, (m) => logs.push(m), t.now);
+    expect(await catalog.snapshot()).toBeNull();
+    expect(await catalog.snapshot()).toBeNull();
+    expect(await broken.calls()).toBe('--version debug debug:--bundled --version');
+    expect(logs).toEqual(['Codex のモデルの一覧を取れませんでした（「最新の〜」の指定は代わりのモデルになります）']);
+    // しばらくしたら、または CLI を上げたら取り直す
+    t.advance(5 * 60 * 1000);
+    await catalog.snapshot();
+    await broken.set('version', '0.170.0');
+    await catalog.snapshot();
+    expect((await broken.calls()).split(' ').filter((x) => x === 'debug').length).toBe(3);
     expect(await new ModelCatalog(() => path.join(broken.dir, 'missing')).list()).toBeNull();
+  });
+
+  it('取り直しに失敗しても、同じ CLI で前に取った一覧があれば同梱の一覧に替えない', async () => {
+    const c = await stub();
+    const t = clock();
+    const logs: string[] = [];
+    const catalog = new ModelCatalog(() => c.file, (m) => logs.push(m), t.now);
+    await catalog.snapshot();
+    // 覚えが切れたあとの取り直しが失敗する。同梱の一覧（ここでは gpt-6.1-terra が無い）は使わない
+    await c.set('catalog.json', JSON.stringify({ models: [{ slug: 'gpt-5.6-terra', visibility: 'list', priority: 1 }] }));
+    await c.set('mode', 'fail');
+    t.advance(60 * 60 * 1000);
+    expect(latestOfTier((await catalog.list())!, 'terra')).toBe('gpt-6.1-terra');
+    expect(await c.calls()).not.toContain('--bundled');
+    expect(logs).toEqual(['Codex のモデルの一覧を取り直せませんでした（前に取った一覧を使い続けます）']);
+  });
+
+  it('close() で取得中のコマンドを止める（サーバーを閉じたあとに子プロセスを残さない）', async () => {
+    const c = await stub();
+    await c.set('mode', 'slow');
+    const logs: string[] = [];
+    const catalog = new ModelCatalog(() => c.file, (m) => logs.push(m));
+    const pending = catalog.snapshot();
+    await new Promise((r) => setTimeout(r, 300));
+    const started = Date.now();
+    catalog.close();
+    expect(await pending).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(logs).toEqual([]);
   });
 });

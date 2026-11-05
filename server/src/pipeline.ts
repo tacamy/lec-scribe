@@ -211,30 +211,37 @@ export class Pipeline {
 
   /**
    * 設定のモデルを、呼び出しに渡す名前にする（§13.5）。`latest:<系統>` は Codex の一覧でいちばん新しい版に。
-   * 一覧を待っている間に止められたら、一覧なしで解決する（呼び出し元が止められたことを見て抜ける）
+   * 校正と画像の判定は、設定が空なら行わない（null）。「最新の〜」を解決できなかったときも行うことは変えず、
+   * 校正は既定のモデル（''）で、画像の判定は整えのモデル（それも空なら既定のモデル）で代わりに行う（2026-11-05 のレビュー）。
+   * 画像の判定は codex のときだけ行うので、それ以外では解決しない（使わない設定の行をログに出さない）。
+   * 一覧を待っている間に止められたら、一覧なしで返す（呼び出し元が止められたことを見て抜ける）
    */
   private async resolveModels(
     wanted: { main: string; check: string; pick: string },
     kind: ServerConfig['llm'],
     signal: AbortSignal,
-  ): Promise<{ main: string; check: string; pick: string }> {
-    const needs = kind === 'codex' && Object.values(wanted).some((v) => v.startsWith(LATEST_PREFIX));
+  ): Promise<{ main: string; check: string | null; pick: string | null }> {
+    const pickWanted = kind === 'codex' ? wanted.pick : '';
+    const needs = kind === 'codex' && [wanted.main, wanted.check, pickWanted].some((v) => v.startsWith(LATEST_PREFIX));
     const stopped = new Promise<null>((resolve) => {
       if (signal.aborted) resolve(null);
       signal.addEventListener('abort', () => resolve(null), { once: true });
     });
     const catalog = needs ? await Promise.race([this.models.list(), stopped]) : null;
-    if (signal.aborted) return { main: '', check: '', pick: '' };
-    const resolve = (label: string, value: string) => {
+    if (signal.aborted) return { main: '', check: null, pick: null };
+    const resolve = (label: string, value: string, instead: string, insteadLabel: string) => {
       const r = resolveModel(value, catalog);
-      if (r.note) this.log(r.note);
-      else if (r.model !== value) this.log(`${label}のモデル: ${value} → ${r.model}`);
+      if (r.problem) {
+        const problem = kind === 'codex' ? r.problem : 'Codex 以外では「最新の〜」を解決できない';
+        this.log(`${problem}ので、${label}の ${value} の代わりに${insteadLabel}を使います`);
+        return instead;
+      }
+      if (r.model !== value) this.log(`${label}のモデル: ${value} → ${r.model}`);
       return r.model;
     };
-    const main = resolve('整え・要点', wanted.main);
-    const check = resolve('校正', wanted.check);
-    // 画像の判定は空だと行わない設定なので、「最新の〜」が解決できなければ整えのモデルで代わりに判定する
-    const pick = resolve('画像の判定', wanted.pick) || (wanted.pick.startsWith(LATEST_PREFIX) ? main : '');
+    const main = resolve('整え・要点', wanted.main, '', '既定のモデル');
+    const check = wanted.check ? resolve('校正', wanted.check, '', '既定のモデル') : null;
+    const pick = pickWanted ? resolve('画像の判定', pickWanted, main, main ? `整えのモデル（${main}）` : '既定のモデル') : null;
     return { main, check, pick };
   }
 
@@ -321,9 +328,10 @@ export class Pipeline {
   private async rescueImages(
     dir: string,
     input: PickerInput,
-    settings: { model: string; fallbackModel: string; signal: AbortSignal },
+    settings: { model: string | null; fallbackModel: string; signal: AbortSignal },
   ): Promise<SlideEntry[] | null> {
-    if (!settings.model || settings.signal.aborted) return null;
+    // null は「行わない」。空は既定のモデルで行う（「最新の〜」を解決できなかったとき。resolveModels）
+    if (settings.model === null || settings.signal.aborted) return null;
     try {
       const regions = findPickRegions(input.segments, input.allSlides, input.decisions, input.texts);
       if (regions.length === 0) return null;
@@ -364,9 +372,9 @@ export class Pipeline {
     sections: readonly Section[],
     polished: ReadonlyMap<string, { text: string }>,
     topics: Outline,
-    settings: { model: string; fallbackModel: string; signal: AbortSignal },
+    settings: { model: string | null; fallbackModel: string; signal: AbortSignal },
   ): Promise<Outline> {
-    if (!settings.model || settings.signal.aborted) return topics;
+    if (settings.model === null || settings.signal.aborted) return topics;
     try {
       const boundaries = findBoundaries(sections, polished, topics.topics);
       if (boundaries.length === 0) return topics;
@@ -694,7 +702,8 @@ export class Pipeline {
             kind: llmSettings.kind,
             model: llmSettings.model,
             charsPerCall: llmSettings.charsPerCall,
-            ...(llmCheckModel ? { checkModel: llmCheckModel } : {}),
+            // 校正するなら鍵に混ぜる（'' は既定のモデルで校正する。校正なしの null とは鍵を分ける）
+            ...(llmCheckModel !== null ? { checkModel: llmCheckModel } : {}),
           };
           const key = cacheKey(inputs, cacheSettings);
           const stored = await readNotesCache(dir);
@@ -748,7 +757,7 @@ export class Pipeline {
               for (const [id, out] of result.results) polished.set(id, out);
               errors = result.errors;
               // 校正（任意、§13.5）: 新しく整えた節だけを原文と突き合わせ、誤変換を直す。組み替えで使い回した節は前回すでに校正済み
-              const checkBackend = llmCheckModel ? createBackend({ ...llmSettings, model: llmCheckModel }) : null;
+              const checkBackend = llmCheckModel !== null ? createBackend({ ...llmSettings, model: llmCheckModel }) : null;
               const checkInputs = checkBackend
                 ? todo.flatMap((s) => {
                     const text = polished.get(s.id)?.text;

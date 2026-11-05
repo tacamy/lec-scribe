@@ -661,7 +661,7 @@ describe('local server', () => {
     const exists = (file: string) => stat(file).then(() => true, () => false);
 
     it('初回の処理をノート作成の途中で中止したら cancelled。この回で作った文字起こしの記録は残る', async () => {
-      const slowCodex = await writeStub('codex-slow', 'sleep 30');
+      const slowCodex = await writeStub('codex-slow', 'exec sleep 30');
       const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-cancel-first') });
       try {
         const sessionId = '20260920-140000-canp';
@@ -693,7 +693,7 @@ describe('local server', () => {
       }
       const notesBefore = await readFile(path.join(dir, 'notes.md'), 'utf8');
       // モデルを変えて、前回のノートを使い回せないようにする（使い回せると codex を呼ばずに終わる）
-      const slowCodex = await writeStub('codex-slow-redo', 'sleep 30');
+      const slowCodex = await writeStub('codex-slow-redo', 'exec sleep 30');
       const redo = await startApp({ outDir, codexBin: slowCodex, llmModel: 'another-model' });
       try {
         await begin(redo.base, sessionId);
@@ -722,7 +722,7 @@ describe('local server', () => {
         await first.close();
       }
       // モデルを変えると whisperkit からやり直しになる
-      const slowWhisper = await writeStub('whisperkit-slow-redo', 'sleep 30');
+      const slowWhisper = await writeStub('whisperkit-slow-redo', 'exec sleep 30');
       const redo = await startApp({ outDir, whisperkitBin: slowWhisper, model: 'another-whisper' });
       try {
         await begin(redo.base, sessionId);
@@ -738,7 +738,7 @@ describe('local server', () => {
     });
 
     it('初回の処理でノート作成中に finish を送ると、LLM だけ止めて、文字起こしのままのノートで完了にする', async () => {
-      const slowCodex = await writeStub('codex-slow-finish', 'sleep 30');
+      const slowCodex = await writeStub('codex-slow-finish', 'exec sleep 30');
       const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-finish') });
       try {
         const sessionId = '20260920-143000-fini';
@@ -759,7 +759,7 @@ describe('local server', () => {
 
     it('「最新の〜」でモデルの一覧を待っている間もノート作成の段階で、finish ですぐ止まる（2026-11-05）', async () => {
       // debug models も含めて何も返さない codex。一覧を取る間に段階が merging のまま止まっていた
-      const slowCodex = await writeStub('codex-slow-catalog', 'sleep 30');
+      const slowCodex = await writeStub('codex-slow-catalog', 'exec sleep 30');
       const app = await startApp({ codexBin: slowCodex, llmModel: 'latest:terra', outDir: path.join(tmp, 'out-finish-catalog') });
       try {
         const sessionId = '20260920-143500-ctlg';
@@ -775,7 +775,7 @@ describe('local server', () => {
     });
 
     it('ノート作成中でなければ finish は何もしない（処理は続く）', async () => {
-      const slowWhisper = await writeStub('whisperkit-slow-finish', 'sleep 30');
+      const slowWhisper = await writeStub('whisperkit-slow-finish', 'exec sleep 30');
       const app = await startApp({ whisperkitBin: slowWhisper, outDir: path.join(tmp, 'out-finish-early') });
       try {
         const sessionId = '20260920-144000-erly';
@@ -792,7 +792,7 @@ describe('local server', () => {
 
   it('cancels a running pipeline and deletes the session on request', async () => {
     // 遅い whisperkit スタブで別サーバーを立て、実行中に中止する
-    const slow = await writeStub('whisperkit-slow', 'sleep 30');
+    const slow = await writeStub('whisperkit-slow', 'exec sleep 30');
     const { server: slowServer } = createApp({ ...config, whisperkitBin: slow, outDir: path.join(tmp, 'out-slow') }, TOKEN);
     await new Promise<void>((resolve) => slowServer.listen(0, '127.0.0.1', resolve));
     const slowBase = `http://127.0.0.1:${(slowServer.address() as AddressInfo).port}`;
@@ -964,6 +964,68 @@ describe('local server', () => {
   });
 
   describe('モデルの「最新の〜」（§13.5、2026-11-05）', () => {
+    /** 別のサーバーを立てて、音声を送って処理が終わるまで待つ */
+    const runOnce = async (overrides: Partial<ServerConfig>, sessionId: string, logs: string[] = []) => {
+      const { server: s } = createApp({ ...config, ...overrides }, TOKEN, (m) => logs.push(m));
+      await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+      const b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+      try {
+        await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'latest' }) });
+        await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+        await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+        let status: PipelineStatus = { stage: 'queued', outputDir: '', updatedAt: '' };
+        for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          status = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as PipelineStatus;
+        }
+        return status;
+      } finally {
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+      }
+    };
+    const linesOf = async (file: string) => (await readFile(path.join(tmp, file), 'utf8').catch(() => '')).split('\n').filter(Boolean);
+
+    it('一覧が取れなくても、校正と画像の判定は止めずに代わりのモデルで行う（2026-11-05 のレビュー）', async () => {
+      // debug models を知らない（古い）codex
+      const noCatalog = await writeStub('codex-no-catalog', `if [ "$1" = "debug" ]; then echo "unknown subcommand" >&2; exit 1; fi; exec "${config.codexBin}" "$@"`);
+      const before = (await linesOf('codex-calls.txt')).length;
+      const logs: string[] = [];
+      const status = await runOnce(
+        { codexBin: noCatalog, llmModel: 'latest:terra', llmCheckModel: 'latest:astra', llmPickModel: 'latest:terra', outDir: path.join(tmp, 'out-no-catalog') },
+        '20261105-110000-nocl',
+        logs,
+      );
+      expect(status.stage).toBe('done');
+      // 校正は既定のモデル（--model なし）で行った。前は空になって校正ごと飛ばしていた
+      expect((await linesOf('codex-calls.txt')).slice(before)).toContain('check');
+      expect(logs).toContain('モデルの一覧が取れないので、校正の latest:astra の代わりに既定のモデルを使います');
+      // 画像の判定は、整えのモデルも解決できないので既定のモデルで（空 = 行わない、にはしない）
+      expect(logs).toContain('モデルの一覧が取れないので、画像の判定の latest:terra の代わりに既定のモデルを使います');
+      const cache = JSON.parse(await readFile(path.join(status.outputDir, '.lecscribe', 'notes-cache.json'), 'utf8')) as { settings?: { checkModel?: string } };
+      expect(cache.settings?.checkModel).toBe('');
+    });
+
+    it('一覧の取得が遅くても、設定画面には待たずに答える（一覧の項目なし。2026-11-05 のレビュー）', async () => {
+      const slow = await writeStub('codex-slow-settings', 'exec sleep 30');
+      const { server: s } = createApp({ ...config, codexBin: slow, settingsFile: path.join(tmp, 'settings-slow.json') }, TOKEN);
+      await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+      try {
+        const started = Date.now();
+        const body = (await (await fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/settings`, { headers })).json()) as Record<string, unknown>;
+        expect(Date.now() - started).toBeLessThan(2500); // 拡張は 3 秒で打ち切る
+        expect(body).toMatchObject({ ok: true, llm: 'codex' });
+        expect(body['models']).toBeUndefined();
+      } finally {
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+      }
+    });
+
+    it('画像の判定は codex のときだけなので、ほかの呼び出し先では解決もログもしない', async () => {
+      const logs: string[] = [];
+      await runOnce({ llm: 'ollama', ollamaUrl: 'http://127.0.0.1:9', llmModel: 'some-model', llmPickModel: 'latest:terra', outDir: path.join(tmp, 'out-ollama-pick') }, '20261105-111000-olpk', logs);
+      expect(logs.filter((m) => m.includes('画像の判定'))).toEqual([]);
+    });
+
     it('GET /settings は Codex で今使えるモデル・系統ごとのいちばん新しい版・CLI の版を返す', async () => {
       const body = (await (await fetch(`${base}/settings`, { headers })).json()) as Record<string, unknown>;
       expect(body['models']).toEqual([
@@ -1121,7 +1183,7 @@ describe('local server', () => {
     });
 
     it('処理待ち・処理中は名前を変えられない（409）', async () => {
-      const slowCodex = await writeStub('codex-slow-name', 'sleep 30');
+      const slowCodex = await writeStub('codex-slow-name', 'exec sleep 30');
       const app = await startApp({ codexBin: slowCodex, outDir: path.join(tmp, 'out-name-busy') });
       try {
         const sessionId = '20261018-100000-nam3';

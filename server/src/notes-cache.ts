@@ -19,7 +19,10 @@ export type CacheSettings = {
   kind: string;
   model: string;
   charsPerCall: number;
-  /** 校正（誤変換の修正）に使ったモデル。校正なしなら省く（古いキャッシュと鍵が変わらないように） */
+  /**
+   * 校正（誤変換の修正）に使ったモデル。校正なしなら省く（古いキャッシュと鍵が変わらないように）。
+   * '' は既定のモデルで校正した（「最新の〜」を解決できなかったとき。2026-11-05）
+   */
   checkModel?: string;
 };
 
@@ -55,7 +58,7 @@ export function cacheKey(sections: readonly NotesCacheInput[], settings: CacheSe
   const hash = createHash('sha256');
   // 校正のモデルは有効なときだけ鍵に混ぜる（無効なら今までの鍵のままで、既存のキャッシュが無駄にならない）。
   // 節の行（id と本文の 2 欄）と混ざらないよう、設定の行の 4 つ目の欄として足す（2026-10-01 のレビュー）
-  hash.update(`${settings.kind}\0${settings.model}\0${settings.charsPerCall}${settings.checkModel ? `\0check:${settings.checkModel}` : ''}\n`);
+  hash.update(`${settings.kind}\0${settings.model}\0${settings.charsPerCall}${settings.checkModel !== undefined ? `\0check:${settings.checkModel}` : ''}\n`);
   for (const s of sections) hash.update(`${s.id}\0${s.text}\n`);
   return hash.digest('hex').slice(0, 32);
 }
@@ -74,7 +77,7 @@ export async function readNotesCache(dir: string): Promise<NotesCache | null> {
 /** 呼び出し先・モデル・分割の大きさが前と同じか。分からない（古いキャッシュ）なら使わない */
 export function sameSettings(cache: NotesCache, settings: CacheSettings): boolean {
   const s = cache.settings;
-  return !!s && s.kind === settings.kind && s.model === settings.model && s.charsPerCall === settings.charsPerCall && (s.checkModel ?? '') === (settings.checkModel ?? '');
+  return !!s && s.kind === settings.kind && s.model === settings.model && s.charsPerCall === settings.charsPerCall && s.checkModel === settings.checkModel;
 }
 
 /**
