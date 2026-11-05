@@ -46,10 +46,27 @@ beforeAll(async () => {
   // codex スタブ: --output-last-message のファイルに JSON を書く。本文のプロンプト（<<<SECTION）には
   // id をそのまま返し、話題のプロンプト（<<<PART）には全体の要点と先頭から始まる話題を 1 つ返す。
   // 呼ばれるたびに種類（batch / check / outline）を codex-calls.txt に 1 行書く（何を呼んだかの確認用）
+  // codex debug models が返す一覧（2026-11-05 の codex 0.166.0 の形の抜粋。「最新の〜」の解決の試験用）
+  const catalogFile = path.join(tmp, 'codex-catalog.json');
+  await writeFile(
+    catalogFile,
+    JSON.stringify({
+      models: [
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', priority: 1 },
+        { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', priority: 2 },
+        { slug: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra', visibility: 'list', priority: 4 },
+        { slug: 'gpt-reserve', display_name: 'GPT-Reserve', visibility: 'hide', priority: 5 },
+        { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6-Terra', visibility: 'list', priority: 9 },
+      ],
+    }),
+  );
   const codex = await writeStub(
     'codex',
-    // --model check-fail は一時的な失敗、--model model-gone は「モデルが使えない」失敗のふり（受け皿の試験用）
-    'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
+    // --version と debug models（モデルの一覧）に答える。呼び出しのたびに --model の値を codex-models-used.txt に 1 行書く
+    `if [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi; if [ "$1" = "debug" ]; then cat "${catalogFile}"; exit 0; fi; `
+      + `m=""; prev=""; for a in "$@"; do if [ "$prev" = "--model" ]; then m="$a"; fi; prev="$a"; done; printf '%s\\n' "$m" >> "${path.join(tmp, 'codex-models-used.txt')}"; `
+      // --model check-fail は一時的な失敗、--model model-gone は「モデルが使えない」失敗のふり（受け皿の試験用）
+      + 'for a in "$@"; do if [ "$a" = "check-fail" ]; then echo "temporarily rate limited" >&2; exit 1; fi; if [ "$a" = "model-gone" ]; then echo "ERROR: The \x27model-gone\x27 model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi; done; '
       + 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "--output-last-message" ]; then out="$a"; fi; prev="$a"; done; prompt="$a"; '
       + `kind=batch; if printf '%s' "$prompt" | grep -q "原文"; then kind=check; elif printf '%s' "$prompt" | grep -q "<<<PART"; then kind=outline; elif printf '%s' "$prompt" | grep -q "前の話題に残す枚数"; then kind=boundary; fi; printf '%s\\n' "$kind" >> "${path.join(tmp, 'codex-calls.txt')}"; `
       // 境目の判定には「境目 1 は keep 0（途切れている間の画面か、話し始めた画面から新しい話題）」と答える
@@ -740,6 +757,23 @@ describe('local server', () => {
       }
     });
 
+    it('「最新の〜」でモデルの一覧を待っている間もノート作成の段階で、finish ですぐ止まる（2026-11-05）', async () => {
+      // debug models も含めて何も返さない codex。一覧を取る間に段階が merging のまま止まっていた
+      const slowCodex = await writeStub('codex-slow-catalog', 'sleep 30');
+      const app = await startApp({ codexBin: slowCodex, llmModel: 'latest:terra', outDir: path.join(tmp, 'out-finish-catalog') });
+      try {
+        const sessionId = '20260920-143500-ctlg';
+        await begin(app.base, sessionId);
+        const { outputDir } = await waitStage(app.base, sessionId, 'polishing');
+        const started = Date.now();
+        expect(await cancel(app.base, sessionId, { finish: true })).toMatchObject({ ok: true, finished: true });
+        expect(Date.now() - started).toBeLessThan(5000); // 一覧の取得（sleep 30）を待たずに終わる
+        expect((await readPipelineStatus(outputDir))?.result).toMatchObject({ notes: false, notesCancelled: true });
+      } finally {
+        await app.close();
+      }
+    });
+
     it('ノート作成中でなければ finish は何もしない（処理は続く）', async () => {
       const slowWhisper = await writeStub('whisperkit-slow-finish', 'sleep 30');
       const app = await startApp({ whisperkitBin: slowWhisper, outDir: path.join(tmp, 'out-finish-early') });
@@ -927,6 +961,50 @@ describe('local server', () => {
     await fetch(`${base}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) });
     const res = await fetch(`${base}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
     expect(res.status).toBe(409);
+  });
+
+  describe('モデルの「最新の〜」（§13.5、2026-11-05）', () => {
+    it('GET /settings は Codex で今使えるモデル・系統ごとのいちばん新しい版・CLI の版を返す', async () => {
+      const body = (await (await fetch(`${base}/settings`, { headers })).json()) as Record<string, unknown>;
+      expect(body['models']).toEqual([
+        { slug: 'gpt-6.1-sol', name: 'GPT-6.1-Sol' },
+        { slug: 'gpt-6-astra', name: 'GPT-6-Astra' },
+        { slug: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
+        { slug: 'gpt-5.6-terra', name: 'GPT-5.6-Terra' },
+      ]);
+      expect(body['latest']).toEqual({ sol: 'gpt-6.1-sol', astra: 'gpt-6-astra', terra: 'gpt-6.1-terra' });
+      expect(body['codexVersion']).toBe('0.166.0');
+    });
+
+    it('latest:terra・latest:astra を保存でき、ノートを作るときに今の一覧のいちばん新しい版で呼ぶ', async () => {
+      const { server: s } = createApp({ ...config, outDir: path.join(tmp, 'out-latest'), settingsFile: path.join(tmp, 'settings-latest.json') }, TOKEN);
+      await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+      const b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+      try {
+        const saved = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ llmModel: 'latest:terra', llmCheckModel: 'latest:astra' }) });
+        expect(saved.status).toBe(200);
+        expect(await saved.json()).toMatchObject({ llmModel: 'latest:terra', llmCheckModel: 'latest:astra', latest: { terra: 'gpt-6.1-terra', astra: 'gpt-6-astra' } });
+        const usedFile = path.join(tmp, 'codex-models-used.txt');
+        const before = (await readFile(usedFile, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+        const sessionId = '20261105-100000-ltst';
+        await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'latest' }) });
+        await fetch(`${b}/sessions/${sessionId}/files/audio.webm`, { method: 'PUT', headers, body: 'x' });
+        await fetch(`${b}/sessions/${sessionId}/finalize`, { method: 'POST', headers });
+        let status: PipelineStatus = { stage: 'queued', outputDir: '', updatedAt: '' };
+        for (let i = 0; i < 100 && status.stage !== 'done' && status.stage !== 'error'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          status = (await (await fetch(`${b}/sessions/${sessionId}/status`, { headers })).json()) as PipelineStatus;
+        }
+        expect(status.stage).toBe('done');
+        const used = (await readFile(usedFile, 'utf8')).split('\n').filter(Boolean).slice(before);
+        // 整え・要点は最新の Terra、校正は最新の Astra。latest: のまま codex に渡さない
+        expect(used).toContain('gpt-6.1-terra');
+        expect(used).toContain('gpt-6-astra');
+        expect(used.some((m) => m.startsWith('latest:'))).toBe(false);
+      } finally {
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+      }
+    });
   });
 
   describe('講義の名前（§14、2026-10-18）', () => {

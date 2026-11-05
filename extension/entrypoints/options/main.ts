@@ -1,6 +1,6 @@
 import { bindCopyButton } from '../../src/clipboard';
 import { loadConfig, saveConfig, type Config } from '../../src/config';
-import { APP_DIR, ForeignServerError, UPDATE_COMMAND, fetchHealth, fetchLlmSettings, outdatedMessage, saveLlmSettings, serverOutdated, visionLine, type Health } from '../../src/health';
+import { APP_DIR, ForeignServerError, UPDATE_COMMAND, fetchHealth, fetchLlmSettings, outdatedMessage, saveLlmSettings, serverOutdated, visionLine, type Health, type LlmSettingsInfo } from '../../src/health';
 import { sendToBackground } from '../../src/messages';
 
 /** 設定画面（SPEC §15.2）。ローカルサーバーとの接続。ポートとトークンの欄は置かない（2026-09-18） */
@@ -19,6 +19,8 @@ const customModels = $('customModels');
 const resetModelsBtn = $<HTMLButtonElement>('resetModels');
 const modelPresetSel = $<HTMLSelectElement>('modelPreset');
 const presetDetail = $('presetDetail');
+const modelChoices = $<HTMLDataListElement>('modelChoices');
+const modelCatalog = $('modelCatalog');
 const notesCmd = $('notesCmd');
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
 notesCmd.textContent = NOTES_COMMAND;
@@ -174,18 +176,57 @@ $('test').addEventListener('click', async () => {
  * どのプリセットでも校正は付ける（校正は別の呼び出しに分けたほうが誤変換に強い。§13.5 の実測）。
  * 校正なしにできるのは、カスタムで校正の欄を空にしたときだけ
  */
+/**
+ * プリセットはモデル名ではなく系統で決める（2026-11-05）。`latest:terra` は Codex の一覧で Terra の系統のいちばん新しい版で、
+ * サーバーがノートを作るたびに解決する。ChatGPT に新しいモデルが出ても（Codex を新しくすれば）自動で切り替わる
+ */
 const MODEL_PRESETS: Record<string, { llmModel: string; llmCheckModel: string }> = {
-  recommended: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-6-astra' },
-  quality: { llmModel: 'gpt-6-astra', llmCheckModel: 'gpt-6-astra' },
-  economy: { llmModel: 'gpt-5.6-terra', llmCheckModel: 'gpt-5.6-terra' },
+  recommended: { llmModel: 'latest:terra', llmCheckModel: 'latest:astra' },
+  quality: { llmModel: 'latest:astra', llmCheckModel: 'latest:astra' },
+  economy: { llmModel: 'latest:terra', llmCheckModel: 'latest:terra' },
 };
 
-const PRESET_DETAIL: Record<string, string> = {
-  recommended: 'gpt-5.6-terraが本文を整えて要点を作り、gpt-6-astraが誤変換だけを校正します。',
-  quality: '整え・要点も校正も、すべてgpt-6-astraで行います。',
-  economy: '整え・要点も校正も、すべてgpt-5.6-terraで行います。',
-  custom: 'モデル名を直接指定します。校正の欄を空にすると校正なしになります。',
-};
+/** 系統の表示名 */
+const TIER_LABEL: Record<string, string> = { terra: 'Terra', astra: 'Astra', sol: 'Sol', luna: 'Luna' };
+
+/** 設定の値を、説明に出す名前にする。latest:terra → 「最新のTerra（今はgpt-6.1-terra）」 */
+function modelLabel(value: string, resolved: string | undefined): string {
+  if (!value.startsWith('latest:')) return value || '既定のモデル';
+  const tier = value.slice('latest:'.length);
+  const label = `最新の${TIER_LABEL[tier] ?? tier}`;
+  return resolved ? `${label}（今は${resolved}）` : label;
+}
+
+/** 系統ごとの、今の一覧でいちばん新しい版（サーバーが返す latest。api 7）。古いサーバーなら空 */
+let latestByTier: Record<string, string> = {};
+
+function presetDetailText(preset: string): string {
+  const values = MODEL_PRESETS[preset];
+  if (!values) return 'モデル名を直接指定します。「latest:terra」のように書くと、その系統のいちばん新しいモデルを使います。校正の欄を空にすると校正なしになります。';
+  const now = (value: string) => latestByTier[value.slice('latest:'.length)];
+  const main = modelLabel(values.llmModel, now(values.llmModel));
+  const check = modelLabel(values.llmCheckModel, now(values.llmCheckModel));
+  return values.llmModel === values.llmCheckModel
+    ? `整え・要点も校正も、すべて${main}で行います。`
+    : `${main}が本文を整えて要点を作り、${check}が誤変換だけを校正します。`;
+}
+
+/** カスタムの欄の候補（「最新の〜」と、Codex で今使えるモデル）と、使えるモデルの一覧を出す */
+function renderCatalog(info: LlmSettingsInfo) {
+  const models = info.models ?? [];
+  latestByTier = info.latest ?? {};
+  const choices = [...['terra', 'astra', 'sol', 'luna'].map((t) => `latest:${t}`), ...models.map((m) => m.slug)];
+  modelChoices.replaceChildren(
+    ...choices.map((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.label = models.find((x) => x.slug === value)?.name ?? modelLabel(value, latestByTier[value.slice('latest:'.length)]);
+      return option;
+    }),
+  );
+  modelCatalog.hidden = models.length === 0;
+  modelCatalog.textContent = models.length ? `いまCodex${info.codexVersion ? ` ${info.codexVersion}` : ''}で使えるモデル: ${models.map((m) => m.slug).join('、')}` : '';
+}
 
 function presetOf(llmModel: string, llmCheckModel: string): string {
   for (const [key, v] of Object.entries(MODEL_PRESETS)) {
@@ -196,15 +237,18 @@ function presetOf(llmModel: string, llmCheckModel: string): string {
 
 function renderPresetDetail() {
   const preset = modelPresetSel.value;
-  presetDetail.textContent = PRESET_DETAIL[preset] ?? '';
+  presetDetail.textContent = presetDetailText(preset);
   customModels.hidden = preset !== 'custom';
 }
 
-function renderModelChoice(llmModel: string, llmCheckModel: string, overridden: boolean) {
+function renderModelChoice(info: LlmSettingsInfo) {
+  const llmModel = info.llmModel ?? '';
+  const llmCheckModel = info.llmCheckModel ?? '';
   modelPresetSel.value = presetOf(llmModel, llmCheckModel);
   modelMain.value = llmModel;
   modelCheck.value = llmCheckModel;
-  resetModelsBtn.hidden = !overridden;
+  resetModelsBtn.hidden = info.overridden !== true;
+  renderCatalog(info);
   renderPresetDetail();
 }
 
@@ -222,7 +266,7 @@ async function renderModels(health: Health | null) {
   try {
     const current = await fetchLlmSettings(config.server);
     if (generation !== modelsGeneration || modelsDirty) return;
-    renderModelChoice(current.llmModel ?? '', current.llmCheckModel ?? '', current.overridden === true);
+    renderModelChoice(current);
     modelResult.textContent = '';
     modelResult.className = 'result';
   } catch {
@@ -252,7 +296,7 @@ $('saveModels').addEventListener('click', async () => {
   try {
     const saved = await saveLlmSettings(config.server, values);
     modelsDirty = false;
-    renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
+    renderModelChoice(saved);
     showModelResult('保存しました。次のノート作成（または「やり直す」）から使われます。', true);
   } catch (e) {
     showModelResult(e instanceof Error ? e.message : String(e), false);
@@ -263,7 +307,7 @@ resetModelsBtn.addEventListener('click', async () => {
   try {
     const saved = await saveLlmSettings(config.server, { reset: true });
     modelsDirty = false;
-    renderModelChoice(saved.llmModel ?? '', saved.llmCheckModel ?? '', saved.overridden === true);
+    renderModelChoice(saved);
     showModelResult('起動時の設定に戻しました。', true);
   } catch (e) {
     showModelResult(e instanceof Error ? e.message : String(e), false);

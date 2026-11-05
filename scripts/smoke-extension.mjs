@@ -58,7 +58,7 @@ const whisperkitStub = stub(
 const osascriptStub = stub('osascript', 'echo allowed');
 writeFileSync(path.join(serverTmp, 'token'), `${SERVER_TOKEN}\n`);
 const serverOut = path.join(serverTmp, 'out');
-const localServerArgs = ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json'), '--auto-update', 'off'];
+const localServerArgs = ['server/src/index.ts', '--port', String(SERVER_PORT), '--out', serverOut, '--token-file', path.join(serverTmp, 'token'), '--whisperkit', whisperkitStub, '--ffmpeg', ffmpegStub, '--model', 'stub', '--osascript', osascriptStub, '--trusted-file', path.join(serverTmp, 'trusted.json'), '--settings-file', path.join(serverTmp, 'settings.json'), '--auto-update', 'off'];
 let localServer = spawn(process.execPath, localServerArgs, { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 1200));
 const context = await chromium.launchPersistentContext('', {
@@ -1084,6 +1084,59 @@ try {
     await ctx.close();
   }, finishId);
   await off5.close();
+  // §15.2: 設定画面の「使うモデル」。プリセットは系統（latest:terra など）で決め、説明に今の Codex の一覧で何になるかを出す（2026-11-05）。
+  // codex の代わりに、--version と debug models（一覧）にだけ答えるスタブを使う（ノートは作らない）
+  const catalogJson = path.join(serverTmp, 'codex-catalog.json');
+  writeFileSync(
+    catalogJson,
+    JSON.stringify({
+      models: [
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', priority: 1 },
+        { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', priority: 2 },
+        { slug: 'gpt-6.1-terra', display_name: 'GPT-6.1 Terra', visibility: 'list', priority: 4 },
+        { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', visibility: 'list', priority: 5 },
+        { slug: 'gpt-reserve', display_name: 'GPT-Reserve', visibility: 'hide', priority: 6 },
+        { slug: 'gpt-6-luna', display_name: 'GPT-6-Luna', visibility: 'list', priority: 7 },
+        { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list', priority: 8 },
+        { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6-Terra', visibility: 'list', priority: 9 },
+        { slug: 'gpt-5.6-luna', display_name: 'GPT-5.6-Luna', visibility: 'list', priority: 10 },
+      ],
+    }),
+  );
+  const codexCatalogStub = stub('codex-catalog', `if [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi; if [ "$1" = "debug" ]; then cat "${catalogJson}"; exit 0; fi; echo "not in this smoke" >&2; exit 1`);
+  await restartServer(['--llm', 'codex', '--codex', codexCatalogStub]);
+  const modelsPage = await context.newPage();
+  modelsPage.on('pageerror', (e) => errors.push(String(e)));
+  await modelsPage.goto(`chrome-extension://${extensionId}/options.html`);
+  await modelsPage.waitForSelector('#modelBox:not([hidden])', { timeout: 10_000 });
+  await modelsPage.waitForFunction(() => (document.getElementById('modelCatalog')?.textContent ?? '').includes('gpt-6.1-terra'), null, { timeout: 10_000 });
+  assert.equal(
+    await modelsPage.evaluate(() => document.getElementById('modelCatalog')?.textContent),
+    'いまCodex 0.166.0で使えるモデル: gpt-6.1-sol、gpt-6-astra、gpt-6.1-terra、gpt-6-sol、gpt-6-luna、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna',
+  );
+  await modelsPage.selectOption('#modelPreset', 'recommended');
+  assert.equal(
+    await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
+    '最新のTerra（今はgpt-6.1-terra）が本文を整えて要点を作り、最新のAstra（今はgpt-6-astra）が誤変換だけを校正します。',
+  );
+  await modelsPage.click('#saveModels');
+  await modelsPage.waitForFunction(() => document.getElementById('modelResult')?.classList.contains('ok'), null, { timeout: 5_000 });
+  const savedModels = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, { headers: { authorization: `Bearer ${await panel.evaluate(async () => (await chrome.storage.local.get('config')).config.server.token)}` } })).json();
+  assert.equal(savedModels.llmModel, 'latest:terra', JSON.stringify(savedModels));
+  assert.equal(savedModels.llmCheckModel, 'latest:astra', JSON.stringify(savedModels));
+  assert.deepEqual(savedModels.latest, { sol: 'gpt-6.1-sol', astra: 'gpt-6-astra', terra: 'gpt-6.1-terra', luna: 'gpt-6-luna' });
+  // カスタムの欄には、「最新の〜」と今使えるモデルが候補に出る
+  await modelsPage.selectOption('#modelPreset', 'custom');
+  const choices = await modelsPage.evaluate(() => [...document.querySelectorAll('#modelChoices option')].map((o) => o.value));
+  assert.deepEqual(choices.slice(0, 5), ['latest:terra', 'latest:astra', 'latest:sol', 'latest:luna', 'gpt-6.1-sol']);
+  // 保存した上書きを消して、起動時の設定に戻す（ほかの確認に持ち越さない）
+  await modelsPage.selectOption('#modelPreset', 'recommended');
+  await modelsPage.click('#resetModels');
+  await modelsPage.waitForFunction(() => document.getElementById('resetModels')?.hidden === true, null, { timeout: 5_000 });
+  await modelsPage.close();
+  await restartServer([]);
+  console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog and offer the live list');
+
   const codexSlowStub = stub('codex-slow', 'sleep 30');
   await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);
   const sentFinish = await panel.evaluate((id) => chrome.runtime.sendMessage({ target: 'sw', type: 'UPLOAD', sessionId: id }), finishId);

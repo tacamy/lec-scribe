@@ -10,6 +10,7 @@ import { cacheKey, deriveFromCache, readNotesCache, sameSettings, writeNotesCach
 import { assignSlides, buildLectureMarkdown, buildNotesMarkdown, groupAssigned, isSlideList, type MergedSegment, type SlideEntry, type Section } from './merge.ts';
 import { arrangeImages, findPickRegions, runPicker } from './picker.ts';
 import { displayName, readSessionInfo } from './naming.ts';
+import { LATEST_PREFIX, ModelCatalog, resolveModel } from './models.ts';
 import { pickShownSlides, readThumbnail, shownSlides, type SceneDecision } from './scenes.ts';
 import { visionDistances } from './vision.ts';
 import { isTimeline, toVideoTime } from './timeline.ts';
@@ -153,9 +154,13 @@ export class Pipeline {
   private readonly config: ServerConfig;
   private readonly log: (message: string) => void;
 
+  /** Codex で使えるモデルの一覧（「最新の〜」の解決と、設定画面の候補に使う。§13.5） */
+  readonly models: ModelCatalog;
+
   constructor(config: ServerConfig, log: (message: string) => void = () => undefined) {
     this.config = config;
     this.log = log;
+    this.models = new ModelCatalog(() => config.codexBin, log);
   }
 
   isRunning(dir: string): boolean {
@@ -202,6 +207,35 @@ export class Pipeline {
     job.controller.abort();
     if (job.started) await job.task.catch(() => undefined);
     return true;
+  }
+
+  /**
+   * 設定のモデルを、呼び出しに渡す名前にする（§13.5）。`latest:<系統>` は Codex の一覧でいちばん新しい版に。
+   * 一覧を待っている間に止められたら、一覧なしで解決する（呼び出し元が止められたことを見て抜ける）
+   */
+  private async resolveModels(
+    wanted: { main: string; check: string; pick: string },
+    kind: ServerConfig['llm'],
+    signal: AbortSignal,
+  ): Promise<{ main: string; check: string; pick: string }> {
+    const needs = kind === 'codex' && Object.values(wanted).some((v) => v.startsWith(LATEST_PREFIX));
+    const stopped = new Promise<null>((resolve) => {
+      if (signal.aborted) resolve(null);
+      signal.addEventListener('abort', () => resolve(null), { once: true });
+    });
+    const catalog = needs ? await Promise.race([this.models.list(), stopped]) : null;
+    if (signal.aborted) return { main: '', check: '', pick: '' };
+    const resolve = (label: string, value: string) => {
+      const r = resolveModel(value, catalog);
+      if (r.note) this.log(r.note);
+      else if (r.model !== value) this.log(`${label}のモデル: ${value} → ${r.model}`);
+      return r.model;
+    };
+    const main = resolve('整え・要点', wanted.main);
+    const check = resolve('校正', wanted.check);
+    // 画像の判定は空だと行わない設定なので、「最新の〜」が解決できなければ整えのモデルで代わりに判定する
+    const pick = resolve('画像の判定', wanted.pick) || (wanted.pick.startsWith(LATEST_PREFIX) ? main : '');
+    return { main, check, pick };
   }
 
   /**
@@ -611,11 +645,9 @@ export class Pipeline {
       };
       // モデルは処理の開始時に一度だけ写し取る（POST /settings は共有の config を書き換えるので、
       // 進行中の処理に混ぜるとキャッシュの記録と実際に使ったモデルが食い違う。2026-10-01 のレビュー）
-      const llmCheckModel = this.config.llmCheckModel;
-      const llmPickModel = this.config.llmPickModel;
-      const llmSettings = {
+      const wanted = { main: this.config.llmModel, check: this.config.llmCheckModel, pick: this.config.llmPickModel };
+      const llmBase = {
         kind: this.config.llm,
-        model: this.config.llmModel,
         codexBin: this.config.codexBin,
         openaiApiKey: this.config.openaiApiKey,
         ollamaUrl: this.config.ollamaUrl,
@@ -625,9 +657,15 @@ export class Pipeline {
       };
       /** 利用者がノート作成だけを止めた（処理全体の中止ではない） */
       const notesStopped = () => job.llm.signal.aborted && !signal.aborted;
-      const backend = createBackend(llmSettings);
-      if (backend) {
+      if (llmBase.kind !== 'none') {
         notes = await step('polishing', async () => {
+          // `latest:<系統>` はここで Codex の一覧からいちばん新しい版の名前にする（2026-11-05）。キャッシュには解決した名前が残るので、
+          // 新しいモデルが出ると次の「やり直す」でノートを作り直す。一覧を待つ間もノート作成の段階として見せ、「中止」で打ち切れる
+          const { main: llmMainModel, check: llmCheckModel, pick: llmPickModel } = await this.resolveModels(wanted, llmBase.kind, job.llm.signal);
+          if (signal.aborted) throw new Error('cancelled');
+          if (notesStopped()) throw new Error('notes stopped');
+          const llmSettings = { ...llmBase, model: llmMainModel };
+          const backend = createBackend(llmSettings)!;
           // 映像・板書の節では、外した画像から本文の助けになる瞬間を救い出す・差し替える（§13.4c）。
           // 画像の並びが変わったら transcript.json・lecture.md・節を作り直してから整える
           if (llmSettings.kind === 'codex') {

@@ -10,6 +10,7 @@ import { NOTES_FILE, SLIDE_FILE, SLIDES_DIR, ensureLayout, migrateLayoutAndSync,
 import { Pipeline, readPipelineStatus, snapshotDone, writeStatus, type PipelineStatus } from './pipeline.ts';
 import { NAME_MAX_CHARS, applyName, cleanName, displayName, folderNameFor, readSessionInfo, writeSessionInfo } from './naming.ts';
 import { applyLlmOverrides, isValidModelName, readLlmOverrides, writeLlmOverrides, type LlmOverrides } from './settings.ts';
+import { latestOfTier, tierOf } from './models.ts';
 import { isAuthorized } from './token.ts';
 import { addTrusted, askPermission, extensionIdFromOrigin, pairMessage, removeTrusted, sanitizeName, trustedByToken, type Trusted } from './pairing.ts';
 
@@ -28,9 +29,11 @@ export const VERSION = '0.1.0';
  *      古いサーバーは finish を知らず、ただの中止として扱う（録音は拡張に残るので、送り直せる）。最低の版は 1 のまま
  *   5: 2026-10-01。GET/POST /settings（ノート作成のモデル）
  *   6: 2026-10-18。講義の名前（§14）: POST /sessions の name、POST /sessions/:id/name、status の outputDir は今のフォルダ。
- *      拡張は名前を変える前に版を確かめ、古ければ「サーバーを更新して」と出す。最低の版は 1 のまま
+ *      受け口の無い古いサーバーは NOT_FOUND で答えるので、拡張は「サーバーが古い」と出す。最低の版は 1 のまま
+ *   7: 2026-11-05。モデルの「最新の〜」（latest:terra など）と、GET /settings の models・resolved・codexVersion。
+ *      設定画面は項目が無ければ候補と解決後の名前を出さないだけ。最低の版は 1 のまま
  */
-export const API_VERSION = 6;
+export const API_VERSION = 7;
 
 /** 拡張が POST /sessions で送る内容（拡張側 session.json 相当） */
 type SessionMeta = { sessionId: string; title?: string; url?: string; startedAt?: string; name?: unknown; config?: unknown };
@@ -66,6 +69,24 @@ export function createApp(
       log(`旧配置の移行に失敗しました（処理のときに改めて試します）: ${dir}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+
+  /**
+   * 設定画面に返すモデルの設定（§15.2）。codex のときは、Codex で今使えるモデル（models）と、系統ごとのいちばん新しい版
+   * （latest。「最新の〜」はこれになる）、一覧を取った CLI の版（codexVersion）も返す（api 7、2026-11-05）
+   */
+  async function settingsView() {
+    const base = { llm: config.llm, llmModel: config.llmModel, llmCheckModel: config.llmCheckModel };
+    if (config.llm !== 'codex') return base;
+    const models = await pipeline.models.list();
+    if (!models) return base;
+    const tiers = [...new Set(models.map((m) => tierOf(m.slug)?.tier).filter((t): t is string => !!t))];
+    return {
+      ...base,
+      models: models.map((m) => ({ slug: m.slug, name: m.name })),
+      latest: Object.fromEntries(tiers.map((t) => [t, latestOfTier(models, t)!])),
+      codexVersion: await pipeline.models.version(),
+    };
+  }
 
   /** 共有トークンか、承認時に発行した拡張ごとのトークンが合えば通す */
   function authorized(req: IncomingMessage): boolean {
@@ -240,13 +261,7 @@ export function createApp(
     // overridden は設定画面で変えた値が効いているか（false なら起動時の設定のまま）
     if (req.method === 'GET' && url.pathname === '/settings') {
       const overrides = await readLlmOverrides(config.settingsFile);
-      sendJson(res, 200, {
-        ok: true,
-        llm: config.llm,
-        llmModel: config.llmModel,
-        llmCheckModel: config.llmCheckModel,
-        overridden: Object.keys(overrides).length > 0,
-      });
+      sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: Object.keys(overrides).length > 0 });
       return;
     }
 
@@ -259,7 +274,7 @@ export function createApp(
         config.llmModel = llmDefaults.llmModel;
         config.llmCheckModel = llmDefaults.llmCheckModel;
         log(`設定: ノート作成のモデルを起動時の設定に戻しました（${config.llmModel || '指定なし'}${config.llmCheckModel ? ` ＋校正 ${config.llmCheckModel}` : ''}）`);
-        sendJson(res, 200, { ok: true, llm: config.llm, llmModel: config.llmModel, llmCheckModel: config.llmCheckModel, overridden: false });
+        sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: false });
         return;
       }
       const overrides: LlmOverrides = {};
@@ -280,7 +295,7 @@ export function createApp(
       await writeLlmOverrides(config.settingsFile, merged);
       applyLlmOverrides(config, merged);
       log(`設定: ノート作成のモデルを変更（${config.llmModel || '指定なし'}${config.llmCheckModel ? ` ＋校正 ${config.llmCheckModel}` : '、校正なし'}）→ ${config.settingsFile}`);
-      sendJson(res, 200, { ok: true, llm: config.llm, llmModel: config.llmModel, llmCheckModel: config.llmCheckModel, overridden: true });
+      sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: true });
       return;
     }
 
