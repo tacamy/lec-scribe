@@ -832,6 +832,13 @@ async function renderSessions() {
   items.forEach((li, i) => li.classList.toggle('extra', i >= SESSIONS_SHOWN));
   // 描き直しで入れ替わった行まで「開いた瞬間」の動きをしないように、印を外してから入れ替える
   sessionList.classList.remove('reveal');
+  // 名前を変えている途中なら、選んでいた範囲を控える。全部選んで打ち直す途中で描き直されたとき、
+  // カーソルを末尾にすると前の文字の後ろに足されてしまう（2026-11-05、スモークテストで再現）
+  const previous = sessionList.querySelector<HTMLInputElement>('input.sessionTitleInput:not(:disabled)');
+  const selection =
+    previous && document.activeElement === previous && previous.selectionStart !== null && previous.selectionEnd !== null
+      ? { start: previous.selectionStart, end: previous.selectionEnd, direction: previous.selectionDirection ?? undefined }
+      : null;
   // 入れ替えの途中で古い入力欄にフォーカス外れが出るので、その間は保存しない（titleEditor）
   rerendering = true;
   try {
@@ -839,11 +846,12 @@ async function renderSessions() {
   } finally {
     rerendering = false;
   }
-  // 名前を変えている途中なら、描き直した入力欄に戻る（カーソルは末尾）
+  // 名前を変えている途中なら、描き直した入力欄に戻る（選んでいた範囲はそのまま。なければカーソルは末尾）
   const editor = sessionList.querySelector<HTMLInputElement>('input.sessionTitleInput:not(:disabled)');
   if (editor) {
     editor.focus();
-    editor.setSelectionRange(editor.value.length, editor.value.length);
+    if (selection) editor.setSelectionRange(selection.start, selection.end, selection.direction);
+    else editor.setSelectionRange(editor.value.length, editor.value.length);
   } else if (refocusTitle) {
     // キーボードで入力欄を閉じたら、その行の見出しにフォーカスを戻す
     sessionList.querySelector<HTMLElement>(`li[data-session-id="${refocusTitle}"] .sessionTitle`)?.focus();

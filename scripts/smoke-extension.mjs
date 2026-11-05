@@ -594,14 +594,24 @@ try {
   // 入力中に一覧が描き直されても、入力欄のまま残り、途中の文字で保存しない（Chromium は入れ替えの途中で blur を出す。2026-10-18 のレビュー）
   await panel.click(`${frameRow} .sessionTitle`);
   await panel.fill(titleInput, 'デザ');
-  await panel.evaluate((sel) => (document.querySelector(sel).dataset.before = '1'), titleInput);
+  /** 一覧に関係する状態（sessionId）だけを変えてパネルに描き直させ、入力欄が作り直されるまで待つ */
+  const rerenderList = async (session) => {
+    await panel.evaluate((sel) => (document.querySelector(sel).dataset.before = '1'), titleInput);
+    await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), session);
+    await panel.waitForFunction((sel) => { const el = document.querySelector(sel); return el && !el.dataset.before; }, titleInput, { timeout: 5_000 });
+  };
   const stateBefore = await panel.evaluate(async () => (await chrome.storage.session.get('session')).session);
-  // 一覧に関係する状態（sessionId）だけを変えて、パネルに描き直させる
-  await panel.evaluate(async (s) => chrome.storage.session.set({ session: { ...s, sessionId: 'rerender-probe' } }), stateBefore);
-  await panel.waitForFunction((sel) => { const el = document.querySelector(sel); return el && !el.dataset.before; }, titleInput, { timeout: 5_000 });
-  await panel.evaluate(async (s) => chrome.storage.session.set({ session: s }), stateBefore);
+  await rerenderList({ ...stateBefore, sessionId: 'rerender-probe' });
   assert.equal(await panel.inputValue(titleInput), 'デザ', 'the editor keeps the typed text across a re-render');
   assert.deepEqual(readdirSync(serverOut).filter((d) => d.endsWith(`_${frameSession}`)), [outDir], 'a re-render must not save the half-typed name');
+  // 全部選んだまま描き直されても、選んだ範囲は残る（打ち直した文字が前の文字の後ろに足されない。2026-11-05）
+  await panel.evaluate((sel) => document.querySelector(sel).select(), titleInput);
+  await rerenderList(stateBefore);
+  assert.deepEqual(
+    await panel.evaluate((sel) => { const el = document.querySelector(sel); return [el.selectionStart, el.selectionEnd, document.activeElement === el]; }, titleInput),
+    [0, 2, true],
+    'the selection survives a re-render',
+  );
   await panel.fill(titleInput, 'スモーク 動画 1');
   await panel.press(titleInput, 'Enter');
   await panel.waitForFunction((sel) => document.querySelector(`${sel} .sessionTitle`)?.textContent === 'スモーク 動画 1', frameRow, { timeout: 10_000 });
