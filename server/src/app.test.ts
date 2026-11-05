@@ -544,7 +544,7 @@ describe('local server', () => {
     }
   });
 
-  it('設定 API でノート作成のモデルを変えると、再起動なしで次の処理から効き、保存されて overridden になる', async () => {
+  it('設定 API でノート作成のモデルを変えると、再起動なしで次の処理から効き、保存される', async () => {
     const settingsFile = path.join(tmp, 'settings-api.json');
     const { server } = createApp({ ...config, settingsFile, outDir: path.join(tmp, 'out-settings') }, TOKEN);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -553,15 +553,17 @@ describe('local server', () => {
       const health = (await (await fetch(`${b}/health`, { headers })).json()) as { api: number; llmModel?: string; llmCheckModel?: string };
       expect(health.api).toBeGreaterThanOrEqual(5);
       expect(health.llmModel).toBe('');
-      const got = (await (await fetch(`${b}/settings`, { headers })).json()) as { ok: boolean; overridden: boolean };
-      expect(got).toMatchObject({ ok: true, overridden: false });
+      const got = (await (await fetch(`${b}/settings`, { headers })).json()) as { ok: boolean; llmCheckModel: string };
+      expect(got).toMatchObject({ ok: true, llmCheckModel: '' });
+      // 起動時の設定に戻す reset と overridden はやめた（2026-11-05）
+      expect(got).not.toHaveProperty('overridden');
       // 認証なしは 401、不正なモデル名は 400
       expect((await fetch(`${b}/settings`)).status).toBe(401);
       const bad = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ llmModel: 'a b' }) });
       expect(bad.status).toBe(400);
       // 校正モデルを入れて保存 → 次の finalize から校正が効く（サーバーは再起動していない）
       const set = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ llmCheckModel: 'check-model' }) });
-      expect((await set.json() as { overridden: boolean }).overridden).toBe(true);
+      expect(await set.json()).toMatchObject({ ok: true, llmCheckModel: 'check-model' });
       expect(JSON.parse(await readFile(settingsFile, 'utf8'))).toEqual({ llmCheckModel: 'check-model' });
       const sessionId = '20260920-160000-set1';
       await fetch(`${b}/sessions`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ sessionId, title: 'settings' }) });
@@ -574,10 +576,10 @@ describe('local server', () => {
       }
       expect(status.stage).toBe('done');
       expect(await readFile(path.join(status.outputDir!, 'notes.md'), 'utf8')).toContain('の校正済みの本文。');
-      // reset で起動時の設定（校正なし）に戻る
+      // reset はもう受け付けない（モデル名がないので 400。ファイルはそのまま）
       const reset = await fetch(`${b}/settings`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ reset: true }) });
-      expect((await reset.json() as { overridden: boolean; llmCheckModel: string }).llmCheckModel).toBe('');
-      expect(await readFile(settingsFile, 'utf8').catch(() => 'gone')).toBe('gone');
+      expect(reset.status).toBe(400);
+      expect(JSON.parse(await readFile(settingsFile, 'utf8'))).toEqual({ llmCheckModel: 'check-model' });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

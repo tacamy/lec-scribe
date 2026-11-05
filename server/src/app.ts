@@ -55,8 +55,6 @@ export function createApp(
   trusted: Trusted = { entries: [], file: config.trustedFile },
   /** 動いているコードのコミット（診断用。/health に載せる）。分からなければ null */
   build: { commit: string | null } = { commit: null },
-  /** 起動時（設定画面の上書きを当てる前）のモデル設定。「サーバー起動時の設定に戻す」の戻し先 */
-  llmDefaults: { llmModel: string; llmCheckModel: string } = { llmModel: config.llmModel, llmCheckModel: config.llmCheckModel },
 ): App {
   const pipeline = new Pipeline(config, log);
   /** 承認ダイアログは同時に 1 つだけ */
@@ -267,26 +265,17 @@ export function createApp(
       return;
     }
 
-    // GET /settings — 設定画面から変えられる設定の今の値（§15.2、api 5）。
-    // overridden は設定画面で変えた値が効いているか（false なら起動時の設定のまま）
+    // GET /settings — 設定画面から変えられる設定の今の値（§15.2、api 5）
     if (req.method === 'GET' && url.pathname === '/settings') {
-      const overrides = await readLlmOverrides(config.settingsFile);
-      sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: Object.keys(overrides).length > 0 });
+      sendJson(res, 200, { ok: true, ...(await settingsView()) });
       return;
     }
 
-    // POST /settings { llmModel?, llmCheckModel?, reset? } — ノート作成のモデルを変える（§15.2、api 5）。
-    // 保存して即反映（pipeline は処理のたびに config を読む。再起動は要らない）。reset は起動時の設定に戻す
+    // POST /settings { llmModel?, llmCheckModel? } — ノート作成のモデルを変える（§15.2、api 5）。
+    // 保存して即反映（pipeline は処理のたびに config を読む。再起動は要らない）。
+    // 起動時の設定に戻す reset と、上書きが効いているかの overridden は 2026-11-05 にやめた（§15.2）
     if (req.method === 'POST' && url.pathname === '/settings') {
-      const body = ((await readJsonBody(req)) ?? {}) as { llmModel?: unknown; llmCheckModel?: unknown; reset?: unknown };
-      if (body.reset === true) {
-        await writeLlmOverrides(config.settingsFile, null);
-        config.llmModel = llmDefaults.llmModel;
-        config.llmCheckModel = llmDefaults.llmCheckModel;
-        log(`設定: ノート作成のモデルを起動時の設定に戻しました（${config.llmModel || '指定なし'}${config.llmCheckModel ? ` ＋校正 ${config.llmCheckModel}` : ''}）`);
-        sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: false });
-        return;
-      }
+      const body = ((await readJsonBody(req)) ?? {}) as { llmModel?: unknown; llmCheckModel?: unknown };
       const overrides: LlmOverrides = {};
       for (const key of ['llmModel', 'llmCheckModel'] as const) {
         const value = body[key];
@@ -305,7 +294,7 @@ export function createApp(
       await writeLlmOverrides(config.settingsFile, merged);
       applyLlmOverrides(config, merged);
       log(`設定: ノート作成のモデルを変更（${config.llmModel || '指定なし'}${config.llmCheckModel ? ` ＋校正 ${config.llmCheckModel}` : '、校正なし'}）→ ${config.settingsFile}`);
-      sendJson(res, 200, { ok: true, ...(await settingsView()), overridden: true });
+      sendJson(res, 200, { ok: true, ...(await settingsView()) });
       return;
     }
 

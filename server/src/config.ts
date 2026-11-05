@@ -71,6 +71,11 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     return Number.isFinite(n) ? n : fallback;
   };
   const managed = env['LEC_SCRIBE_MANAGED'] === '1';
+  const llm = parseLlm(pick('llm', 'LEC_SCRIBE_LLM', 'none'));
+  // codex のときのモデルの既定は、設定画面の「推奨」と同じ（最新の Terra で整え、最新の Astra で校正。§13.5、§15.2、2026-11-05）。
+  // 何も指定していない人も推奨で動き、設定画面にも「推奨」と出る。それまでは空（既定のモデル・校正なし）で、
+  // 推奨は設定画面で選んで保存するまで効かなかった。openai / ollama はモデル名の体系が違うので指定なしのまま
+  const codex = llm === 'codex';
   return {
     host: '127.0.0.1',
     // 既定は「launchd で常駐しているときだけ有効」。手で起動したサーバーや smoke テストが
@@ -91,9 +96,9 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     ffmpegBin: pick('ffmpeg', 'LEC_SCRIBE_FFMPEG', 'ffmpeg'),
     openBin: pick('open', 'LEC_SCRIBE_OPEN', 'open'),
     keepWav: args['keep-wav'] === 'true' || env['LEC_SCRIBE_KEEP_WAV'] === '1',
-    llm: parseLlm(pick('llm', 'LEC_SCRIBE_LLM', 'none')),
-    llmModel: pick('llm-model', 'LEC_SCRIBE_LLM_MODEL', ''),
-    llmCheckModel: pick('llm-check-model', 'LEC_SCRIBE_LLM_CHECK_MODEL', ''),
+    llm,
+    llmModel: pick('llm-model', 'LEC_SCRIBE_LLM_MODEL', codex ? 'latest:terra' : ''),
+    llmCheckModel: pick('llm-check-model', 'LEC_SCRIBE_LLM_CHECK_MODEL', codex ? 'latest:astra' : ''),
     // 画像の判定は既定で「最新の Terra」（Codex の一覧から、ノートを作るたびに解決する。§13.5、2026-11-05）
     llmPickModel: pick('llm-pick-model', 'LEC_SCRIBE_LLM_PICK_MODEL', 'latest:terra'),
     settingsFile: expandHome(pick('settings-file', 'LEC_SCRIBE_SETTINGS_FILE', path.join(home, '.lec-scribe', 'settings.json'))),

@@ -46,12 +46,11 @@ if (config.autoUpdate) {
 
 // どちらも listen の前に要るが、互いに関係ないので並べて待つ
 const [trusted, commit] = await Promise.all([loadTrusted(config.trustedFile), currentCommit(config.appDir, config.gitBin)]);
-// 設定画面からの上書き（§15.2）。起動時の値を控えてから当てる（「戻す」の戻し先）
-const llmDefaults = { llmModel: config.llmModel, llmCheckModel: config.llmCheckModel };
+// 設定画面からの上書き（§15.2）
 const llmOverrides = await readLlmOverrides(config.settingsFile);
 applyLlmOverrides(config, llmOverrides);
 if (Object.keys(llmOverrides).length > 0) console.log(`  設定      : ノート作成のモデルを設定画面の値で上書き（${config.settingsFile}）`);
-const { server } = createApp(config, token, log, trusted, { commit }, llmDefaults);
+const { server } = createApp(config, token, log, trusted, { commit });
 // 更新の後始末（SPEC §12.1b、#10）。どの経路で更新しても起動は必ず通るので、ここに集める。
 // 待たない（ポートを開けるのを遅らせない）。Vision を使わない設定と、開発機で手で起動したサーバーは作らない
 if (config.managed && usesVision(config)) void ensureVisionHelper(log);
