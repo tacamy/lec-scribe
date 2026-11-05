@@ -29,15 +29,18 @@ describe('cacheKey', () => {
 });
 
 describe('校正のモデルと鍵（2026-09-30）', () => {
-  it('校正なしなら鍵は今までと同じ（checkModel を省いても空でも変わらない）。校正ありなら別の鍵', () => {
+  it('校正なし（checkModel を省く）なら鍵は今までと同じ。校正ありなら別の鍵。空は既定のモデルで校正したので、これも別の鍵（2026-11-05）', () => {
     const key = cacheKey(sections, settings);
-    expect(cacheKey(sections, { ...settings, checkModel: '' })).toBe(key);
     expect(cacheKey(sections, { ...settings, checkModel: 'gpt-6-astra' })).not.toBe(key);
+    expect(cacheKey(sections, { ...settings, checkModel: '' })).not.toBe(key);
+    expect(cacheKey(sections, { ...settings, checkModel: '' })).not.toBe(cacheKey(sections, { ...settings, checkModel: 'gpt-6-astra' }));
   });
 
-  it('sameSettings は校正のモデルも比べる（省略と空文字は同じ扱い）', () => {
+  it('sameSettings は校正のモデルも比べる（省略 = 校正なしと、空 = 既定のモデルで校正は別）', () => {
     const cache = { key: 'k', generatedAt: 't', backend: 'b', polished: [], settings };
-    expect(sameSettings(cache, { ...settings, checkModel: '' })).toBe(true);
+    expect(sameSettings(cache, { ...settings })).toBe(true);
+    expect(sameSettings(cache, { ...settings, checkModel: '' })).toBe(false);
+    expect(sameSettings({ ...cache, settings: { ...settings, checkModel: '' } }, { ...settings, checkModel: '' })).toBe(true);
     expect(sameSettings(cache, { ...settings, checkModel: 'gpt-6-astra' })).toBe(false);
     expect(sameSettings({ ...cache, settings: { ...settings, checkModel: 'gpt-6-astra' } }, { ...settings, checkModel: 'gpt-6-astra' })).toBe(true);
   });

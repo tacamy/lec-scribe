@@ -50,6 +50,12 @@ export type LlmSettingsInfo = {
   llmCheckModel?: string;
   /** 設定画面で変えた値が効いているか（false なら起動時の設定のまま） */
   overridden?: boolean;
+  /** Codex で今使えるモデル（表示順。api 7 から。§15.2） */
+  models?: Array<{ slug: string; name: string }>;
+  /** 系統ごとの、今の一覧でいちばん新しい版（terra → gpt-6.1-terra など。「最新の〜」はこれになる。api 7 から） */
+  latest?: Record<string, string>;
+  /** 一覧を取った Codex CLI の版（api 7 から） */
+  codexVersion?: string | null;
 };
 
 export async function fetchLlmSettings(server: Pick<Config['server'], 'port' | 'token'>): Promise<LlmSettingsInfo> {

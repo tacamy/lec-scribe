@@ -100,14 +100,15 @@
           </div>
           <p id="presetDetail"></p>
           <div id="customModels" class="row" hidden>
-            <label>整え・要点 <input id="modelMain" placeholder="空なら既定のモデル" /></label>
-            <label>校正 <input id="modelCheck" placeholder="空なら校正なし" /></label>
+            <label>整え・要点 <input id="modelMain" list="modelChoices" placeholder="空なら既定のモデル" /></label>
+            <label>校正 <input id="modelCheck" list="modelChoices" placeholder="空なら校正なし" /></label>
+            <!-- 候補は「最新の〜」と、Codex で今使えるモデル（サーバーが返す一覧。§15.2） -->
+            <datalist id="modelChoices"></datalist>
           </div>
+          <p id="modelCatalog" hidden></p>
           <span id="modelResult" class="result"></span>
-          <p>
-            切り替えたあと、各講義の最初の「やり直す」はノートを作り直します（文字起こしは再利用します）。
-            使えるモデル名はChatGPTのプランによって違いますが、使えないモデルを保存しても処理のときに既定のモデルへ自動で切り替わります。
-          </p>
+          <!-- 文の間で改行すると、表示に余計な空白が入るので一続きに書く -->
+          <p>切り替えたあと、各講義の最初の「やり直す」はノートを作り直します（文字起こしは再利用します）。プリセットはモデルの系統（Terra・Astra）だけを決めていて、Codexを新しくして新しいモデルが出ると、次のノート作成から自動でそちらを使います（Codexを新しくするには、ターミナルで<code>brew upgrade codex</code>）。使えるモデル名はChatGPTのプランによって違いますが、使えないモデルを保存しても処理のときに既定のモデルへ自動で切り替わります。</p>
         </div>
         <div id="notesHint" hidden>
           <p>「ターミナル」で次の 1 行を実行すると有効になります（Codex CLI を入れて ChatGPT アカウントでログインします。API キーは要りません）。</p>
