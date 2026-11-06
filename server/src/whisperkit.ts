@@ -93,8 +93,21 @@ const WINDOW_ARTIFACT_SEC = 20;
 /** 他の区間と重なる合計がこれ以上なら「窓の重複」= 実在しない区間 */
 const OVERLAP_ARTIFACT_SEC = 5;
 
+/** 直前の区間の終わりに「すぐ続いて始まる」とみなす差（秒）。WhisperKit は次の窓を前の区間の終わりの時刻から読み直す */
+const CONTIGUOUS_SEC = 0.02;
+
 /** 捨てた区間。なぜ捨てたかをログに残せるように reason を付ける */
-export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' | 'filler' };
+export type DroppedSegment = Segment & { reason: 'phrase' | 'overlap' | 'symbol' | 'filler' | 'echo' };
+
+/**
+ * 録音の最後の区間が、直前の区間の言葉の終わりの繰り返しか（「…と思います」の直後の「ます」）。
+ * 直前の区間の終わりにすぐ続いて始まり、空白と句読点を除いた本文が直前の本文の末尾と同じ（まるごと同じも含む）ものを指す
+ */
+function isTrailingEcho(prev: Segment, last: Segment): boolean {
+  if (last.start - prev.end > CONTIGUOUS_SEC) return false;
+  const tail = normalizePhrase(last.text);
+  return tail.length > 0 && normalizePhrase(prev.text).endsWith(tail);
+}
 
 /**
  * WhisperKit の VAD 分割で、30 秒の窓いっぱいに広がる区間が本物の区間と重なって出ることがある
@@ -144,8 +157,23 @@ export function dropWindowArtifacts(segments: readonly Segment[]): { kept: Segme
     alive.delete(s);
     dropped.push({ ...s, reason: 'overlap' });
   }
+  const kept = survivors.filter((s) => alive.has(s)).sort((a, b) => a.start - b.start);
 
-  return { kept: survivors.filter((s) => alive.has(s)), dropped: dropped.sort((a, b) => a.start - b.start) };
+  // 録音の最後の区間が直前の区間の言葉の終わりの繰り返しなら捨てる（2026-11-06）。発話が終わったあとの無音の上で、
+  // WhisperKit が最後の窓を前の区間の終わりから読み直し、残っていた語尾の音を拾ってもう一度書き起こす。
+  // 実例: 12 章 GD I-1 の「皆さんにも経験していただければと思います」の直後の「ます」（2.2 秒のうち音があるのは 1 割ほどで、
+  // あとは -91 dB の無音）。最後の画面の切り替えのあとに入ると、その区間だけで 1 節になり、ノートの最後が「ます。」だけになる。
+  // 1 章 GD I-4 の最後の「と思います」も同じ（前の文と同じ節だったので、整えで吸収されていた）。
+  // 話の途中の繰り返しは捨てない。先生が本当に言い直している（音がある）ものも混ざっていて、文字だけでは見分けられないため。
+  // 最後の区間なら、本当に言っていたとしても直前の言葉の繰り返しなので、捨ててもノートの中身は何も失われない
+  while (kept.length >= 2) {
+    const last = kept[kept.length - 1]!;
+    if (!isTrailingEcho(kept[kept.length - 2]!, last)) break;
+    kept.pop();
+    dropped.push({ ...last, reason: 'echo' });
+  }
+
+  return { kept, dropped: dropped.sort((a, b) => a.start - b.start) };
 }
 
 function numberOf(value: unknown): number | null {

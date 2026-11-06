@@ -224,6 +224,67 @@ describe('話の途中の決まり文句', () => {
   });
 });
 
+describe('最後の区間の語尾の繰り返し', () => {
+  it('直前の区間の終わりにすぐ続く、語尾だけの最後の区間を捨てる', () => {
+    // 実例（12 章 GD I-1、2026-11-06）: 発話が終わったあとの無音の上で、語尾の「ます」をもう一度書き起こした。
+    // そのあとの「ご視聴ありがとうございました」は決まり文句として先に落ちるので、「ます」が最後の区間になる
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 1012.96, end: 1015.18, text: '皆さんにも経験していただければと思います' },
+      { start: 1015.18, end: 1017.42, text: 'ます' },
+      { start: 1017.42, end: 1019.42, text: 'ご視聴ありがとうございました' },
+    ]);
+    expect(dropped.map((s) => [s.text, s.reason])).toEqual([
+      ['ます', 'echo'],
+      ['ご視聴ありがとうございました', 'phrase'],
+    ]);
+    expect(kept.map((s) => s.text)).toEqual(['皆さんにも経験していただければと思います']);
+    // 実例（1 章 GD I-4、2026-10-07 の録音）: 前の区間の終わりよりわずかに前から始まる
+    const overlapping = dropWindowArtifacts([
+      { start: 755.2, end: 758.22003, text: '個人的にデッサンをやってみることもお勧めしたいと思います' },
+      { start: 758.22, end: 760.22, text: 'と思います' },
+    ]);
+    expect(overlapping.dropped.map((s) => s.reason)).toEqual(['echo']);
+    expect(overlapping.kept).toHaveLength(1);
+  });
+
+  it('まるごと同じ文の繰り返しも、続けて何度も出たものも捨てる（句読点と空白は見ない）', () => {
+    const { kept, dropped } = dropWindowArtifacts([
+      { start: 0, end: 3, text: '以上で終わります。' },
+      { start: 3, end: 5, text: '以上で 終わります' },
+      { start: 5, end: 6, text: 'ます。' },
+    ]);
+    expect(dropped.map((s) => s.start)).toEqual([3, 5]);
+    expect(kept.map((s) => s.start)).toEqual([0]);
+  });
+
+  it('間を空けて始まる区間、語尾と違う言葉、話の途中の繰り返しは残す', () => {
+    // 間を空けて言い直したものは本物かもしれない
+    const spaced = dropWindowArtifacts([
+      { start: 0, end: 3, text: 'よろしくお願いします' },
+      { start: 3.5, end: 4.5, text: 'お願いします' },
+    ]);
+    expect(spaced.dropped).toHaveLength(0);
+    // 語尾が一致しない（含んでいるだけ）
+    const different = dropWindowArtifacts([
+      { start: 0, end: 3, text: 'と思います' },
+      { start: 3, end: 6, text: '皆さんお疲れ様でした' },
+    ]);
+    expect(different.dropped).toHaveLength(0);
+    const longer = dropWindowArtifacts([
+      { start: 0, end: 3, text: '思います' },
+      { start: 3, end: 5, text: 'と思います' },
+    ]);
+    expect(longer.dropped).toHaveLength(0);
+    // 話の途中の繰り返し（実例: 11 章 GD I-4 の「思います そしてアイディアは…」や、本当の言い直し）は捨てない
+    const middle = dropWindowArtifacts([
+      { start: 0, end: 2, text: 'デザインア' },
+      { start: 2, end: 4, text: 'デザインア' },
+      { start: 4, end: 8, text: '次の話に移ります' },
+    ]);
+    expect(middle.dropped).toHaveLength(0);
+  });
+});
+
 describe('isStockPhraseOnly', () => {
   it('中身のある言葉が付いた区間は決まり文句だけとみなさない（「含む」では捨てない）', () => {
     expect(isStockPhraseOnly('質問ありがとうございます')).toBe(false);
