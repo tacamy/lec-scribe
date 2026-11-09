@@ -56,8 +56,11 @@ class TraceBuffer {
   private records: TraceRecord[] = [];
   private bytes = 0;
   private queue: Promise<void> = Promise.resolve();
+  private readonly sessionId: string;
 
-  constructor(private readonly sessionId: string) {}
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
 
   push(kind: TraceKind, now: number, videoTime: number, width: number, height: number, frame: Frame, verdict?: Verdict): void {
     this.records.push({ kind, now, videoTime, width, height, rgb: frameToRgb(frame, width * height), ...(verdict ? { verdict } : {}) });

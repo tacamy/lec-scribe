@@ -1,7 +1,7 @@
 // 検知の記録（.lecscribe/trace.bin。SPEC §9.1e）を手元で再生し、検知の規則を変えたときに
 // 何枚撮るか・ノートに使われた画像がどれだけ残るかを数える。
 //
-//   node --experimental-transform-types scripts/replay-trace.mts <セッションのフォルダ> [--check]
+//   pnpm replay-trace <セッションのフォルダ> [--check]
 //
 // --check: 記録に残った判定と、同じ設定で再生した判定が一致するかを確かめる（再生の仕組みの確認用）
 import { readFileSync, existsSync } from 'node:fs';
@@ -13,7 +13,7 @@ import { readTrace, rgbToFrame, type TraceRecord } from '../extension/src/trace.
 const args = process.argv.slice(2);
 const dir = args.find((a) => !a.startsWith('--'));
 if (!dir) {
-  console.error('usage: node --experimental-transform-types scripts/replay-trace.mts <session dir> [--check]');
+  console.error('usage: pnpm replay-trace <session dir> [--check]');
   process.exit(2);
 }
 const check = args.includes('--check');

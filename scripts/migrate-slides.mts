@@ -1,7 +1,7 @@
 // 以前の講義（旧配置: 全画像が slides/）をまとめて新配置に移し、slides/ を notes.md に合わせる（SPEC §14）。
 // 1 本ずつ「やり直す」をしなくても、slides/ がノートに載せた画像だけになる。
 //
-//   node --experimental-transform-types scripts/migrate-slides.mts [--dry-run] [--out <フォルダ>]
+//   pnpm migrate-slides [--dry-run] [--out <フォルダ>]
 //
 // --dry-run: 何も動かさず、何をするかだけ出す
 // --out:     セッションのあるフォルダ（既定 ~/LecScribe。サーバーの --out / LEC_SCRIBE_OUT と同じ）

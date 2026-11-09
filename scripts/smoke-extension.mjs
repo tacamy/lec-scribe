@@ -551,6 +551,17 @@ try {
   const traceBin = readFileSync(path.join(serverOut, outDir, '.lecscribe', 'trace.bin'));
   assert.ok(traceBin.length > 8 && traceBin.readUInt32LE(0) <= traceBin.length - 4 && traceBin[4] === 0x1f && traceBin[5] === 0x8b, `trace.bin: ${traceBin.length} bytes, head ${traceBin.subarray(0, 6).toString('hex')}`);
   console.log(`trace: ${traceBin.length} bytes of detection trace uploaded`);
+  // 記録を、SPEC に書いた動かし方（`pnpm replay-trace`）で実際に再生する。Node の型の除去だけで読み込めることと、
+  // 再生した判定が記録と一致することを確かめる。typecheck では捕まらない壊れ方（Node の版によるフラグの変化など）を
+  // ここで止める（2026-11-09 のレビュー）
+  const replayed = spawnSync('pnpm', ['-s', 'replay-trace', path.join(serverOut, outDir), '--check'], { encoding: 'utf8' });
+  assert.equal(replayed.status, 0, `replay-trace failed:\n${replayed.stdout}${replayed.stderr}`);
+  const recordedCaptures = Number(/recorded: (\d+) auto captures/.exec(replayed.stdout)?.[1]);
+  const replayLine = /replay \(current rules\): (\d+) saves, .*, (\d+) verdict mismatches/.exec(replayed.stdout);
+  assert.ok(replayLine && Number.isFinite(recordedCaptures), `replay-trace output:\n${replayed.stdout}`);
+  assert.equal(Number(replayLine[2]), 0, `replay-trace: verdicts differ from the recording\n${replayed.stdout}`);
+  assert.equal(Number(replayLine[1]), recordedCaptures, `replay-trace: saves differ from the recorded auto captures\n${replayed.stdout}`);
+  console.log(`replay: pnpm replay-trace replays the trace (${replayLine[1]} saves, 0 verdict mismatches)`);
   assert.ok(produced.some((f) => f.endsWith('slide_001.png')), `slides uploaded: ${produced}`);
   const work = path.join(serverOut, outDir, '.lecscribe');
   const srt = readFileSync(path.join(work, 'transcript.srt'), 'utf8');

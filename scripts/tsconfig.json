@@ -6,9 +6,11 @@
     "skipLibCheck": true,
     "noEmit": true,
     "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
     "types": [
       "node",
       "chrome"
