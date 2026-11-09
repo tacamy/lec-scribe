@@ -55,8 +55,6 @@
       #customModels .modelField { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       #customModels .modelField > label { font-size: 13px; color: var(--muted); min-width: 5.5em; }
       #customModels select { font-size: 13px; padding: 6px 28px 6px 10px; }
-      #customModels input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 170px; }
-      #customModels input[hidden] { display: none; }
     </style>
   </head>
   <body>
@@ -102,18 +100,16 @@
             <button id="saveModels" class="primary" type="button">保存</button>
           </div>
           <p id="presetDetail"></p>
-          <!-- 候補は「最新の〜」と、Codex で今使えるモデル（サーバーが返す一覧。§15.2）。一覧にない名前は「その他」を選んで入れる。
+          <!-- 候補は系統（最新の Terra・Astra・Sol・Luna）だけ（§15.2）。最初は名前の欄＋datalist だったが、
                datalist は欄に入っている文字で候補を絞り込み、保存した値が入っていると 1 つしか出なかった（2026-11-09） -->
           <div id="customModels" hidden>
             <div class="modelField">
               <label for="modelMainSel">整え・要点</label>
               <select id="modelMainSel"></select>
-              <input id="modelMain" aria-label="整え・要点のモデル名" placeholder="モデル名" hidden />
             </div>
             <div class="modelField">
               <label for="modelCheckSel">校正</label>
               <select id="modelCheckSel"></select>
-              <input id="modelCheck" aria-label="校正のモデル名" placeholder="モデル名" hidden />
             </div>
           </div>
           <p id="modelCatalog" hidden></p>
