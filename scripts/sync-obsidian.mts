@@ -1,6 +1,6 @@
 // Obsidian などへコピーした notes.md と slides/ を、LecScribe の今の内容に合わせる（SPEC §14）。
 //
-//   node --experimental-strip-types scripts/sync-obsidian.mts --vault <フォルダ> [--dry-run] [--notes] [--force-notes] [--only <文字列>] [--out <LecScribe>]
+//   pnpm sync-obsidian --vault <フォルダ> [--dry-run] [--notes] [--force-notes] [--only <文字列>] [--out <LecScribe>]
 //
 // --vault:       講義のフォルダ（notes.md と slides/ を置いたフォルダ）が下にある場所。深さ 5 まで探す
 // --dry-run:     何も動かさず、何をするかだけ出す
@@ -25,7 +25,7 @@ const value = (name: string): string | undefined => {
   const v = args[args.indexOf(name) + 1];
   return args.includes(name) && v !== undefined && !v.startsWith('--') ? v : undefined;
 };
-const usage = 'usage: node --experimental-strip-types scripts/sync-obsidian.mts --vault <フォルダ> [--dry-run] [--notes] [--force-notes] [--only <文字列>] [--out <LecScribe>]';
+const usage = 'usage: pnpm sync-obsidian --vault <フォルダ> [--dry-run] [--notes] [--force-notes] [--only <文字列>] [--out <LecScribe>]';
 const dryRun = flag('--dry-run');
 const forceNotes = flag('--force-notes');
 const withNotes = flag('--notes') || forceNotes;

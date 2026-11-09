@@ -50,8 +50,9 @@ if [ ${#need[@]} -gt 0 ]; then
   say "Homebrew で入れます: ${need[*]}"
   brew install "${need[@]}"
 fi
-node_major="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$node_major" -ge 22 ] || fail "Node.js 22 以上が必要です（今: $(node -v)）。brew upgrade node を実行してください。"
+# サーバーは --experimental-strip-types で動かすので 22.6 以上（このフラグは 22.6.0 から）
+node_ok="$(node -p 'const [major, minor] = process.versions.node.split(".").map(Number); major > 22 || (major === 22 && minor >= 6)')"
+[ "$node_ok" = true ] || fail "Node.js 22.6 以上が必要です（今: $(node -v)）。brew upgrade node を実行してください。"
 
 # 3. サーバーのコードを取得
 if [ -d "$APP_DIR/.git" ]; then

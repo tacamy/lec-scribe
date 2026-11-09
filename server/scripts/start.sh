@@ -18,16 +18,18 @@ if [ -z "$SERVER_DIR" ] || [ ! -f "$ENTRY" ]; then
   exit 1
 fi
 
-# --experimental-strip-types で TypeScript をそのまま動かすので Node 22 以上が要る。
+# --experimental-strip-types で TypeScript をそのまま動かすので Node 22.6 以上が要る（このフラグは 22.6.0 から）。
 # 古い node が PATH の先にいると（nvm、brew の node@20）「bad option」で起動できず、
 # launchd が 10 秒ごとに起動し直し続ける。版を見て、駄目なら予備に落とす
 usable() {
   [ -n "${1:-}" ] && [ -x "${1:-}" ] || return 1
   _v="$("$1" --version 2>/dev/null)" || return 1
-  _major="${_v#v}"
-  _major="${_major%%.*}"
-  case "$_major" in '' | *[!0-9]*) return 1 ;; esac
-  [ "$_major" -ge 22 ]
+  _v="${_v#v}"
+  _major="${_v%%.*}"
+  _minor="${_v#*.}"
+  _minor="${_minor%%.*}"
+  case "$_major$_minor" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$_major" -gt 22 ] || { [ "$_major" -eq 22 ] && [ "$_minor" -ge 6 ]; }
 }
 
 NODE=''
