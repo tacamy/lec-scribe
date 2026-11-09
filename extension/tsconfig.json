@@ -4,6 +4,7 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "types": ["chrome"],
     "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"]

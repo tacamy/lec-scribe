@@ -22,13 +22,14 @@ export type ErrorInfo = {
 };
 
 export class LecError extends Error {
-  constructor(
-    public readonly code: ErrorCode,
-    message: string,
-    public readonly retryable = false,
-  ) {
+  readonly code: ErrorCode;
+  readonly retryable: boolean;
+
+  constructor(code: ErrorCode, message: string, retryable = false) {
     super(message);
     this.name = 'LecError';
+    this.code = code;
+    this.retryable = retryable;
   }
 }
 

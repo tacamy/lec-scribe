@@ -13,7 +13,7 @@
  * 塊ごとに gzip するのは、録画中に少しずつ書き足せるようにするため（1 塊 ≒ 2 MB の生データ）
  */
 
-import type { Verdict } from './detect';
+import type { Verdict } from './detect.ts';
 
 export const TRACE_FILE = 'trace.bin';
 
