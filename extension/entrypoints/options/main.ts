@@ -13,12 +13,9 @@ const notesStatus = $('notesStatus');
 const notesHint = $('notesHint');
 const modelBox = $('modelBox');
 const modelResult = $('modelResult');
-const modelMain = $<HTMLInputElement>('modelMain');
-const modelCheck = $<HTMLInputElement>('modelCheck');
 const customModels = $('customModels');
 const modelPresetSel = $<HTMLSelectElement>('modelPreset');
 const presetDetail = $('presetDetail');
-const modelChoices = $<HTMLDataListElement>('modelChoices');
 const modelCatalog = $('modelCatalog');
 const notesCmd = $('notesCmd');
 const NOTES_COMMAND = `bash ${APP_DIR}/enable-notes.sh`;
@@ -222,14 +219,14 @@ function presetDetailText(preset: string): string {
   const values = presets()[preset];
   if (!values) {
     // 前の版のプリセットを保存したまま（モデル名で固定）なら、選び直すと新しいモデルに追従することを知らせる
-    const legacy = tiersSupported ? presetIn(LEGACY_PRESETS, modelMain.value.trim(), modelCheck.value.trim()) : 'custom';
+    const legacy = tiersSupported ? presetIn(LEGACY_PRESETS, fieldValue(mainField), fieldValue(checkField)) : 'custom';
     if (legacy !== 'custom') {
       const name = PRESET_NAME[legacy];
       return `前の版の「${name}」（モデル名で固定）のままです。「${name}」を選び直して保存すると、新しいモデルに自動で切り替わるようになります。`;
     }
     return tiersSupported
-      ? 'モデル名を直接指定します。「latest:terra」のように書くと、その系統のいちばん新しいモデルを使います。校正の欄を空にすると校正なしになります。'
-      : 'モデル名を直接指定します。校正の欄を空にすると校正なしになります。';
+      ? '整え・要点と校正のモデルを選びます。「最新の〜」はその系統のいちばん新しいモデルに自動で切り替わり、版を選ぶとそのモデルに固定します。一覧にないモデルは「その他」で名前を入れます。'
+      : '整え・要点と校正のモデルを選びます。一覧にないモデルは「その他」で名前を入れます。';
   }
   const now = (value: string) => latestByTier[value.slice('latest:'.length)];
   const main = modelLabel(values.llmModel, now(values.llmModel));
@@ -239,19 +236,58 @@ function presetDetailText(preset: string): string {
     : `${main}が本文を整えて要点を作り、${check}が誤変換だけを校正します。`;
 }
 
-/** カスタムの欄の候補（「最新の〜」と、Codex で今使えるモデル）と、使えるモデルの一覧を出す */
+/** カスタムの「その他（モデル名を入力）」の値。モデル名に使われない文字列にする */
+const OTHER_MODEL = '__other__';
+
+/** カスタムの 1 欄（候補の select と、「その他」のときだけ出す名前の欄） */
+type ModelField = { select: HTMLSelectElement; input: HTMLInputElement; emptyLabel: string };
+const mainField: ModelField = { select: $<HTMLSelectElement>('modelMainSel'), input: $<HTMLInputElement>('modelMain'), emptyLabel: '既定のモデル（指定なし）' };
+const checkField: ModelField = { select: $<HTMLSelectElement>('modelCheckSel'), input: $<HTMLInputElement>('modelCheck'), emptyLabel: '校正なし' };
+
+function fieldValue(field: ModelField): string {
+  return field.select.value === OTHER_MODEL ? field.input.value.trim() : field.select.value;
+}
+
+/** 候補にある値ならそれを選び、ない値（一覧にないモデル名）なら「その他」にして名前の欄に入れる */
+function setFieldValue(field: ModelField, value: string) {
+  const listed = [...field.select.options].some((o) => o.value === value && o.value !== OTHER_MODEL);
+  field.select.value = listed ? value : OTHER_MODEL;
+  field.input.value = listed ? '' : value;
+  field.input.hidden = listed;
+}
+
+/**
+ * カスタムの欄の候補（「最新の〜」と、Codex で今使えるモデル）を作る。最初は input ＋ datalist だったが、
+ * Chrome は欄に入っている文字で候補を絞り込むので、保存した値が入っていると候補が 1 つしか出なかった（2026-11-09）
+ */
+function fillModelField(field: ModelField, models: ReadonlyArray<{ slug: string }>) {
+  const option = (value: string, label: string) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    return o;
+  };
+  const group = (label: string, options: HTMLOptionElement[]) => {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    g.append(...options);
+    return g;
+  };
+  const groups: HTMLOptGroupElement[] = [];
+  if (tiersSupported) {
+    const tiers = ['terra', 'astra', 'sol', 'luna'].map((t) => option(`latest:${t}`, modelLabel(`latest:${t}`, latestByTier[t])));
+    groups.push(group('系統で指定（新しい版に自動で切り替わる）', tiers));
+  }
+  if (models.length) groups.push(group('版を固定', models.map((m) => option(m.slug, m.slug))));
+  field.select.replaceChildren(...groups, option('', field.emptyLabel), option(OTHER_MODEL, 'その他（モデル名を入力）'));
+}
+
+/** カスタムの欄の候補と、使えるモデルの一覧を出す */
 function renderCatalog(info: LlmSettingsInfo) {
   const models = info.models ?? [];
   latestByTier = info.latest ?? {};
-  const choices = [...(tiersSupported ? ['terra', 'astra', 'sol', 'luna'].map((t) => `latest:${t}`) : []), ...models.map((m) => m.slug)];
-  modelChoices.replaceChildren(
-    ...choices.map((value) => {
-      const option = document.createElement('option');
-      option.value = value;
-      option.label = models.find((x) => x.slug === value)?.name ?? modelLabel(value, latestByTier[value.slice('latest:'.length)]);
-      return option;
-    }),
-  );
+  fillModelField(mainField, models);
+  fillModelField(checkField, models);
   modelCatalog.hidden = models.length === 0;
   modelCatalog.textContent = models.length ? `いまCodex${info.codexVersion ? ` ${info.codexVersion}` : ''}で使えるモデル: ${models.map((m) => m.slug).join('、')}` : '';
 }
@@ -277,9 +313,9 @@ function renderModelChoice(info: LlmSettingsInfo) {
   const llmModel = info.llmModel ?? '';
   const llmCheckModel = info.llmCheckModel ?? '';
   modelPresetSel.value = presetOf(llmModel, llmCheckModel);
-  modelMain.value = llmModel;
-  modelCheck.value = llmCheckModel;
   renderCatalog(info);
+  setFieldValue(mainField, llmModel);
+  setFieldValue(checkField, llmCheckModel);
   renderPresetDetail();
 }
 
@@ -306,25 +342,45 @@ async function renderModels(health: Health | null) {
   }
 }
 
-modelPresetSel.addEventListener('change', () => {
+/**
+ * 選び直したら「保存しました」を消す。残っていると、今の選択が保存済みなのか分からなくなる（2026-11-09）。
+ * 表示があれば、画面の選択は保存したものと同じ
+ */
+function editModels() {
   modelsDirty = true;
+  showModelResult('', true);
+}
+
+modelPresetSel.addEventListener('change', () => {
+  editModels();
   const values = presets()[modelPresetSel.value];
   if (values) {
-    modelMain.value = values.llmModel;
-    modelCheck.value = values.llmCheckModel;
+    setFieldValue(mainField, values.llmModel);
+    setFieldValue(checkField, values.llmCheckModel);
   }
   renderPresetDetail();
 });
-for (const input of [modelMain, modelCheck]) input.addEventListener('input', () => (modelsDirty = true));
+for (const field of [mainField, checkField]) {
+  field.select.addEventListener('change', () => {
+    editModels();
+    field.input.hidden = field.select.value !== OTHER_MODEL;
+    if (!field.input.hidden) field.input.focus();
+    renderPresetDetail();
+  });
+  field.input.addEventListener('input', () => {
+    editModels();
+    renderPresetDetail();
+  });
+}
 
 function showModelResult(text: string, ok: boolean) {
   modelResult.textContent = text;
-  modelResult.className = `result${ok ? ' ok' : ' ng'}`;
+  modelResult.className = text ? `result${ok ? ' ok' : ' ng'}` : 'result';
 }
 
 $('saveModels').addEventListener('click', async () => {
   const preset = modelPresetSel.value;
-  const values = presets()[preset] ?? { llmModel: modelMain.value.trim(), llmCheckModel: modelCheck.value.trim() };
+  const values = presets()[preset] ?? { llmModel: fieldValue(mainField), llmCheckModel: fieldValue(checkField) };
   try {
     const saved = await saveLlmSettings(config.server, values);
     modelsDirty = false;
