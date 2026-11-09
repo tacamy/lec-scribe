@@ -1130,18 +1130,16 @@ try {
   modelsPage.on('pageerror', (e) => errors.push(String(e)));
   await modelsPage.goto(`chrome-extension://${extensionId}/options.html`);
   await modelsPage.waitForSelector('#modelBox:not([hidden])', { timeout: 10_000 });
-  await modelsPage.waitForFunction(() => (document.getElementById('modelCatalog')?.textContent ?? '').includes('gpt-6.1-terra'), null, { timeout: 10_000 });
-  assert.equal(
-    await modelsPage.evaluate(() => document.getElementById('modelCatalog')?.textContent),
-    'いまCodex 0.166.0で使えるモデル: gpt-6.1-sol、gpt-6-astra、gpt-6.1-terra、gpt-6-sol、gpt-6-luna、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna',
-  );
+  await modelsPage.waitForFunction(() => (document.getElementById('presetDetail')?.textContent ?? '').includes('gpt-6.1-terra'), null, { timeout: 10_000 });
+  // 「いまCodex…で使えるモデル」の一覧は出さない（カスタムで選べるのは系統だけなので。2026-11-09 のレビュー）
+  assert.equal(await modelsPage.locator('#modelCatalog').count(), 0);
   // 何も指定していない codex のサーバーは「推奨」で動いていて、画面にもそう出る（2026-11-05）
   assert.equal(await modelsPage.inputValue('#modelPreset'), 'recommended');
   assert.equal(
     await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
     '最新のTerra（今はgpt-6.1-terra）が本文を整えて要点を作り、最新のAstra（今はgpt-6-astra）が誤変換だけを校正します。',
   );
-  // 「起動時の設定に戻す」はやめた（構成はプリセットとカスタムで全部選べる。2026-11-05）
+  // 「起動時の設定に戻す」はやめた（2026-11-05。起動時の設定に戻すときは settings.json を消して起動し直す）
   assert.equal(await modelsPage.locator('#resetModels').count(), 0);
   await modelsPage.click('#saveModels');
   await modelsPage.waitForFunction(() => document.getElementById('modelResult')?.classList.contains('ok'), null, { timeout: 5_000 });
@@ -1150,10 +1148,37 @@ try {
   assert.equal(savedModels.llmModel, 'latest:terra', JSON.stringify(savedModels));
   assert.equal(savedModels.llmCheckModel, 'latest:astra', JSON.stringify(savedModels));
   assert.deepEqual(savedModels.latest, { sol: 'gpt-6.1-sol', astra: 'gpt-6-astra', terra: 'gpt-6.1-terra', luna: 'gpt-6-luna' });
-  // カスタムの欄には、「最新の〜」と今使えるモデルが候補に出る
+  // 選び直すと「保存しました」は消える（残ると、今の選択が保存済みか分からない。2026-11-09）
   await modelsPage.selectOption('#modelPreset', 'custom');
-  const choices = await modelsPage.evaluate(() => [...document.querySelectorAll('#modelChoices option')].map((o) => o.value));
-  assert.deepEqual(choices.slice(0, 5), ['latest:terra', 'latest:astra', 'latest:sol', 'latest:luna', 'gpt-6.1-sol']);
+  assert.equal(await modelsPage.evaluate(() => document.getElementById('modelResult')?.textContent), '');
+  // カスタムの欄は系統だけを選ぶ（版の固定や任意の名前は出さない。2026-11-09）。保存した値が入っていても候補を全部出す。
+  // 最初は datalist で、欄の文字で絞り込まれて 1 つしか出なかった（2026-11-09）
+  const fieldOptions = (id) => modelsPage.evaluate((sel) => [...document.querySelectorAll(`#${sel} option`)].map((o) => [o.value, o.textContent]), id);
+  assert.deepEqual(await fieldOptions('modelMainSel'), [
+    ['latest:terra', '最新のTerra（今はgpt-6.1-terra）'],
+    ['latest:astra', '最新のAstra（今はgpt-6-astra）'],
+    ['latest:sol', '最新のSol（今はgpt-6.1-sol）'],
+    ['latest:luna', '最新のLuna（今はgpt-6-luna）'],
+  ]);
+  const checkOptions = await fieldOptions('modelCheckSel');
+  assert.deepEqual(checkOptions.map(([value]) => value), ['latest:terra', 'latest:astra', 'latest:sol', 'latest:luna', '']);
+  assert.deepEqual(checkOptions.at(-1), ['', '校正なし']);
+  assert.equal(await modelsPage.inputValue('#modelMainSel'), 'latest:terra');
+  assert.equal(await modelsPage.inputValue('#modelCheckSel'), 'latest:astra');
+  // 選んで保存し、開き直すとその値で出る
+  await modelsPage.selectOption('#modelMainSel', 'latest:sol');
+  await modelsPage.selectOption('#modelCheckSel', '');
+  await modelsPage.click('#saveModels');
+  await modelsPage.waitForFunction(() => document.getElementById('modelResult')?.classList.contains('ok'), null, { timeout: 5_000 });
+  const customSaved = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, { headers: modelsAuth })).json();
+  assert.deepEqual([customSaved.llmModel, customSaved.llmCheckModel], ['latest:sol', ''], JSON.stringify(customSaved));
+  // カスタムの欄を選び直したときも「保存しました」は消える
+  await modelsPage.selectOption('#modelCheckSel', 'latest:astra');
+  assert.equal(await modelsPage.evaluate(() => document.getElementById('modelResult')?.textContent), '');
+  await modelsPage.reload();
+  await modelsPage.waitForFunction(() => document.getElementById('modelMainSel')?.value === 'latest:sol', null, { timeout: 10_000 });
+  assert.equal(await modelsPage.inputValue('#modelPreset'), 'custom');
+  assert.equal(await modelsPage.inputValue('#modelCheckSel'), '');
   // 前の版の「推奨」（モデル名で固定）を保存したままなら、カスタムとして出し、選び直すと追従することを案内する（2026-11-05 のレビュー）
   const legacySaved = await fetch(`http://127.0.0.1:${SERVER_PORT}/settings`, {
     method: 'POST',
@@ -1168,11 +1193,28 @@ try {
     await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
     '前の版の「推奨」（モデル名で固定）のままです。「推奨」を選び直して保存すると、新しいモデルに自動で切り替わるようになります。',
   );
+  // 系統にない今の設定は、勝手に書き換えず「（今の設定）」として出す
+  assert.deepEqual((await fieldOptions('modelMainSel'))[0], ['gpt-5.6-terra', 'gpt-5.6-terra（今の設定）']);
+  assert.deepEqual((await fieldOptions('modelCheckSel'))[0], ['gpt-6-astra', 'gpt-6-astra（今の設定）']);
+  assert.equal(await modelsPage.inputValue('#modelMainSel'), 'gpt-5.6-terra');
+  assert.equal(await modelsPage.inputValue('#modelCheckSel'), 'gpt-6-astra');
+  // 前の版のプリセットの組でなくなっても、系統で選んでいない欄があるうちは「自動で切り替わる」とは言わない（2026-11-09 のレビュー）
+  await modelsPage.selectOption('#modelCheckSel', '');
+  assert.equal(
+    await modelsPage.evaluate(() => document.getElementById('presetDetail')?.textContent),
+    '「gpt-5.6-terra」は系統で選んでいないので、新しいモデルが出ても自動では切り替わりません。系統を選び直して保存すると、自動で切り替わるようになります。',
+  );
+  // プリセットを選んでからカスタムに戻しても、今の設定は候補に残り、選び直せる（2026-11-09 のレビュー）
+  await modelsPage.selectOption('#modelPreset', 'recommended');
+  await modelsPage.selectOption('#modelPreset', 'custom');
+  assert.equal(await modelsPage.inputValue('#modelMainSel'), 'latest:terra');
+  assert.deepEqual((await fieldOptions('modelMainSel'))[0], ['gpt-5.6-terra', 'gpt-5.6-terra（今の設定）']);
+  await modelsPage.selectOption('#modelMainSel', 'gpt-5.6-terra');
   await modelsPage.close();
   // 保存した上書きを消してから起動し直す（ほかの確認に持ち越さない）
   rmSync(path.join(serverTmp, 'settings.json'), { force: true });
   await restartServer([]);
-  console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog, offer the live list, and point out a saved pre-tier preset');
+  console.log('models: the options page presets follow the latest Terra/Astra from the Codex catalog, the custom fields offer every latest tier (and keep the current pinned name), and a saved pre-tier preset is pointed out');
 
   const codexSlowStub = stub('codex-slow', 'sleep 30');
   await restartServer(['--llm', 'codex', '--codex', codexSlowStub]);

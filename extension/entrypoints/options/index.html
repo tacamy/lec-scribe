@@ -17,7 +17,7 @@
       .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
       /* select とボタンの行は高さの中央でそろえる（baseline だと select が 1px 沈む） */
       #modelBox .row { align-items: center; }
-      /* hidden 属性が .row の display: flex に負けないように（カスタム欄の隠し）*/
+      /* hidden 属性が .row の display: flex に負けないように */
       .row[hidden] { display: none; }
       button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
       button.primary { background: var(--accent); color: #fff; }
@@ -50,9 +50,11 @@
       @media (prefers-color-scheme: dark) {
         select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2398989d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
       }
-      #customModels { gap: 12px; }
-      #customModels label { display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--muted); }
-      #customModels input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); width: 170px; }
+      #customModels { display: grid; gap: 8px; }
+      #customModels[hidden] { display: none; }
+      #customModels .modelField { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      #customModels .modelField > label { font-size: 13px; color: var(--muted); min-width: 5.5em; }
+      #customModels select { font-size: 13px; padding: 6px 28px 6px 10px; }
     </style>
   </head>
   <body>
@@ -98,13 +100,18 @@
             <button id="saveModels" class="primary" type="button">保存</button>
           </div>
           <p id="presetDetail"></p>
-          <div id="customModels" class="row" hidden>
-            <label>整え・要点 <input id="modelMain" list="modelChoices" placeholder="空なら既定のモデル" /></label>
-            <label>校正 <input id="modelCheck" list="modelChoices" placeholder="空なら校正なし" /></label>
-            <!-- 候補は「最新の〜」と、Codex で今使えるモデル（サーバーが返す一覧。§15.2） -->
-            <datalist id="modelChoices"></datalist>
+          <!-- 候補は系統（最新の Terra・Astra・Sol・Luna など。Codex の一覧にあるもの）だけ（§15.2）。最初は名前の欄＋datalist だったが、
+               datalist は欄に入っている文字で候補を絞り込み、保存した値が入っていると 1 つしか出なかった（2026-11-09） -->
+          <div id="customModels" hidden>
+            <div class="modelField">
+              <label for="modelMainSel">整え・要点</label>
+              <select id="modelMainSel"></select>
+            </div>
+            <div class="modelField">
+              <label for="modelCheckSel">校正</label>
+              <select id="modelCheckSel"></select>
+            </div>
           </div>
-          <p id="modelCatalog" hidden></p>
           <span id="modelResult" class="result"></span>
           <!-- 文の間で改行すると、表示に余計な空白が入るので一続きに書く -->
           <p>切り替えたあと、各講義の最初の「やり直す」はノートを作り直します（文字起こしは再利用します）。プリセットはモデルの系統（Terra・Astra）だけを決めていて、Codexを新しくして新しいモデルが出ると、次のノート作成から自動でそちらを使います（Codexを新しくするには、ターミナルで<code>brew upgrade codex</code>）。使えるモデル名はChatGPTのプランによって違いますが、使えないモデルを保存しても処理のときに既定のモデルへ自動で切り替わります。</p>
