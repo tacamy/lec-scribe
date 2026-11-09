@@ -92,8 +92,13 @@ export class ChangeDetector {
   private stabilizeStart = 0;
   private stableCount = 0;
   private lastSaveAt = Number.NEGATIVE_INFINITY;
+  private readonly cfg: DetectConfig;
 
-  constructor(private readonly cfg: DetectConfig) {}
+  // 引数での宣言（constructor(private readonly cfg …)）は使わない。scripts/replay-trace.mts がこのファイルを
+  // Node の型の除去だけで読むため（Node 26 で --experimental-transform-types がなくなった。2026-11-06）
+  constructor(cfg: DetectConfig) {
+    this.cfg = cfg;
+  }
 
   /**
    * 保存済みの画像と比べる。動き続けている画素（講師のワイプ、動画の中身）は除くので、

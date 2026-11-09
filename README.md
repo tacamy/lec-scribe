@@ -114,13 +114,13 @@ flowchart TB
 `slides/` にあるのは `notes.md` に載せた画像だけです。撮った画像は全部 `.lecscribe/slides/` に残っていて、「やり直す」で載せる画像が変わると `slides/` も入れ替わります。以前の講義（`slides/` に全画像が入っている）をまとめて同じ形にするには、サーバーが処理中でないときに次を実行します（`--dry-run` を付けると確認だけ）。
 
 ```sh
-node --experimental-transform-types scripts/migrate-slides.mts
+node --experimental-strip-types scripts/migrate-slides.mts
 ```
 
 Obsidian などへ `notes.md` と `slides/` をコピーして使っている場合、「やり直す」で中身が変わったあとにコピー先を合わせるには次を実行します（`--dry-run` で確認だけ。`--notes` を付けると `notes.md` も置き換えますが、コピーしたあとに手で直したものは触りません）。
 
 ```sh
-node --experimental-transform-types scripts/sync-obsidian.mts --vault <コピー先の親フォルダ> --notes
+node --experimental-strip-types scripts/sync-obsidian.mts --vault <コピー先の親フォルダ> --notes
 ```
 
 音声・文字起こし（json / srt / vtt / txt）・タイムラインなどの作業ファイルは、隠しフォルダ `.lecscribe/` にまとめてあります（Finder では Cmd+Shift+. で表示）。
